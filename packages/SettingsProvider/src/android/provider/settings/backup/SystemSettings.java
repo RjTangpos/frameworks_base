@@ -104,5 +104,10 @@ public class SystemSettings {
         Settings.System.NETWORK_TRAFFIC_STATE,
         Settings.System.NETWORK_TRAFFIC_AUTOHIDE_THRESHOLD,
         Settings.System.KEYGAURD_MEDIA_ART,
+        Settings.System.STATUS_BAR_LOGO,
+        Settings.System.STATUS_BAR_LOGO_POSITION,
+        Settings.System.STATUS_BAR_LOGO_STYLE,
+        Settings.System.STATUS_BAR_LOGO_COLOR,
+        Settings.System.STATUS_BAR_LOGO_COLOR_PICKER,
     };
 }
