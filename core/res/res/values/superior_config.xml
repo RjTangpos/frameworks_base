@@ -31,9 +31,6 @@
     <!-- Name of a font family to use as regular font. For theming purpose. -->
     <string name="config_regularFontFamily" translatable="false">sans-serif-regular</string>
 
-    <!-- Is the battery LED intrusive? Used to decide if there should be a disable option -->
-    <bool name="config_intrusiveBatteryLed">@bool/config_intrusiveNotificationLed</bool>
-
     <!-- Whether to use Richtap vibration -->
     <bool name="config_usesRichtapVibration">false</bool>
 
@@ -58,5 +55,8 @@
      <bool name="config_proximityCheckOnWake">false</bool>
      <integer name="config_proximityCheckTimeout">250</integer>
      <bool name="config_proximityCheckOnWakeEnabledByDefault">false</bool>
+
+    <!-- Is the battery LED intrusive? Used to decide if there should be a disable option -->
+    <bool name="config_intrusiveBatteryLed">false</bool>
 
 </resources>

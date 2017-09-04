@@ -432,5 +432,6 @@ public class GlobalSettingsValidators {
                         }));
         VALIDATORS.put(Global.Wearable.PHONE_SWITCHING_SUPPORTED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.BATTERY_LIGHT_ENABLED, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(Global.LOW_BATTERY_LIGHT_ENABLED, BOOLEAN_VALIDATOR);
     }
 }

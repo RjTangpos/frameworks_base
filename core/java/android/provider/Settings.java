@@ -17248,6 +17248,12 @@ public final class Settings {
         public static final String KEY_CHORD_POWER_VOLUME_UP =
                 "key_chord_power_volume_up";
 
+       /**
+        * Whether to blink light when battery is low
+        * @hide
+        */
+        public static final String LOW_BATTERY_LIGHT_ENABLED = "low_battery_light_enabled";
+
         /**
          * Record audio from near-field microphone (ie. TV remote)
          * Allows audio recording regardless of sensor privacy state,
