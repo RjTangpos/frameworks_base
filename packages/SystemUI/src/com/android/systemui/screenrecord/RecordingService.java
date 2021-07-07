@@ -287,6 +287,11 @@ public class RecordingService extends Service implements ScreenMediaRecorderList
                 mNotificationManager.cancelAsUser(null, NOTIFICATION_VIEW_ID, currentUser);
                 Log.d(TAG, "Deleted recording " + uri);
                 break;
+            case ACTION_SHOW_DIALOG:
+                if (mController != null) {
+                    mController.createScreenRecordDialog(this, null, null, null, null).show();
+                }
+                break;
         }
         return Service.START_STICKY;
     }
