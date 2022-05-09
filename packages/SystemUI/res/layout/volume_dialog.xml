@@ -42,8 +42,12 @@
             android:clipChildren="false"
             android:orientation="vertical"
             android:gravity="right">
-
+            
             <include layout="@layout/volume_ringer_drawer" />
+
+                <View
+                    android:layout_height="2dp"
+                    android:layout_width="1dp" />
 
             <FrameLayout
                 android:visibility="gone"
@@ -53,8 +57,8 @@
                 android:layout_marginBottom="@dimen/volume_dialog_spacer"
                 android:gravity="right"
                 android:translationZ="@dimen/volume_dialog_elevation"
-                android:clipToPadding="false"
-                android:background="@drawable/rounded_bg_full">
+                android:background="@drawable/rounded_bg_full"
+                android:clipToPadding="false">
                 <com.android.keyguard.AlphaOptimizedImageButton
                     android:id="@+id/ringer_icon"
                     style="@style/VolumeButtons"
@@ -90,12 +94,19 @@
                     android:orientation="horizontal">
                         <!-- volume rows added and removed here! :-) -->
                 </LinearLayout>
+
+                <View
+                    android:layout_height="1dp"
+                    android:layout_width="1dp" />
+
                 <FrameLayout
                     android:id="@+id/app_volume_container"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/volume_background"
+                    android:background="@drawable/volume_background_bottom"
+                    android:paddingTop="@dimen/volume_dialog_ringer_rows_padding"
                     android:paddingLeft="@dimen/volume_dialog_ringer_rows_padding"
+                    android:paddingBottom="@dimen/volume_dialog_ringer_rows_padding"
                     android:paddingRight="@dimen/volume_dialog_ringer_rows_padding">
                     <com.android.keyguard.AlphaOptimizedImageButton
                         android:id="@+id/app_volume"
@@ -108,11 +119,17 @@
                         android:tint="?androidprv:attr/colorAccent"
                         android:soundEffectsEnabled="false" />
                 </FrameLayout>
+
+                <View
+                    android:layout_height="2dp"
+                    android:layout_width="1dp" />
+
                 <FrameLayout
                     android:id="@+id/settings_container"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:background="@drawable/volume_background_bottom"
+                    android:paddingTop="@dimen/volume_dialog_ringer_rows_padding"
                     android:paddingLeft="@dimen/volume_dialog_ringer_rows_padding"
                     android:paddingBottom="@dimen/volume_dialog_ringer_rows_padding"
                     android:paddingRight="@dimen/volume_dialog_ringer_rows_padding">
