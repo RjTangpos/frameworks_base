@@ -72,4 +72,7 @@
      <!-- Global Actions pref list -->
      <java-symbol type="array" name="custom_config_globalActionsList" />
 
+    <!-- Cycle through ringer modes -->
+    <java-symbol type="string" name="volume_dialog_ringer_guidance_normal" />
+
 </resources>
