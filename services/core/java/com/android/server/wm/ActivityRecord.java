@@ -314,11 +314,13 @@ import android.os.Process;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.service.contentcapture.ActivityEvent;
 import android.service.dreams.DreamActivity;
 import android.service.voice.IVoiceInteractionSession;
+import android.util.BoostFramework;
 import android.util.ArraySet;
 import android.util.EventLog;
 import android.util.Log;
@@ -494,6 +496,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
     private int labelRes;           // the label information from the package mgr.
     private int icon;               // resource identifier of activity's icon.
     private int theme;              // resource identifier of activity's theme.
+    public int perfActivityBoostHandler = -1; //perflock handler when activity is created.
     private Task task;              // the task this is in.
     private long createTime = System.currentTimeMillis();
     long lastVisibleTime;         // last time this activity became visible
@@ -656,6 +659,12 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
 
     boolean pendingVoiceInteractionStart;   // Waiting for activity-invoked voice session
     IVoiceInteractionSession voiceSession;  // Voice interaction session for this activity
+
+    public BoostFramework mPerf = null;
+    public BoostFramework mPerf_iop = null;
+
+    private final boolean isLowRamDevice =
+            SystemProperties.getBoolean("ro.config.low_ram", false);
 
     boolean mVoiceInteraction;
 
@@ -2213,6 +2222,9 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
             // No such property name.
         }
         mAppActivityEmbeddingSplitsEnabled = appActivityEmbeddingEnabled;
+
+        if (mPerf == null)
+            mPerf = new BoostFramework();
     }
 
     /**
@@ -2381,7 +2393,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
                 windowDisableStarting);
         // If this activity is launched from system surface, ignore windowDisableStarting
         if (windowIsTranslucent || windowIsFloating) {
-            translucentWindowLaunch = true;
+	    translucentWindowLaunch = true;
             return false;
         }
         if (windowShowWallpaper
@@ -3822,6 +3834,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
         }
         makeFinishingLocked();
 
+        getRootTask().onARStopTriggered(this);
         final boolean activityRemoved = destroyImmediately("finish-imm:" + reason);
 
         // If the display does not have running activity, the configuration may need to be
@@ -6151,12 +6164,14 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
                 Slog.v(TAG_VISIBILITY, "Start visible activity, " + this);
             }
             setState(STARTED, "makeActiveIfNeeded");
+            acquireActivityBoost();
 
             try {
                 mAtmService.getLifecycleManager().scheduleTransaction(app.getThread(), token,
                         StartActivityItem.obtain(takeOptions()));
             } catch (Exception e) {
                 Slog.w(TAG, "Exception thrown sending start: " + intent.getComponent(), e);
+                releaseActivityBoost();
             }
             // The activity may be waiting for stop, but that is no longer appropriate if we are
             // starting the activity again
@@ -6325,6 +6340,11 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
 
         if (isActivityTypeHome()) {
             mTaskSupervisor.updateHomeProcess(task.getBottomMostActivity().app);
+            try {
+                mTaskSupervisor.new PreferredAppsTask().execute();
+            } catch (Exception e) {
+                Slog.v (TAG, "Exception: " + e);
+            }
         }
 
         if (nowVisible) {
@@ -6421,7 +6441,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
 
     void stopIfPossible() {
         if (DEBUG_SWITCH) Slog.d(TAG_SWITCH, "Stopping: " + this);
-        launching = false;
+	launching = false;
         final Task rootTask = getRootTask();
         if (isNoHistory()) {
             if (!finishing) {
@@ -6447,6 +6467,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
             ProtoLog.v(WM_DEBUG_STATES, "Moving to STOPPING: %s (stop requested)", this);
 
             setState(STOPPING, "stopIfPossible");
+	    getRootTask().onARStopTriggered(this);
             if (DEBUG_VISIBILITY) {
                 Slog.v(TAG_VISIBILITY, "Stopping:" + this);
             }
@@ -6806,8 +6827,52 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
         }
     }
 
+    protected void releaseActivityBoost() {
+        if (mPerf != null && perfActivityBoostHandler > 0) {
+            mPerf.perfLockReleaseHandler(perfActivityBoostHandler);
+            perfActivityBoostHandler = -1;
+        } else if (perfActivityBoostHandler > 0) {
+            Slog.w(TAG, "activity boost didn't release as expected");
+        }
+    }
+
+    protected void acquireActivityBoost() {
+        if (mPerf != null) {
+            if (mPerf.getPerfHalVersion() >= BoostFramework.PERF_HAL_V23) {
+                int pkgType = mPerf.perfGetFeedback(BoostFramework.VENDOR_FEEDBACK_WORKLOAD_TYPE,
+                        packageName);
+                int pid = -1;
+                WindowProcessController wpc = null;
+                if (app == null) {
+                    if (info != null && info.applicationInfo != null && mAtmService != null) {
+                        wpc = mAtmService.getProcessController(processName,
+                                info.applicationInfo.uid);
+                    }
+                } else {
+                    wpc = app;
+                }
+                if (wpc != null && wpc.hasThread()) {
+                    pid = wpc.getPid();
+                }
+                perfActivityBoostHandler =
+                        mPerf.perfHintAcqRel(perfActivityBoostHandler,
+                                BoostFramework.VENDOR_HINT_FIRST_LAUNCH_BOOST, packageName,
+                                -1, BoostFramework.Launch.ACTIVITY_LAUNCH_BOOST, 2, pkgType, pid);
+            } else {
+                if (perfActivityBoostHandler > 0) {
+                    Slog.i(TAG, "Activity boosted, release it firstly");
+                    mPerf.perfLockReleaseHandler(perfActivityBoostHandler);
+                }
+                perfActivityBoostHandler =
+                         mPerf.perfHint(BoostFramework.VENDOR_HINT_FIRST_LAUNCH_BOOST,
+                                 packageName, -1, BoostFramework.Launch.BOOST_V1);
+            }
+        }
+    }
+
     /** Called when the windows associated app window container are drawn. */
     private void onWindowsDrawn() {
+        releaseActivityBoost();
         final TransitionInfoSnapshot info = mTaskSupervisor
                 .getActivityMetricsLogger().notifyWindowsDrawn(this);
         final boolean validInfo = info != null;
@@ -7536,6 +7601,15 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
     @VisibleForTesting
     boolean shouldAnimate() {
         return task == null || task.shouldAnimate();
+    }
+
+    public int isAppInfoGame() {
+        int isGame = 0;
+        if (info.applicationInfo != null) {
+            isGame = (info.applicationInfo.category == ApplicationInfo.CATEGORY_GAME ||
+                      (info.applicationInfo.flags & ApplicationInfo.FLAG_IS_GAME) == ApplicationInfo.FLAG_IS_GAME) ? 1 : 0;
+        }
+        return isGame;
     }
 
     /**
