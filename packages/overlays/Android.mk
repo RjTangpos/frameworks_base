@@ -35,6 +35,7 @@ LOCAL_REQUIRED_MODULES := \
 	NavigationBarModeGesturalOverlayWideBack \
 	NavigationBarModeGesturalOverlayExtraWideBack \
         NoCutoutOverlay \
+        VShapedNotch \
 	TransparentNavigationBarOverlay \
 	NotesRoleEnabledOverlay \
         NotchBarKillerOverlay \
