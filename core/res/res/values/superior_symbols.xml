@@ -98,4 +98,7 @@
     <!-- Custom logo color -->
     <java-symbol type="color" name="logo_accent_color" />
 
+    <!-- Boost Framework -->
+   <java-symbol type="bool" name="config_supportsBoostFramework" />
+
 </resources>
