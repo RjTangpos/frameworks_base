@@ -113,4 +113,7 @@
     <dimen name="qs_header_image_top_margin">0dp</dimen>
     <dimen name="qs_header_image_bottom_margin">0dp</dimen>
     <dimen name="qs_header_image_min_height">50dp</dimen>
+    
+    <!-- Base Multiplier for dp to px. -->
+    <dimen name="amb_font_base_multiplier_dp">1dp</dimen>
 </resources>
