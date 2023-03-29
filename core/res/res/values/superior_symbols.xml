@@ -74,5 +74,12 @@
 
     <!-- Cycle through ringer modes -->
     <java-symbol type="string" name="volume_dialog_ringer_guidance_normal" />
+    
+    <!-- Settings Restart -->
+    <java-symbol type="string" name="settings_restart_title" />
+    <java-symbol type="string" name="settings_restart_message" />
 
+    <!-- Soft restart dialog -->
+    <java-symbol type="string" name="system_restart_title" />
+    <java-symbol type="string" name="system_restart_message" />
 </resources>
