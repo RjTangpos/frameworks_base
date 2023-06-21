@@ -99,7 +99,46 @@ class KeyguardQuickAffordanceOnTouchListener(
                     // When not using a stylus, lifting the finger/pointer will actually cancel
                     // the long-press gesture. Calling cancel after the quick affordance was
                     // already long-press activated is a no-op, so it's safe to call from here.
-                    cancel()
+                    cancel(
+                        onAnimationEnd =
+                            if (event.eventTime - event.downTime < longPressDurationMs) {
+                                Runnable {
+                                    messageDisplayer.invoke(
+                                        R.string.keyguard_affordance_press_too_short
+                                    )
+                                    val amplitude =
+                                        view.context.resources
+                                            .getDimensionPixelSize(
+                                                R.dimen.keyguard_affordance_shake_amplitude
+                                            )
+                                            .toFloat()
+                                    val shakeAnimator =
+                                        ObjectAnimator.ofFloat(
+                                            view,
+                                            "translationX",
+                                            -amplitude / 2,
+                                            amplitude / 2,
+                                        )
+                                    shakeAnimator.duration =
+                                        KeyguardBottomAreaVibrations.ShakeAnimationDuration
+                                            .inWholeMilliseconds
+                                    shakeAnimator.interpolator =
+                                        CycleInterpolator(
+                                            KeyguardBottomAreaVibrations.ShakeAnimationCycles
+                                        )
+                                    shakeAnimator.start()
+
+                                    vibratorHelper?.vibrate(
+                                        if (KeyguardBottomAreaVibrations.areAllPrimitivesSupported) {
+                                            KeyguardBottomAreaVibrations.Shake
+                                        } else {
+                                            KeyguardBottomAreaVibrations.ShakeAlt
+                                        })
+                                }
+                            } else {
+                                null
+                            }
+                    )
                 }
                 false
             }
