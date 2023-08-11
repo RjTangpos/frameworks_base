@@ -254,7 +254,7 @@ public abstract class QSPanelControllerBase<T extends QSPanel> extends ViewContr
 
     /** */
     public void setTiles() {
-        if (mHost.getTiles() == null) return;
+        if (mHost != null && mHost.getTiles() == null) return;
         setTiles(mHost.getTiles(), false);
     }
 
