@@ -43,10 +43,6 @@
      <!-- Whether device supports an alt. ambient display -->
      <java-symbol type="bool" name="config_alt_ambient_display" />
 
-     <!-- SystemUI Restart -->
-     <java-symbol type="string" name="systemui_restart_title" />
-     <java-symbol type="string" name="systemui_restart_message" />
-
      <!-- Camera -->
      <java-symbol type="array" name="config_cameraAuxPackageAllowList" />
      <java-symbol type="array" name="config_cameraAuxPackageExcludeList" />
@@ -82,4 +78,8 @@
     <!-- Soft restart dialog -->
     <java-symbol type="string" name="system_restart_title" />
     <java-symbol type="string" name="system_restart_message" />
+    
+    <!-- SystemUI restart dialog -->
+    <java-symbol type="string" name="systemui_restart_title" />
+    <java-symbol type="string" name="systemui_restart_message" />
 </resources>
