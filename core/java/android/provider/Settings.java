@@ -6346,6 +6346,12 @@ public final class Settings {
         public static final String QS_HEADER_IMAGE_URI = "qs_header_image_uri";
 
         /**
+          * QS header size
+          * @hide
+          */
+        public static final String QS_HEADER_SIZE = "qs_header_size";
+        
+        /**
          * These are all public system settings
          *
          * @hide
@@ -6486,6 +6492,7 @@ public final class Settings {
             PRIVATE_SETTINGS.add(QS_HEADER_IMAGE_PADDING_SIDE);
             PRIVATE_SETTINGS.add(QS_HEADER_IMAGE_PADDING_TOP);
             PRIVATE_SETTINGS.add(QS_HEADER_IMAGE_URI);
+            PRIVATE_SETTINGS.add(QS_HEADER_SIZE);
         }
 
         /**
