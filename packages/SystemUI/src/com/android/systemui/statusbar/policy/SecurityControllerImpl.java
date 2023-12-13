@@ -15,16 +15,21 @@
  */
 package com.android.systemui.statusbar.policy;
 
-import android.app.ActivityManager;
+import android.annotation.Nullable;
+import android.app.admin.DeviceAdminInfo;
 import android.app.admin.DevicePolicyManager;
+import android.app.admin.DevicePolicyManager.DeviceOwnerType;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
+import android.content.pm.ResolveInfo;
 import android.content.pm.UserInfo;
+import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.NetworkCallback;
 import android.net.Network;
@@ -40,26 +45,32 @@ import android.util.Log;
 import android.util.Pair;
 import android.util.SparseArray;
 
+import androidx.annotation.NonNull;
+
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.net.LegacyVpnInfo;
 import com.android.internal.net.VpnConfig;
 import com.android.systemui.R;
 import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Background;
-import com.android.systemui.settings.CurrentUserTracker;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.settings.UserTracker;
 
-import java.io.FileDescriptor;
+import org.xmlpull.v1.XmlPullParserException;
+
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.concurrent.Executor;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  */
-@Singleton
-public class SecurityControllerImpl extends CurrentUserTracker implements SecurityController {
+@SysUISingleton
+public class SecurityControllerImpl implements SecurityController {
 
     private static final String TAG = "SecurityController";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
@@ -73,11 +84,13 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
     private static final int CA_CERT_LOADING_RETRY_TIME_IN_MS = 30_000;
 
     private final Context mContext;
+    private final UserTracker mUserTracker;
     private final ConnectivityManager mConnectivityManager;
     private final VpnManager mVpnManager;
     private final DevicePolicyManager mDevicePolicyManager;
     private final PackageManager mPackageManager;
     private final UserManager mUserManager;
+    private final Executor mMainExecutor;
     private final Executor mBgExecutor;
 
     @GuardedBy("mCallbacks")
@@ -91,17 +104,28 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
     // Needs to be cached here since the query has to be asynchronous
     private ArrayMap<Integer, Boolean> mHasCACerts = new ArrayMap<Integer, Boolean>();
 
+    private final UserTracker.Callback mUserChangedCallback =
+            new UserTracker.Callback() {
+                @Override
+                public void onUserChanged(int newUser, @NonNull Context userContext) {
+                    onUserSwitched(newUser);
+                }
+            };
+
     /**
      */
     @Inject
     public SecurityControllerImpl(
             Context context,
+            UserTracker userTracker,
             @Background Handler bgHandler,
             BroadcastDispatcher broadcastDispatcher,
-            @Background Executor bgExecutor
+            @Main Executor mainExecutor,
+            @Background Executor bgExecutor,
+            DumpManager dumpManager
     ) {
-        super(broadcastDispatcher);
         mContext = context;
+        mUserTracker = userTracker;
         mDevicePolicyManager = (DevicePolicyManager)
                 context.getSystemService(Context.DEVICE_POLICY_SERVICE);
         mConnectivityManager = (ConnectivityManager)
@@ -109,7 +133,10 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
         mVpnManager = context.getSystemService(VpnManager.class);
         mPackageManager = context.getPackageManager();
         mUserManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
+        mMainExecutor = mainExecutor;
         mBgExecutor = bgExecutor;
+
+        dumpManager.registerDumpable(getClass().getSimpleName(), this);
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(KeyChain.ACTION_TRUST_STORE_CHANGED);
@@ -119,11 +146,11 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
 
         // TODO: re-register network callback on user change.
         mConnectivityManager.registerNetworkCallback(REQUEST, mNetworkCallback);
-        onUserSwitched(ActivityManager.getCurrentUser());
-        startTracking();
+        onUserSwitched(mUserTracker.getUserId());
+        mUserTracker.addCallback(mUserChangedCallback, mMainExecutor);
     }
 
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("SecurityController state:");
         pw.print("  mCurrentVpns={");
         for (int i = 0 ; i < mCurrentVpns.size(); i++) {
@@ -200,6 +227,12 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
     }
 
     @Override
+    public boolean isWorkProfileOn() {
+        final UserHandle userHandle = UserHandle.of(getWorkProfileUserId(mCurrentUserId));
+        return userHandle != null && !mUserManager.isQuietModeEnabled(userHandle);
+    }
+
+    @Override
     public boolean isProfileOwnerOfOrganizationOwnedDevice() {
         return mDevicePolicyManager.isOrganizationOwnedDeviceWithManagedProfile();
     }
@@ -213,6 +246,24 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
             return getNameForVpnConfig(cfg, UserHandle.of(profileId));
         }
         return null;
+    }
+
+    @Override
+    @Nullable
+    public ComponentName getDeviceOwnerComponentOnAnyUser() {
+        return mDevicePolicyManager.getDeviceOwnerComponentOnAnyUser();
+    }
+
+    // TODO(b/259908270): remove
+    @Override
+    @DeviceOwnerType
+    public int getDeviceOwnerType(@NonNull ComponentName admin) {
+        return mDevicePolicyManager.getDeviceOwnerType(admin);
+    }
+
+    @Override
+    public boolean isFinancedDevice() {
+        return mDevicePolicyManager.isFinancedDevice();
     }
 
     @Override
@@ -267,7 +318,7 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
     }
 
     @Override
-    public void removeCallback(SecurityControllerCallback callback) {
+    public void removeCallback(@NonNull SecurityControllerCallback callback) {
         synchronized (mCallbacks) {
             if (callback == null) return;
             if (DEBUG) Log.d(TAG, "removeCallback " + callback);
@@ -276,7 +327,7 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
     }
 
     @Override
-    public void addCallback(SecurityControllerCallback callback) {
+    public void addCallback(@NonNull SecurityControllerCallback callback) {
         synchronized (mCallbacks) {
             if (callback == null || mCallbacks.contains(callback)) return;
             if (DEBUG) Log.d(TAG, "addCallback " + callback);
@@ -295,6 +346,50 @@ public class SecurityControllerImpl extends CurrentUserTracker implements Securi
             mVpnUserId = mCurrentUserId;
         }
         fireCallbacks();
+    }
+
+    @Override
+    public boolean isParentalControlsEnabled() {
+        return getProfileOwnerOrDeviceOwnerSupervisionComponent() != null;
+    }
+
+    @Override
+    public DeviceAdminInfo getDeviceAdminInfo() {
+        return getDeviceAdminInfo(getProfileOwnerOrDeviceOwnerComponent());
+    }
+
+    @Override
+    public Drawable getIcon(DeviceAdminInfo info) {
+        return (info == null) ? null : info.loadIcon(mPackageManager);
+    }
+
+    @Override
+    public CharSequence getLabel(DeviceAdminInfo info) {
+        return (info == null) ? null : info.loadLabel(mPackageManager);
+    }
+
+    private ComponentName getProfileOwnerOrDeviceOwnerSupervisionComponent() {
+        UserHandle currentUser = new UserHandle(mCurrentUserId);
+        return mDevicePolicyManager
+               .getProfileOwnerOrDeviceOwnerSupervisionComponent(currentUser);
+    }
+
+    // Returns the ComponentName of the current DO/PO. Right now it only checks the supervision
+    // component but can be changed to check for other DO/POs. This change would make getIcon()
+    // and getLabel() work for all admins.
+    private ComponentName getProfileOwnerOrDeviceOwnerComponent() {
+        return getProfileOwnerOrDeviceOwnerSupervisionComponent();
+    }
+
+    private DeviceAdminInfo getDeviceAdminInfo(ComponentName componentName) {
+        try {
+            ResolveInfo resolveInfo = new ResolveInfo();
+            resolveInfo.activityInfo = mPackageManager.getReceiverInfo(componentName,
+                    PackageManager.GET_META_DATA);
+            return new DeviceAdminInfo(mContext, resolveInfo);
+        } catch (NameNotFoundException | XmlPullParserException | IOException e) {
+            return null;
+        }
     }
 
     private void refreshCACerts(int userId) {

@@ -28,6 +28,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.os.CancellationSignal;
 
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.inflation.NotificationRowBinder;
@@ -41,7 +42,6 @@ import java.util.Map;
 import java.util.Set;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * {@link NotifBindPipeline} is responsible for converting notifications from their data form to
@@ -77,7 +77,7 @@ import javax.inject.Singleton;
  * views and assumes that a row is given to it when it's inflated.
  */
 @MainThread
-@Singleton
+@SysUISingleton
 public final class NotifBindPipeline {
     private final Map<NotificationEntry, BindEntry> mBindEntries = new ArrayMap<>();
     private final NotifBindPipelineLogger mLogger;
@@ -112,7 +112,8 @@ public final class NotifBindPipeline {
     public void manageRow(
             @NonNull NotificationEntry entry,
             @NonNull ExpandableNotificationRow row) {
-        mLogger.logManagedRow(entry.getKey());
+        mLogger.logManagedRow(entry);
+        mLogger.logManagedRow(entry);
 
         final BindEntry bindEntry = getBindEntry(entry);
         if (bindEntry == null) {
@@ -154,12 +155,12 @@ public final class NotifBindPipeline {
      * the real work once rather than repeatedly start and cancel it.
      */
     private void requestPipelineRun(NotificationEntry entry) {
-        mLogger.logRequestPipelineRun(entry.getKey());
+        mLogger.logRequestPipelineRun(entry);
 
         final BindEntry bindEntry = getBindEntry(entry);
         if (bindEntry.row == null) {
             // Row is not managed yet but may be soon. Stop for now.
-            mLogger.logRequestPipelineRowNotSet(entry.getKey());
+            mLogger.logRequestPipelineRowNotSet(entry);
             return;
         }
 
@@ -177,7 +178,7 @@ public final class NotifBindPipeline {
      * callbacks when the run finishes. If a run is already in progress, it is restarted.
      */
     private void startPipeline(NotificationEntry entry) {
-        mLogger.logStartPipeline(entry.getKey());
+        mLogger.logStartPipeline(entry);
 
         if (mStage == null) {
             throw new IllegalStateException("No stage was ever set on the pipeline");
@@ -193,7 +194,7 @@ public final class NotifBindPipeline {
         final BindEntry bindEntry = getBindEntry(entry);
         final Set<BindCallback> callbacks = bindEntry.callbacks;
 
-        mLogger.logFinishedPipeline(entry.getKey(), callbacks.size());
+        mLogger.logFinishedPipeline(entry, callbacks.size());
 
         bindEntry.invalidated = false;
         // Move all callbacks to separate list as callbacks may themselves add/remove callbacks.

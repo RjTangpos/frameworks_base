@@ -16,12 +16,11 @@
 
 package com.android.server.locksettings.recoverablekeystore.storage;
 
+import static android.security.keystore.recovery.RecoveryController.ERROR_KEY_NOT_FOUND;
 import static android.security.keystore.recovery.RecoveryController.ERROR_SERVICE_INTERNAL_ERROR;
 
 import android.annotation.Nullable;
 import android.os.ServiceSpecificException;
-import android.security.Credentials;
-import android.security.KeyStore;
 import android.security.KeyStore2;
 import android.security.keystore.KeyProperties;
 import android.security.keystore.KeyProtection;
@@ -75,13 +74,7 @@ public class ApplicationKeyStorage {
     public @Nullable String getGrantAlias(int userId, int uid, String alias) {
         Log.i(TAG, String.format(Locale.US, "Get %d/%d/%s", userId, uid, alias));
         String keystoreAlias = getInternalAlias(userId, uid, alias);
-        if (useKeyStore2()) {
-            return makeKeystoreEngineGrantString(uid, keystoreAlias);
-        } else {
-            // Aliases used by {@link KeyStore} are different than used by public API.
-            // {@code USER_PRIVATE_KEY} prefix is used secret keys.
-            return KeyStore.getInstance().grant(Credentials.USER_PRIVATE_KEY + keystoreAlias, uid);
-        }
+        return makeKeystoreEngineGrantString(uid, keystoreAlias);
     }
 
     public void setSymmetricKeyEntry(int userId, int uid, String alias, byte[] secretKey)
@@ -143,14 +136,14 @@ public class ApplicationKeyStorage {
         try {
             key = KeyStore2.getInstance().grant(key, uid, grantAccessVector);
         } catch (android.security.KeyStoreException e) {
+            if (e.getNumericErrorCode()
+                    == android.security.KeyStoreException.ERROR_KEY_DOES_NOT_EXIST) {
+                Log.e(TAG, "Failed to get grant for KeyStore key - key not found", e);
+                throw new ServiceSpecificException(ERROR_KEY_NOT_FOUND, e.getMessage());
+            }
             Log.e(TAG, "Failed to get grant for KeyStore key.", e);
             throw new ServiceSpecificException(ERROR_SERVICE_INTERNAL_ERROR, e.getMessage());
         }
         return String.format("%s%016X", APPLICATION_KEY_GRANT_PREFIX, key.nspace);
     }
-
-    private static boolean useKeyStore2() {
-        return android.security.keystore2.AndroidKeyStoreProvider.isInstalled();
-    }
-
 }

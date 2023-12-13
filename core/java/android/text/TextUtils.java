@@ -70,7 +70,6 @@ import android.util.Log;
 import android.util.Printer;
 import android.view.View;
 
-import com.android.internal.R;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.Preconditions;
 
@@ -94,7 +93,9 @@ public class TextUtils {
     private static final String ELLIPSIS_NORMAL = "\u2026"; // HORIZONTAL ELLIPSIS (…)
     private static final String ELLIPSIS_TWO_DOTS = "\u2025"; // TWO DOT LEADER (‥)
 
-    private static final int LINE_FEED_CODE_POINT = 10;
+    /** @hide */
+    public static final int LINE_FEED_CODE_POINT = 10;
+
     private static final int NBSP_CODE_POINT = 160;
 
     /**
@@ -349,6 +350,53 @@ public class TextUtils {
 
         return ret;
     }
+
+
+    /**
+     * Returns the longest prefix of a string for which the UTF-8 encoding fits into the given
+     * number of bytes, with the additional guarantee that the string is not truncated in the middle
+     * of a valid surrogate pair.
+     *
+     * <p>Unpaired surrogates are counted as taking 3 bytes of storage. However, a subsequent
+     * attempt to actually encode a string containing unpaired surrogates is likely to be rejected
+     * by the UTF-8 implementation.
+     *
+     * (copied from google/thirdparty)
+     *
+     * @param str a string
+     * @param maxbytes the maximum number of UTF-8 encoded bytes
+     * @return the beginning of the string, so that it uses at most maxbytes bytes in UTF-8
+     * @throws IndexOutOfBoundsException if maxbytes is negative
+     *
+     * @hide
+     */
+    public static String truncateStringForUtf8Storage(String str, int maxbytes) {
+        if (maxbytes < 0) {
+            throw new IndexOutOfBoundsException();
+        }
+
+        int bytes = 0;
+        for (int i = 0, len = str.length(); i < len; i++) {
+            char c = str.charAt(i);
+            if (c < 0x80) {
+                bytes += 1;
+            } else if (c < 0x800) {
+                bytes += 2;
+            } else if (c < Character.MIN_SURROGATE
+                    || c > Character.MAX_SURROGATE
+                    || str.codePointAt(i) < Character.MIN_SUPPLEMENTARY_CODE_POINT) {
+                bytes += 3;
+            } else {
+                bytes += 4;
+                i += (bytes > maxbytes) ? 0 : 1;
+            }
+            if (bytes > maxbytes) {
+                return str.substring(0, i);
+            }
+        }
+        return str;
+    }
+
 
     /**
      * Returns a string containing the tokens joined by delimiters.
@@ -1183,8 +1231,8 @@ public class TextUtils {
 
     /**
      * Transforms a CharSequences to uppercase, copying the sources spans and keeping them spans as
-     * much as possible close to their relative original places. In the case the the uppercase
-     * string is identical to the sources, the source itself is returned instead of being copied.
+     * much as possible close to their relative original places. If uppercase string is identical
+     * to the sources, the source itself is returned instead of being copied.
      *
      * If copySpans is set, source must be an instance of Spanned.
      *
@@ -2071,12 +2119,116 @@ public class TextUtils {
     }
 
     /**
-     * Return localized string representing the given number of selected items.
+     * Simple alternative to {@link String#format} which purposefully supports
+     * only a small handful of substitutions to improve execution speed.
+     * Benchmarking reveals this optimized alternative performs 6.5x faster for
+     * a typical format string.
+     * <p>
+     * Below is a summary of the limited grammar supported by this method; if
+     * you need advanced features, please continue using {@link String#format}.
+     * <ul>
+     * <li>{@code %b} for {@code boolean}
+     * <li>{@code %c} for {@code char}
+     * <li>{@code %d} for {@code int} or {@code long}
+     * <li>{@code %f} for {@code float} or {@code double}
+     * <li>{@code %s} for {@code String}
+     * <li>{@code %x} for hex representation of {@code int} or {@code long}
+     * <li>{@code %%} for literal {@code %}
+     * <li>{@code %04d} style grammar to specify the argument width, such as
+     * {@code %04d} to prefix an {@code int} with zeros or {@code %10b} to
+     * prefix a {@code boolean} with spaces
+     * </ul>
      *
+     * @throws IllegalArgumentException if the format string or arguments don't
+     *             match the supported grammar described above.
      * @hide
      */
-    public static CharSequence formatSelectedCount(int count) {
-        return Resources.getSystem().getQuantityString(R.plurals.selected_count, count, count);
+    public static @NonNull String formatSimple(@NonNull String format, Object... args) {
+        final StringBuilder sb = new StringBuilder(format);
+        int j = 0;
+        for (int i = 0; i < sb.length(); ) {
+            if (sb.charAt(i) == '%') {
+                char code = sb.charAt(i + 1);
+
+                // Decode any argument width request
+                char prefixChar = '\0';
+                int prefixLen = 0;
+                int consume = 2;
+                while ('0' <= code && code <= '9') {
+                    if (prefixChar == '\0') {
+                        prefixChar = (code == '0') ? '0' : ' ';
+                    }
+                    prefixLen *= 10;
+                    prefixLen += Character.digit(code, 10);
+                    consume += 1;
+                    code = sb.charAt(i + consume - 1);
+                }
+
+                final String repl;
+                switch (code) {
+                    case 'b': {
+                        if (j == args.length) {
+                            throw new IllegalArgumentException("Too few arguments");
+                        }
+                        final Object arg = args[j++];
+                        if (arg instanceof Boolean) {
+                            repl = Boolean.toString((boolean) arg);
+                        } else {
+                            repl = Boolean.toString(arg != null);
+                        }
+                        break;
+                    }
+                    case 'c':
+                    case 'd':
+                    case 'f':
+                    case 's': {
+                        if (j == args.length) {
+                            throw new IllegalArgumentException("Too few arguments");
+                        }
+                        final Object arg = args[j++];
+                        repl = String.valueOf(arg);
+                        break;
+                    }
+                    case 'x': {
+                        if (j == args.length) {
+                            throw new IllegalArgumentException("Too few arguments");
+                        }
+                        final Object arg = args[j++];
+                        if (arg instanceof Integer) {
+                            repl = Integer.toHexString((int) arg);
+                        } else if (arg instanceof Long) {
+                            repl = Long.toHexString((long) arg);
+                        } else {
+                            throw new IllegalArgumentException(
+                                    "Unsupported hex type " + arg.getClass());
+                        }
+                        break;
+                    }
+                    case '%': {
+                        repl = "%";
+                        break;
+                    }
+                    default: {
+                        throw new IllegalArgumentException("Unsupported format code " + code);
+                    }
+                }
+
+                sb.replace(i, i + consume, repl);
+
+                // Apply any argument width request
+                final int prefixInsert = (prefixChar == '0' && repl.charAt(0) == '-') ? 1 : 0;
+                for (int k = repl.length(); k < prefixLen; k++) {
+                    sb.insert(i + prefixInsert, prefixChar);
+                }
+                i += Math.max(repl.length(), prefixLen);
+            } else {
+                i++;
+            }
+        }
+        if (j != args.length) {
+            throw new IllegalArgumentException("Too many arguments");
+        }
+        return sb.toString();
     }
 
     /**
@@ -2173,20 +2325,39 @@ public class TextUtils {
     public static <T extends CharSequence> T trimToLengthWithEllipsis(@Nullable T text,
             @IntRange(from = 1) int size) {
         T trimmed = trimToSize(text, size);
-        if (trimmed.length() < text.length()) {
+        if (text != null && trimmed.length() < text.length()) {
             trimmed = (T) (trimmed.toString() + "...");
         }
         return trimmed;
     }
 
-    private static boolean isNewline(int codePoint) {
+    /** @hide */
+    public static boolean isNewline(int codePoint) {
         int type = Character.getType(codePoint);
         return type == Character.PARAGRAPH_SEPARATOR || type == Character.LINE_SEPARATOR
                 || codePoint == LINE_FEED_CODE_POINT;
     }
 
-    private static boolean isWhiteSpace(int codePoint) {
+    /** @hide */
+    public static boolean isWhitespace(int codePoint) {
         return Character.isWhitespace(codePoint) || codePoint == NBSP_CODE_POINT;
+    }
+
+    /** @hide */
+    public static boolean isWhitespaceExceptNewline(int codePoint) {
+        return isWhitespace(codePoint) && !isNewline(codePoint);
+    }
+
+    /** @hide */
+    public static boolean isPunctuation(int codePoint) {
+        int type = Character.getType(codePoint);
+        return type == Character.CONNECTOR_PUNCTUATION
+                || type == Character.DASH_PUNCTUATION
+                || type == Character.END_PUNCTUATION
+                || type == Character.FINAL_QUOTE_PUNCTUATION
+                || type == Character.INITIAL_QUOTE_PUNCTUATION
+                || type == Character.OTHER_PUNCTUATION
+                || type == Character.START_PUNCTUATION;
     }
 
     /** @hide */
@@ -2280,7 +2451,7 @@ public class TextUtils {
                 gettingCleaned.removeRange(offset, offset + codePointLen);
             } else if (type == Character.CONTROL && !isNewline) {
                 gettingCleaned.removeRange(offset, offset + codePointLen);
-            } else if (trim && !isWhiteSpace(codePoint)) {
+            } else if (trim && !isWhitespace(codePoint)) {
                 // This is only executed if the code point is not removed
                 if (firstNonWhiteSpace == -1) {
                     firstNonWhiteSpace = offset;

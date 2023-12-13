@@ -21,6 +21,7 @@ import static com.android.server.integrity.parser.RuleMetadataParser.VERSION_TAG
 
 import android.util.Xml;
 
+import com.android.modules.utils.TypedXmlSerializer;
 import com.android.server.integrity.model.RuleMetadata;
 
 import org.xmlpull.v1.XmlSerializer;
@@ -34,8 +35,7 @@ public class RuleMetadataSerializer {
     /** Serialize the rule metadata to an output stream. */
     public static void serialize(RuleMetadata ruleMetadata, OutputStream outputStream)
             throws IOException {
-        XmlSerializer xmlSerializer = Xml.newSerializer();
-        xmlSerializer.setOutput(outputStream, StandardCharsets.UTF_8.name());
+        TypedXmlSerializer xmlSerializer = Xml.resolveSerializer(outputStream);
 
         serializeTaggedValue(xmlSerializer, RULE_PROVIDER_TAG, ruleMetadata.getRuleProvider());
         serializeTaggedValue(xmlSerializer, VERSION_TAG, ruleMetadata.getVersion());
@@ -43,8 +43,8 @@ public class RuleMetadataSerializer {
         xmlSerializer.endDocument();
     }
 
-    private static void serializeTaggedValue(XmlSerializer xmlSerializer, String tag, String value)
-            throws IOException {
+    private static void serializeTaggedValue(TypedXmlSerializer xmlSerializer, String tag,
+            String value) throws IOException {
         xmlSerializer.startTag(/* namespace= */ null, tag);
         xmlSerializer.text(value);
         xmlSerializer.endTag(/* namespace= */ null, tag);

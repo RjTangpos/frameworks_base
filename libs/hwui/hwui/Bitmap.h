@@ -19,10 +19,14 @@
 #include <SkColorFilter.h>
 #include <SkColorSpace.h>
 #include <SkImage.h>
-#include <SkImage.h>
 #include <SkImageInfo.h>
 #include <SkPixelRef.h>
+#include <SkRefCnt.h>
 #include <cutils/compiler.h>
+#include <utils/StrongPointer.h>
+
+#include <optional>
+
 #ifdef __ANDROID__ // Layoutlib does not support hardware acceleration
 #include <android/hardware_buffer.h>
 #endif
@@ -32,7 +36,7 @@ class SkWStream;
 namespace android {
 
 enum class PixelStorageType {
-    External,
+    WrappedPixelRef,
     Heap,
     Ashmem,
     Hardware,
@@ -47,6 +51,7 @@ enum class BitmapPalette {
 };
 
 namespace uirenderer {
+class Gainmap;
 namespace renderthread {
 class RenderThread;
 }
@@ -56,7 +61,7 @@ class PixelStorage;
 
 typedef void (*FreeFunc)(void* addr, void* context);
 
-class ANDROID_API Bitmap : public SkPixelRef {
+class Bitmap : public SkPixelRef {
 public:
     /* The allocate factories not only construct the Bitmap object but also allocate the
      * backing store whose type is determined by the specific method that is called.
@@ -71,6 +76,7 @@ public:
     static sk_sp<Bitmap> allocateHardwareBitmap(const SkBitmap& bitmap);
     static sk_sp<Bitmap> allocateHeapBitmap(SkBitmap* bitmap);
     static sk_sp<Bitmap> allocateHeapBitmap(const SkImageInfo& info);
+    static sk_sp<Bitmap> allocateHeapBitmap(size_t size, const SkImageInfo& i, size_t rowBytes);
 
     /* The createFrom factories construct a new Bitmap object by wrapping the already allocated
      * memory that is provided as an input param.
@@ -99,6 +105,12 @@ public:
 
     void getSkBitmap(SkBitmap* outBitmap);
 
+    SkBitmap getSkBitmap() {
+        SkBitmap ret;
+        getSkBitmap(&ret);
+        return ret;
+    }
+
     int getAshmemFd() const;
     size_t getAllocationByteCount() const;
 
@@ -112,6 +124,11 @@ public:
     void getBounds(SkRect* bounds) const;
 
     bool isHardware() const { return mPixelStorageType == PixelStorageType::Hardware; }
+    bool hasGainmap() const { return mGainmap.get() != nullptr; }
+
+    sp<uirenderer::Gainmap> gainmap() const;
+
+    void setGainmap(sp<uirenderer::Gainmap>&& gainmap);
 
     PixelStorageType pixelStorageType() const { return mPixelStorageType; }
 
@@ -160,11 +177,9 @@ public:
                        int32_t quality, SkWStream* stream);
 private:
     static sk_sp<Bitmap> allocateAshmemBitmap(size_t size, const SkImageInfo& i, size_t rowBytes);
-    static sk_sp<Bitmap> allocateHeapBitmap(size_t size, const SkImageInfo& i, size_t rowBytes);
 
     Bitmap(void* address, size_t allocSize, const SkImageInfo& info, size_t rowBytes);
-    Bitmap(void* address, void* context, FreeFunc freeFunc, const SkImageInfo& info,
-           size_t rowBytes);
+    Bitmap(SkPixelRef& pixelRef, const SkImageInfo& info);
     Bitmap(void* address, int fd, size_t mappedSize, const SkImageInfo& info, size_t rowBytes);
 #ifdef __ANDROID__ // Layoutlib does not support hardware acceleration
     Bitmap(AHardwareBuffer* buffer, const SkImageInfo& info, size_t rowBytes,
@@ -178,7 +193,6 @@ private:
 #endif
 
     virtual ~Bitmap();
-    void* getStorage() const;
 
     SkImageInfo mInfo;
 
@@ -189,12 +203,12 @@ private:
 
     bool mHasHardwareMipMap = false;
 
+    sp<uirenderer::Gainmap> mGainmap;
+
     union {
         struct {
-            void* address;
-            void* context;
-            FreeFunc freeFunc;
-        } external;
+            SkPixelRef* pixelRef;
+        } wrapped;
         struct {
             void* address;
             int fd;
@@ -207,6 +221,7 @@ private:
 #ifdef __ANDROID__ // Layoutlib does not support hardware acceleration
         struct {
             AHardwareBuffer* buffer;
+            uint64_t size;
         } hardware;
 #endif
     } mPixelStorage;

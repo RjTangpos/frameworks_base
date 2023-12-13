@@ -23,8 +23,6 @@ namespace android {
 
 static_assert(sizeof(SkMatrix) == 40, "Unexpected sizeof(SkMatrix), "
         "update size in Matrix.java#NATIVE_ALLOCATION_SIZE and here");
-static_assert(SK_SCALAR_IS_FLOAT, "SK_SCALAR_IS_FLOAT is false, "
-        "only float scalar is supported");
 
 class SkMatrixGlue {
 public:
@@ -378,13 +376,17 @@ static const JNINativeMethod methods[] = {
     {"nEquals", "(JJ)Z", (void*) SkMatrixGlue::equals}
 };
 
+static jclass sClazz;
 static jfieldID sNativeInstanceField;
+static jmethodID sCtor;
 
 int register_android_graphics_Matrix(JNIEnv* env) {
     int result = RegisterMethodsOrDie(env, "android/graphics/Matrix", methods, NELEM(methods));
 
     jclass clazz = FindClassOrDie(env, "android/graphics/Matrix");
+    sClazz = MakeGlobalRefOrDie(env, clazz);
     sNativeInstanceField = GetFieldIDOrDie(env, clazz, "native_instance", "J");
+    sCtor = GetMethodIDOrDie(env, clazz, "<init>", "()V");
 
     return result;
 }
@@ -393,4 +395,7 @@ SkMatrix* android_graphics_Matrix_getSkMatrix(JNIEnv* env, jobject matrixObj) {
     return reinterpret_cast<SkMatrix*>(env->GetLongField(matrixObj, sNativeInstanceField));
 }
 
+jobject android_graphics_Matrix_newInstance(JNIEnv* env) {
+    return env->NewObject(sClazz, sCtor);
+}
 }

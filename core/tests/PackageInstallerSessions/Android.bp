@@ -45,7 +45,11 @@ android_test {
         "framework-res",
     ],
 
-    platform_apis: true,
+    java_resources: [
+        // Borrow an arbitrary test app from another module
+        ":PackageManagerTestAppVersion1",
+    ],
+
     sdk_version: "core_platform",
     test_suites: ["device-tests"],
 }

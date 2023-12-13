@@ -20,13 +20,13 @@ import static com.android.systemui.statusbar.notification.row.NotificationRowCon
 
 import androidx.annotation.NonNull;
 
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.row.NotificationRowContentBinder.BindParams;
 import com.android.systemui.statusbar.notification.row.NotificationRowContentBinder.InflationCallback;
 import com.android.systemui.statusbar.notification.row.NotificationRowContentBinder.InflationFlag;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * A stage that binds all content views for an already inflated {@link ExpandableNotificationRow}.
@@ -34,7 +34,7 @@ import javax.inject.Singleton;
  * In the farther future, the binder logic and consequently this stage should be broken into
  * smaller stages.
  */
-@Singleton
+@SysUISingleton
 public class RowContentBindStage extends BindStage<RowContentBindParams> {
     private final NotificationRowContentBinder mBinder;
     private final NotifInflationErrorManager mNotifInflationErrorManager;
@@ -57,7 +57,7 @@ public class RowContentBindStage extends BindStage<RowContentBindParams> {
             @NonNull StageCallback callback) {
         RowContentBindParams params = getStageParams(entry);
 
-        mLogger.logStageParams(entry.getKey(), params.toString());
+        mLogger.logExecutingStage(entry, params);
 
         // Resolve content to bind/unbind.
         @InflationFlag int inflationFlags = params.getContentViews();
@@ -96,7 +96,10 @@ public class RowContentBindStage extends BindStage<RowContentBindParams> {
     protected void abortStage(
             @NonNull NotificationEntry entry,
             @NonNull ExpandableNotificationRow row) {
-        mBinder.cancelBind(entry, row);
+        final boolean cancelledBind = mBinder.cancelBind(entry, row);
+        if (cancelledBind) {
+            mLogger.logAbortStageCancelledBind(entry);
+        }
     }
 
     @Override

@@ -18,6 +18,7 @@ package com.android.internal.widget;
 
 import android.annotation.Nullable;
 import android.content.Context;
+import android.os.Trace;
 import android.text.BoringLayout;
 import android.text.Layout;
 import android.text.StaticLayout;
@@ -36,8 +37,10 @@ import android.widget.TextView;
 @RemoteViews.RemoteView
 public class ImageFloatingTextView extends TextView {
 
-    /** Number of lines from the top to indent */
-    private int mIndentLines;
+    /** Number of lines from the top to indent. */
+    private int mIndentLines = 0;
+    /** Whether or not there is an image to indent for. */
+    private boolean mHasImage = false;
 
     /** Resolved layout direction */
     private int mResolvedDirection = LAYOUT_DIRECTION_UNDEFINED;
@@ -60,12 +63,15 @@ public class ImageFloatingTextView extends TextView {
     public ImageFloatingTextView(Context context, AttributeSet attrs, int defStyleAttr,
             int defStyleRes) {
         super(context, attrs, defStyleAttr, defStyleRes);
+        setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_FULL_FAST);
+        setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY);
     }
 
     @Override
     protected Layout makeSingleLayout(int wantWidth, BoringLayout.Metrics boring, int ellipsisWidth,
             Layout.Alignment alignment, boolean shouldEllipsize,
             TextUtils.TruncateAt effectiveEllipsize, boolean useSaved) {
+        Trace.beginSection("ImageFloatingTextView#makeSingleLayout");
         TransformationMethod transformationMethod = getTransformationMethod();
         CharSequence text = getText();
         if (transformationMethod != null) {
@@ -79,8 +85,8 @@ public class ImageFloatingTextView extends TextView {
                 .setLineSpacing(getLineSpacingExtra(), getLineSpacingMultiplier())
                 .setIncludePad(getIncludeFontPadding())
                 .setUseLineSpacingFromFallbacks(true)
-                .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY)
-                .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_FULL);
+                .setBreakStrategy(getBreakStrategy())
+                .setHyphenationFrequency(getHyphenationFrequency());
         int maxLines;
         if (mMaxLinesForHeight > 0) {
             maxLines = mMaxLinesForHeight;
@@ -96,7 +102,7 @@ public class ImageFloatingTextView extends TextView {
 
         // we set the endmargin on the requested number of lines.
         int[] margins = null;
-        if (mIndentLines > 0) {
+        if (mHasImage && mIndentLines > 0) {
             margins = new int[mIndentLines + 1];
             for (int i = 0; i < mIndentLines; i++) {
                 margins[i] = mImageEndMargin;
@@ -108,20 +114,38 @@ public class ImageFloatingTextView extends TextView {
             builder.setIndents(null, margins);
         }
 
-        return builder.build();
+        final StaticLayout result = builder.build();
+        Trace.endSection();
+        return result;
     }
 
+    /**
+     * @param imageEndMargin the end margin (in pixels) to indent the first few lines of the text
+     */
     @RemotableViewMethod
     public void setImageEndMargin(int imageEndMargin) {
-        mImageEndMargin = imageEndMargin;
+        if (mImageEndMargin != imageEndMargin) {
+            mImageEndMargin = imageEndMargin;
+            invalidateTextIfIndenting();
+        }
+    }
+
+    /**
+     * @param imageEndMarginDp the end margin (in dp) to indent the first few lines of the text
+     */
+    @RemotableViewMethod
+    public void setImageEndMarginDp(float imageEndMarginDp) {
+        setImageEndMargin(
+                (int) (imageEndMarginDp * getResources().getDisplayMetrics().density));
     }
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        Trace.beginSection("ImageFloatingTextView#onMeasure");
         int availableHeight = MeasureSpec.getSize(heightMeasureSpec) - mPaddingTop - mPaddingBottom;
         if (getLayout() != null && getLayout().getHeight() != availableHeight) {
             // We've been measured before and the new size is different than before, lets make sure
-            // we reset the maximum lines, otherwise we may be cut short
+            // we reset the maximum lines, otherwise the last line of text may be partially cut off
             mMaxLinesForHeight = -1;
             nullLayouts();
         }
@@ -130,7 +154,7 @@ public class ImageFloatingTextView extends TextView {
         if (layout.getHeight() > availableHeight) {
             // With the existing layout, not all of our lines fit on the screen, let's find the
             // first one that fits and ellipsize at that one.
-            int maxLines = layout.getLineCount() - 1;
+            int maxLines = layout.getLineCount();
             while (maxLines > 1 && layout.getLineBottom(maxLines - 1) > availableHeight) {
                 maxLines--;
             }
@@ -144,6 +168,7 @@ public class ImageFloatingTextView extends TextView {
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec);
             }
         }
+        Trace.endSection();
     }
 
     @Override
@@ -152,31 +177,43 @@ public class ImageFloatingTextView extends TextView {
 
         if (layoutDirection != mResolvedDirection && isLayoutDirectionResolved()) {
             mResolvedDirection = layoutDirection;
-            if (mIndentLines > 0) {
-                // Invalidate layout.
-                nullLayouts();
-                requestLayout();
-            }
+            invalidateTextIfIndenting();
         }
     }
 
+    private void invalidateTextIfIndenting() {
+        if (mHasImage && mIndentLines > 0) {
+            // Invalidate layout.
+            nullLayouts();
+            requestLayout();
+        }
+    }
+
+    /**
+     * @param hasImage whether there is an image to wrap text around.
+     */
     @RemotableViewMethod
     public void setHasImage(boolean hasImage) {
-        setNumIndentLines(hasImage ? 2 : 0);
+        setHasImageAndNumIndentLines(hasImage, mIndentLines);
     }
 
     /**
      * @param lines the number of lines at the top that should be indented by indentEnd
-     * @return whether a change was made
      */
-    public boolean setNumIndentLines(int lines) {
-        if (mIndentLines != lines) {
-            mIndentLines = lines;
-            // Invalidate layout.
+    @RemotableViewMethod
+    public void setNumIndentLines(int lines) {
+        setHasImageAndNumIndentLines(mHasImage, lines);
+    }
+
+    private void setHasImageAndNumIndentLines(boolean hasImage, int lines) {
+        int oldEffectiveLines = mHasImage ? mIndentLines : 0;
+        int newEffectiveLines = hasImage ? lines : 0;
+        mIndentLines = lines;
+        mHasImage = hasImage;
+        if (oldEffectiveLines != newEffectiveLines) {
+            // always invalidate layout.
             nullLayouts();
             requestLayout();
-            return true;
         }
-        return false;
     }
 }

@@ -29,7 +29,7 @@
     <item msgid="4613015005934755724">"Połączono"</item>
     <item msgid="3763530049995655072">"Zawieszona"</item>
     <item msgid="7852381437933824454">"Trwa rozłączanie..."</item>
-    <item msgid="5046795712175415059">"Rozłączona"</item>
+    <item msgid="5046795712175415059">"Rozłączono"</item>
     <item msgid="2473654476624070462">"Niepowodzenie"</item>
     <item msgid="9146847076036105115">"Zablokowana"</item>
     <item msgid="4543924085816294893">"Tymczasowo, by uniknąć połączenia o niskiej jakości"</item>
@@ -43,7 +43,7 @@
     <item msgid="1043944043827424501">"Połączono z siecią <xliff:g id="NETWORK_NAME">%1$s</xliff:g>"</item>
     <item msgid="7445993821842009653">"Zawieszona"</item>
     <item msgid="1175040558087735707">"Trwa rozłączanie z siecią <xliff:g id="NETWORK_NAME">%1$s</xliff:g>..."</item>
-    <item msgid="699832486578171722">"Rozłączona"</item>
+    <item msgid="699832486578171722">"Rozłączono"</item>
     <item msgid="522383512264986901">"Niepowodzenie"</item>
     <item msgid="3602596701217484364">"Zablokowana"</item>
     <item msgid="1999413958589971747">"Tymczasowo, by uniknąć połączenia o niskiej jakości"</item>
@@ -63,20 +63,31 @@
     <item msgid="6336372935919715515">"Filtrowanie włączone"</item>
     <item msgid="2779123106632690576">"Włączono"</item>
   </string-array>
+  <string-array name="bt_hci_snoop_log_filters_entries">
+    <item msgid="195768089203590086">"Zostaw wyłącznie nagłówki listy kontroli dostępu"</item>
+    <item msgid="2776218217644557831">"Filtruj pakiety multimediów A2DP"</item>
+    <item msgid="8163235976612675092">"Filtruj kanały RFCOMM"</item>
+  </string-array>
+  <string-array name="bt_hci_snoop_log_profile_filter_entries">
+    <item msgid="3961868665260627524">"Wyłącz"</item>
+    <item msgid="2505973306504851132">"Uzupełnij ciągiem znaków"</item>
+    <item msgid="5883011000629613855">"Zostaw wyłącznie nagłówek"</item>
+    <item msgid="1051534112762023603">"Usuń w całości"</item>
+  </string-array>
   <string-array name="bluetooth_avrcp_versions">
-    <item msgid="8036025277512210160">"AVRCP 1.4 (domyślna)"</item>
+    <item msgid="6603880723315236832">"AVRCP 1.5 (domyślnie)"</item>
     <item msgid="1637054408779685086">"AVRCP 1.3"</item>
-    <item msgid="8317734704797203949">"AVRCP 1.5"</item>
+    <item msgid="5896162189744596291">"AVRCP 1.4"</item>
     <item msgid="7556896992111771426">"AVRCP 1.6"</item>
   </string-array>
   <string-array name="bluetooth_avrcp_version_values">
-    <item msgid="8965800440990431014">"avrcp14"</item>
+    <item msgid="4041937689950033942">"avrcp15"</item>
     <item msgid="1613629084012791988">"avrcp13"</item>
-    <item msgid="4398977131424970917">"avrcp15"</item>
+    <item msgid="99467845610592181">"avrcp14"</item>
     <item msgid="1963366694959681026">"avrcp16"</item>
   </string-array>
   <string-array name="bluetooth_map_versions">
-    <item msgid="8786402640610987099">"MAP 1.2 (domyślny)"</item>
+    <item msgid="8786402640610987099">"MAP 1.2 (domyślnie)"</item>
     <item msgid="6817922176194686449">"MAP 1.3"</item>
     <item msgid="3423518690032737851">"MAP 1.4"</item>
   </string-array>
@@ -86,54 +97,58 @@
     <item msgid="8147982633566548515">"map14"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_titles">
-    <item msgid="2494959071796102843">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="2494959071796102843">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="4055460186095649420">"SBC"</item>
     <item msgid="720249083677397051">"AAC"</item>
     <item msgid="1049450003868150455">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g>"</item>
     <item msgid="2908219194098827570">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g>"</item>
     <item msgid="3825367753087348007">"LDAC"</item>
+    <item msgid="328951785723550863">"LC3"</item>
+    <item msgid="506175145534048710">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_summaries">
-    <item msgid="8868109554557331312">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="8868109554557331312">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="9024885861221697796">"SBC"</item>
     <item msgid="4688890470703790013">"AAC"</item>
     <item msgid="8627333814413492563">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX">aptX™</xliff:g>"</item>
     <item msgid="3517061573669307965">"Audio <xliff:g id="QUALCOMM">Qualcomm®</xliff:g> <xliff:g id="APTX_HD">aptX™ HD</xliff:g>"</item>
     <item msgid="2553206901068987657">"LDAC"</item>
+    <item msgid="3940992993241040716">"LC3"</item>
+    <item msgid="7940970833006181407">"Opus"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_sample_rate_titles">
-    <item msgid="926809261293414607">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="926809261293414607">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="8003118270854840095">"44,1 kHz"</item>
     <item msgid="3208896645474529394">"48,0 kHz"</item>
     <item msgid="8420261949134022577">"88,2 kHz"</item>
     <item msgid="8887519571067543785">"96,0 kHz"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_sample_rate_summaries">
-    <item msgid="2284090879080331090">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="2284090879080331090">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="1872276250541651186">"44,1 kHz"</item>
     <item msgid="8736780630001704004">"48,0 kHz"</item>
     <item msgid="7698585706868856888">"88,2 kHz"</item>
     <item msgid="8946330945963372966">"96,0 kHz"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_bits_per_sample_titles">
-    <item msgid="2574107108483219051">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="2574107108483219051">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="4671992321419011165">"16 bitów/próbkę"</item>
     <item msgid="1933898806184763940">"24 bity/próbkę"</item>
     <item msgid="1212577207279552119">"32 bity/próbkę"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_bits_per_sample_summaries">
-    <item msgid="9196208128729063711">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="9196208128729063711">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="1084497364516370912">"16 bitów/próbkę"</item>
     <item msgid="2077889391457961734">"24 bity/próbkę"</item>
     <item msgid="3836844909491316925">"32 bity/próbkę"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_channel_mode_titles">
-    <item msgid="3014194562841654656">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="3014194562841654656">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="5982952342181788248">"Mono"</item>
     <item msgid="927546067692441494">"Stereo"</item>
   </string-array>
   <string-array name="bluetooth_a2dp_codec_channel_mode_summaries">
-    <item msgid="1997302811102880485">"Użyj wyboru systemu (domyślnie)"</item>
+    <item msgid="1997302811102880485">"Używaj wyboru systemu (domyślnie)"</item>
     <item msgid="8005696114958453588">"Mono"</item>
     <item msgid="1333279807604675720">"Stereo"</item>
   </string-array>
@@ -161,7 +176,7 @@
     <item msgid="2715700596495505626">"256 KB"</item>
     <item msgid="7099386891713159947">"1 MB"</item>
     <item msgid="6069075827077845520">"4 MB"</item>
-    <item msgid="8243549501764402572">"16 MB"</item>
+    <item msgid="6078203297886482480">"8 MB"</item>
   </string-array>
   <string-array name="select_logd_size_lowram_titles">
     <item msgid="1145807928339101085">"Wył."</item>
@@ -175,7 +190,7 @@
     <item msgid="7464037639415220106">"256 KB/bufor dziennika"</item>
     <item msgid="8539423820514360724">"1 MB/bufor dziennika"</item>
     <item msgid="1984761927103140651">"4 MB/bufor dziennika"</item>
-    <item msgid="7892098981256010498">"16 MB/bufor dziennika"</item>
+    <item msgid="2983219471251787208">"8 MB na bufor dziennika"</item>
   </string-array>
   <string-array name="select_logpersist_titles">
     <item msgid="704720725704372366">"Wyłączone"</item>
@@ -242,12 +257,12 @@
     <item msgid="1212561935004167943">"Wyróżnij testowane polecenia rysowania na zielono"</item>
   </string-array>
   <string-array name="track_frame_time_entries">
-    <item msgid="634406443901014984">"Wyłączone"</item>
+    <item msgid="634406443901014984">"Wyłączono"</item>
     <item msgid="1288760936356000927">"Na ekranie w postaci pasków"</item>
     <item msgid="5023908510820531131">"W: <xliff:g id="AS_TYPED_COMMAND">adb shell dumpsys gfxinfo</xliff:g>"</item>
   </string-array>
   <string-array name="debug_hw_overdraw_entries">
-    <item msgid="1968128556747588800">"Wył."</item>
+    <item msgid="1968128556747588800">"Wyłączone"</item>
     <item msgid="3033215374382962216">"Pokaż przerysowywane obszary"</item>
     <item msgid="3474333938380896988">"Pokaż obszary dostosowane do deuteranomalii"</item>
   </string-array>

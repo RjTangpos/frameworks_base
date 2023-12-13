@@ -119,7 +119,7 @@ class ActivityTransitionState {
         for (int i = mExitTransitionCoordinators.size() - 1; i >= 0; i--) {
             WeakReference<ExitTransitionCoordinator> oldRef
                     = mExitTransitionCoordinators.valueAt(i);
-            if (oldRef.get() == null) {
+            if (oldRef.refersTo(null)) {
                 mExitTransitionCoordinators.removeAt(i);
             }
         }
@@ -145,7 +145,10 @@ class ActivityTransitionState {
      * that it is preserved through activty destroy and restore.
      */
     private ArrayList<String> getPendingExitNames() {
-        if (mPendingExitNames == null && mEnterTransitionCoordinator != null) {
+        if (mPendingExitNames == null
+                && mEnterTransitionCoordinator != null
+                && !mEnterTransitionCoordinator.isReturning()
+        ) {
             mPendingExitNames = mEnterTransitionCoordinator.getPendingExitSharedElementNames();
         }
         return mPendingExitNames;
@@ -202,6 +205,7 @@ class ActivityTransitionState {
             restoreExitedViews();
             activity.getWindow().getDecorView().setVisibility(View.VISIBLE);
         }
+        getPendingExitNames(); // Set mPendingExitNames before resetting mEnterTransitionCoordinator
         mEnterTransitionCoordinator = new EnterTransitionCoordinator(activity,
                 resultReceiver, sharedElementNames, mEnterActivityOptions.isReturning(),
                 mEnterActivityOptions.isCrossTask());
@@ -247,14 +251,15 @@ class ActivityTransitionState {
         mEnterActivityOptions = null;
     }
 
-    public void onStop() {
+    public void onStop(Activity activity) {
         restoreExitedViews();
         if (mEnterTransitionCoordinator != null) {
+            getPendingExitNames(); // Set mPendingExitNames before clearing
             mEnterTransitionCoordinator.stop();
             mEnterTransitionCoordinator = null;
         }
         if (mReturnExitCoordinator != null) {
-            mReturnExitCoordinator.stop();
+            mReturnExitCoordinator.stop(activity);
             mReturnExitCoordinator = null;
         }
     }
@@ -275,6 +280,7 @@ class ActivityTransitionState {
                         restoreReenteringViews();
                     } else if (mEnterTransitionCoordinator.isReturning()) {
                         mEnterTransitionCoordinator.runAfterTransitionsComplete(() -> {
+                            getPendingExitNames(); // Set mPendingExitNames before clearing
                             mEnterTransitionCoordinator = null;
                         });
                     }
@@ -331,7 +337,8 @@ class ActivityTransitionState {
                     }
                 }
 
-                mReturnExitCoordinator = new ExitTransitionCoordinator(activity,
+                mReturnExitCoordinator = new ExitTransitionCoordinator(
+                        new ExitTransitionCoordinator.ActivityExitTransitionCallbacks(activity),
                         activity.getWindow(), activity.mEnterTransitionListener, pendingExitNames,
                         null, null, true);
                 if (enterViewsTransition != null && decor != null) {
@@ -341,12 +348,11 @@ class ActivityTransitionState {
                     final ViewGroup finalDecor = decor;
                     OneShotPreDrawListener.add(decor, () -> {
                         if (mReturnExitCoordinator != null) {
-                            mReturnExitCoordinator.startExit(activity.mResultCode,
-                                    activity.mResultData);
+                            mReturnExitCoordinator.startExit(activity);
                         }
                     });
                 } else {
-                    mReturnExitCoordinator.startExit(activity.mResultCode, activity.mResultData);
+                    mReturnExitCoordinator.startExit(activity);
                 }
             }
             return true;
@@ -374,6 +380,7 @@ class ActivityTransitionState {
     }
 
     public void startExitOutTransition(Activity activity, Bundle options) {
+        getPendingExitNames(); // Set mPendingExitNames before clearing mEnterTransitionCoordinator
         mEnterTransitionCoordinator = null;
         if (!activity.getWindow().hasFeature(Window.FEATURE_ACTIVITY_TRANSITIONS) ||
                 mExitTransitionCoordinators == null) {

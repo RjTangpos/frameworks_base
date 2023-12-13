@@ -16,7 +16,10 @@
 
 package android.os;
 
+import static android.annotation.SystemApi.Client.MODULE_LIBRARIES;
+
 import android.annotation.NonNull;
+import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 
 import dalvik.annotation.optimization.CriticalNative;
@@ -90,24 +93,25 @@ public final class Trace {
     /** @hide */
     public static final long TRACE_TAG_DATABASE = 1L << 20;
     /** @hide */
+    @SystemApi(client = MODULE_LIBRARIES)
     public static final long TRACE_TAG_NETWORK = 1L << 21;
     /** @hide */
     public static final long TRACE_TAG_ADB = 1L << 22;
     /** @hide */
     public static final long TRACE_TAG_VIBRATOR = 1L << 23;
     /** @hide */
+    @SystemApi
     public static final long TRACE_TAG_AIDL = 1L << 24;
     /** @hide */
     public static final long TRACE_TAG_NNAPI = 1L << 25;
     /** @hide */
     public static final long TRACE_TAG_RRO = 1L << 26;
     /** @hide */
-    public static final long TRACE_TAG_SYSPROP = 1L << 27;
-    /** @hide */
-    public static final long TRACE_TAG_APEX_MANAGER = 1L << 18;
+    public static final long TRACE_TAG_THERMAL = 1L << 27;
 
     private static final long TRACE_TAG_NOT_READY = 1L << 63;
-    private static final int MAX_SECTION_NAME_LEN = 127;
+    /** @hide **/
+    public static final int MAX_SECTION_NAME_LEN = 127;
 
     // Must be volatile to avoid word tearing.
     // This is only kept in case any apps get this by reflection but do not
@@ -133,6 +137,16 @@ public final class Trace {
     private static native void nativeAsyncTraceBegin(long tag, String name, int cookie);
     @FastNative
     private static native void nativeAsyncTraceEnd(long tag, String name, int cookie);
+    @FastNative
+    private static native void nativeAsyncTraceForTrackBegin(long tag,
+            String trackName, String name, int cookie);
+    @FastNative
+    private static native void nativeAsyncTraceForTrackEnd(long tag,
+            String trackName, int cookie);
+    @FastNative
+    private static native void nativeInstant(long tag, String name);
+    @FastNative
+    private static native void nativeInstantForTrack(long tag, String trackName, String name);
 
     private Trace() {
     }
@@ -146,6 +160,7 @@ public final class Trace {
      * @hide
      */
     @UnsupportedAppUsage
+    @SystemApi(client = MODULE_LIBRARIES)
     public static boolean isTagEnabled(long traceTag) {
         long tags = nativeGetEnabledTags();
         return (tags & traceTag) != 0;
@@ -161,7 +176,8 @@ public final class Trace {
      * @hide
      */
     @UnsupportedAppUsage
-    public static void traceCounter(long traceTag, String counterName, int counterValue) {
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static void traceCounter(long traceTag, @NonNull String counterName, int counterValue) {
         if (isTagEnabled(traceTag)) {
             nativeTraceCounter(traceTag, counterName, counterValue);
         }
@@ -200,7 +216,8 @@ public final class Trace {
      * @hide
      */
     @UnsupportedAppUsage
-    public static void traceBegin(long traceTag, String methodName) {
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static void traceBegin(long traceTag, @NonNull String methodName) {
         if (isTagEnabled(traceTag)) {
             nativeTraceBegin(traceTag, methodName);
         }
@@ -215,6 +232,7 @@ public final class Trace {
      * @hide
      */
     @UnsupportedAppUsage
+    @SystemApi(client = MODULE_LIBRARIES)
     public static void traceEnd(long traceTag) {
         if (isTagEnabled(traceTag)) {
             nativeTraceEnd(traceTag);
@@ -224,9 +242,16 @@ public final class Trace {
     /**
      * Writes a trace message to indicate that a given section of code has
      * begun. Must be followed by a call to {@link #asyncTraceEnd} using the same
-     * tag. Unlike {@link #traceBegin(long, String)} and {@link #traceEnd(long)},
-     * asynchronous events do not need to be nested. The name and cookie used to
-     * begin an event must be used to end it.
+     * tag, name and cookie.
+     *
+     * If two events with the same methodName overlap in time then they *must* have
+     * different cookie values. If they do not, the trace can become corrupted
+     * in unpredictable ways.
+     *
+     * Unlike {@link #traceBegin(long, String)} and {@link #traceEnd(long)},
+     * asynchronous events cannot be not nested. Consider using
+     * {@link #asyncTraceForTrackBegin(long, String, String, int)}
+     * if nested asynchronous events are needed.
      *
      * @param traceTag The trace tag.
      * @param methodName The method name to appear in the trace.
@@ -235,7 +260,8 @@ public final class Trace {
      * @hide
      */
     @UnsupportedAppUsage
-    public static void asyncTraceBegin(long traceTag, String methodName, int cookie) {
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static void asyncTraceBegin(long traceTag, @NonNull String methodName, int cookie) {
         if (isTagEnabled(traceTag)) {
             nativeAsyncTraceBegin(traceTag, methodName, cookie);
         }
@@ -246,6 +272,9 @@ public final class Trace {
      * Must be called exactly once for each call to {@link #asyncTraceBegin(long, String, int)}
      * using the same tag, name and cookie.
      *
+     * See the documentation for {@link #asyncTraceBegin(long, String, int)}.
+     * for inteded usage of this method.
+     *
      * @param traceTag The trace tag.
      * @param methodName The method name to appear in the trace.
      * @param cookie Unique identifier for distinguishing simultaneous events
@@ -253,9 +282,143 @@ public final class Trace {
      * @hide
      */
     @UnsupportedAppUsage
-    public static void asyncTraceEnd(long traceTag, String methodName, int cookie) {
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static void asyncTraceEnd(long traceTag, @NonNull String methodName, int cookie) {
         if (isTagEnabled(traceTag)) {
             nativeAsyncTraceEnd(traceTag, methodName, cookie);
+        }
+    }
+
+
+    /**
+     * Writes a trace message to indicate that a given section of code has
+     * begun. Must be followed by a call to {@link #asyncTraceForTrackEnd} using the same
+     * track name and cookie.
+     *
+     * Events with the same trackName and cookie nest inside each other in the
+     * same way as calls to {@link #traceBegin(long, String)} and
+     * {@link #traceEnd(long)}.
+     *
+     * If two events with the same trackName overlap in time but do not nest
+     * correctly, then they *must* have different cookie values. If they do not,
+     * the trace can become corrupted in unpredictable ways.
+     *
+     * Good Example:
+     *
+     * public void parent() {
+     *   asyncTraceForTrackBegin(TRACE_TAG_ALWAYS, "Track", "parent", mId);
+     *   child()
+     *   asyncTraceForTrackEnd(TRACE_TAG_ALWAYS, "Track", mId);
+     * }
+     *
+     * public void child() {
+     *   asyncTraceForTrackBegin(TRACE_TAG_ALWAYS, "Track", "child", mId);
+     *   // Some code here.
+     *   asyncTraceForTrackEnd(TRACE_TAG_ALWAYS, "Track", mId);
+     * }
+     *
+     * This would be visualized as so:
+     *   [   Parent   ]
+     *     [ Child ]
+     *
+     * Bad Example:
+     *
+     * public static void processData(String dataToProcess) {
+     *   asyncTraceForTrackBegin(TRACE_TAG_ALWAYS, "processDataInParallel", "processData", 0);
+     *   // Some code here.
+     *   asyncTraceForTrackEnd(TRACE_TAG_ALWAYS, "processDataInParallel", 0);
+     * }
+     *
+     * public static void processDataInParallel({@code List<String>} data) {
+     *   ExecutorService executor = Executors.newCachedThreadPool();
+     *   for (String s : data) {
+     *     pool.execute(() -> processData(s));
+     *   }
+     * }
+     *
+     * This is invalid because it's possible for processData to be run many times
+     * in parallel (i.e. processData events overlap) but the same cookie is
+     * provided each time.
+     *
+     * To fix this, specify a different id in each invocation of processData:
+     *
+     * public static void processData(String dataToProcess, int id) {
+     *   asyncTraceForTrackBegin(TRACE_TAG_ALWAYS, "processDataInParallel", "processData", id);
+     *   // Some code here.
+     *   asyncTraceForTrackEnd(TRACE_TAG_ALWAYS, "processDataInParallel", id);
+     * }
+     *
+     * public static void processDataInParallel({@code List<String>} data) {
+     *   ExecutorService executor = Executors.newCachedThreadPool();
+     *   for (int i = 0; i < data.size(); ++i) {
+     *     pool.execute(() -> processData(data.get(i), i));
+     *   }
+     * }
+     *
+     * @param traceTag The trace tag.
+     * @param trackName The track where the event should appear in the trace.
+     * @param methodName The method name to appear in the trace.
+     * @param cookie Unique identifier used for nesting events on a single
+     *               track. Events which overlap without nesting on the same
+     *               track must have different values for cookie.
+     *
+     * @hide
+     */
+    public static void asyncTraceForTrackBegin(long traceTag,
+            @NonNull String trackName, @NonNull String methodName, int cookie) {
+        if (isTagEnabled(traceTag)) {
+            nativeAsyncTraceForTrackBegin(traceTag, trackName, methodName, cookie);
+        }
+    }
+
+    /**
+     * Writes a trace message to indicate that the current method has ended.
+     * Must be called exactly once for each call to
+     * {@link #asyncTraceForTrackBegin(long, String, String, int)}
+     * using the same tag, track name, and cookie.
+     *
+     * See the documentation for {@link #asyncTraceForTrackBegin(long, String, String, int)}.
+     * for inteded usage of this method.
+     *
+     * @param traceTag The trace tag.
+     * @param trackName The track where the event should appear in the trace.
+     * @param cookie Unique identifier used for nesting events on a single
+     *               track. Events which overlap without nesting on the same
+     *               track must have different values for cookie.
+     *
+     * @hide
+     */
+    public static void asyncTraceForTrackEnd(long traceTag,
+            @NonNull String trackName, int cookie) {
+        if (isTagEnabled(traceTag)) {
+            nativeAsyncTraceForTrackEnd(traceTag, trackName, cookie);
+        }
+    }
+
+    /**
+     * Writes a trace message to indicate that a given section of code was invoked.
+     *
+     * @param traceTag The trace tag.
+     * @param methodName The method name to appear in the trace.
+     * @hide
+     */
+    public static void instant(long traceTag, String methodName) {
+        if (isTagEnabled(traceTag)) {
+            nativeInstant(traceTag, methodName);
+        }
+    }
+
+    /**
+     * Writes a trace message to indicate that a given section of code was invoked.
+     *
+     * @param traceTag The trace tag.
+     * @param trackName The track where the event should appear in the trace.
+     * @param methodName The method name to appear in the trace.
+     * @hide
+     */
+    public static void instantForTrack(long traceTag, String trackName, String methodName) {
+        if (isTagEnabled(traceTag)) {
+            nativeInstantForTrack(traceTag, trackName, methodName);
         }
     }
 

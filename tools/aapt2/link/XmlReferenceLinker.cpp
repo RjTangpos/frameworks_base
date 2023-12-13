@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 
-#include "link/Linkers.h"
-
-#include "androidfw/ResourceTypes.h"
-
-#include "Diagnostics.h"
 #include "ResourceUtils.h"
 #include "SdkConstants.h"
 #include "ValueVisitor.h"
+#include "androidfw/IDiagnostics.h"
+#include "androidfw/ResourceTypes.h"
+#include "link/Linkers.h"
 #include "link/ReferenceLinker.h"
 #include "process/IResourceTableConsumer.h"
 #include "process/SymbolTable.h"
@@ -33,49 +31,18 @@ namespace aapt {
 
 namespace {
 
-// Visits all references (including parents of styles, references in styles, arrays, etc) and
-// links their symbolic name to their Resource ID, performing mangling and package aliasing
-// as needed.
-class ReferenceVisitor : public DescendingValueVisitor {
- public:
-  using DescendingValueVisitor::Visit;
-
-  ReferenceVisitor(const CallSite& callsite, IAaptContext* context, SymbolTable* symbols,
-                   xml::IPackageDeclStack* decls)
-      : callsite_(callsite), context_(context), symbols_(symbols), decls_(decls), error_(false) {}
-
-  void Visit(Reference* ref) override {
-    if (!ReferenceLinker::LinkReference(callsite_, ref, context_, symbols_, decls_)) {
-      error_ = true;
-    }
-  }
-
-  bool HasError() const {
-    return error_;
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ReferenceVisitor);
-
-  const CallSite& callsite_;
-  IAaptContext* context_;
-  SymbolTable* symbols_;
-  xml::IPackageDeclStack* decls_;
-  bool error_;
-};
-
 // Visits each xml Element and compiles the attributes within.
 class XmlVisitor : public xml::PackageAwareVisitor {
  public:
   using xml::PackageAwareVisitor::Visit;
 
-  XmlVisitor(const Source& source, const CallSite& callsite, IAaptContext* context,
-             SymbolTable* symbols)
+  XmlVisitor(const android::Source& source, android::StringPool* pool, const CallSite& callsite,
+             IAaptContext* context, ResourceTable* table, SymbolTable* symbols)
       : source_(source),
         callsite_(callsite),
         context_(context),
         symbols_(symbols),
-        reference_visitor_(callsite, context, symbols, this) {
+        reference_transformer_(callsite, context, symbols, pool, table, this) {
   }
 
   void Visit(xml::Element* el) override {
@@ -92,14 +59,14 @@ class XmlVisitor : public xml::PackageAwareVisitor {
       }
     }
 
-    const Source source = source_.WithLine(el->line_number);
+    const android::Source source = source_.WithLine(el->line_number);
     for (xml::Attribute& attr : el->attributes) {
       // If the attribute has no namespace, interpret values as if
       // they were assigned to the default Attribute.
 
       const Attribute* attribute = &default_attribute;
 
-      if (Maybe<xml::ExtractedPackage> maybe_package =
+      if (std::optional<xml::ExtractedPackage> maybe_package =
               xml::ExtractPackageFromNamespace(attr.namespace_uri)) {
         // There is a valid package name for this attribute. We will look this up.
         Reference attr_ref(
@@ -111,7 +78,7 @@ class XmlVisitor : public xml::PackageAwareVisitor {
             ReferenceLinker::CompileXmlAttribute(attr_ref, callsite_, context_, symbols_, &err_str);
 
         if (!attr.compiled_attribute) {
-          DiagMessage error_msg(source);
+          android::DiagMessage error_msg(source);
           error_msg << "attribute ";
           ReferenceLinker::WriteAttributeName(attr_ref, callsite_, this, &error_msg);
           error_msg << " " << err_str;
@@ -127,10 +94,10 @@ class XmlVisitor : public xml::PackageAwareVisitor {
       if (attr.compiled_value) {
         // With a compiledValue, we must resolve the reference and assign it an ID.
         attr.compiled_value->SetSource(source);
-        attr.compiled_value->Accept(&reference_visitor_);
+        attr.compiled_value = attr.compiled_value->Transform(reference_transformer_);
       } else if ((attribute->type_mask & android::ResTable_map::TYPE_STRING) == 0) {
         // We won't be able to encode this as a string.
-        DiagMessage msg(source);
+        android::DiagMessage msg(source);
         msg << "'" << attr.value << "' is incompatible with attribute " << attr.name << " "
             << *attribute;
         context_->GetDiagnostics()->Error(msg);
@@ -143,18 +110,18 @@ class XmlVisitor : public xml::PackageAwareVisitor {
   }
 
   bool HasError() {
-    return error_ || reference_visitor_.HasError();
+    return error_ || reference_transformer_.HasError();
   }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(XmlVisitor);
 
-  Source source_;
+  android::Source source_;
   const CallSite& callsite_;
   IAaptContext* context_;
   SymbolTable* symbols_;
 
-  ReferenceVisitor reference_visitor_;
+  ReferenceLinkerTransformer reference_transformer_;
   bool error_ = false;
 };
 
@@ -173,7 +140,8 @@ bool XmlReferenceLinker::Consume(IAaptContext* context, xml::XmlResource* resour
     callsite.package = context->GetCompilationPackage();
   }
 
-  XmlVisitor visitor(resource->file.source, callsite, context, context->GetExternalSymbols());
+  XmlVisitor visitor(resource->file.source, &resource->string_pool, callsite, context, table_,
+                     context->GetExternalSymbols());
   if (resource->root) {
     resource->root->Accept(&visitor);
     return !visitor.HasError();

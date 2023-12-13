@@ -15,6 +15,12 @@
  */
 package com.android.keyguard;
 
+import static androidx.constraintlayout.widget.ConstraintSet.BOTTOM;
+import static androidx.constraintlayout.widget.ConstraintSet.END;
+import static androidx.constraintlayout.widget.ConstraintSet.PARENT_ID;
+import static androidx.constraintlayout.widget.ConstraintSet.START;
+import static androidx.constraintlayout.widget.ConstraintSet.TOP;
+
 import android.annotation.Nullable;
 import android.app.admin.IKeyguardCallback;
 import android.app.admin.IKeyguardClient;
@@ -30,11 +36,19 @@ import android.util.Log;
 import android.view.SurfaceControlViewHost;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import android.view.ViewGroup;
+import android.view.View;
+
+import androidx.constraintlayout.widget.ConstraintLayout;
+import androidx.constraintlayout.widget.ConstraintSet;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
+import com.android.keyguard.dagger.KeyguardBouncerScope;
+import com.android.systemui.dagger.qualifiers.Main;
 
 import java.util.NoSuchElementException;
+
+import javax.inject.Inject;
 
 /**
  * Encapsulates all logic for secondary lockscreen state management.
@@ -44,7 +58,7 @@ public class AdminSecondaryLockScreenController {
     private static final int REMOTE_CONTENT_READY_TIMEOUT_MILLIS = 500;
     private final KeyguardUpdateMonitor mUpdateMonitor;
     private final Context mContext;
-    private final ViewGroup mParent;
+    private final ConstraintLayout mParent;
     private AdminSecurityView mView;
     private Handler mHandler;
     private IKeyguardClient mClient;
@@ -142,15 +156,16 @@ public class AdminSecondaryLockScreenController {
         }
     };
 
-    public AdminSecondaryLockScreenController(Context context, ViewGroup parent,
+    private AdminSecondaryLockScreenController(Context context, KeyguardSecurityContainer parent,
             KeyguardUpdateMonitor updateMonitor, KeyguardSecurityCallback callback,
-            Handler handler) {
+            @Main Handler handler) {
         mContext = context;
         mHandler = handler;
         mParent = parent;
         mUpdateMonitor = updateMonitor;
         mKeyguardCallback = callback;
         mView = new AdminSecurityView(mContext, mSurfaceHolderCallback);
+        mView.setId(View.generateViewId());
     }
 
     /**
@@ -162,6 +177,15 @@ public class AdminSecondaryLockScreenController {
         }
         if (!mView.isAttachedToWindow()) {
             mParent.addView(mView);
+            ConstraintSet constraintSet = new ConstraintSet();
+            constraintSet.clone(mParent);
+            constraintSet.connect(mView.getId(), TOP, PARENT_ID, TOP);
+            constraintSet.connect(mView.getId(), START, PARENT_ID, START);
+            constraintSet.connect(mView.getId(), END, PARENT_ID, END);
+            constraintSet.connect(mView.getId(), BOTTOM, PARENT_ID, BOTTOM);
+            constraintSet.constrainHeight(mView.getId(), ConstraintSet.MATCH_CONSTRAINT);
+            constraintSet.constrainWidth(mView.getId(), ConstraintSet.MATCH_CONSTRAINT);
+            constraintSet.applyTo(mParent);
         }
     }
 
@@ -204,7 +228,7 @@ public class AdminSecondaryLockScreenController {
             hide();
             if (mKeyguardCallback != null) {
                 mKeyguardCallback.dismiss(/* securityVerified= */ true, userId,
-                        /* bypassSecondaryLockScreen= */true);
+                        /* bypassSecondaryLockScreen= */true, SecurityMode.Invalid);
             }
         }
     }
@@ -232,6 +256,28 @@ public class AdminSecondaryLockScreenController {
         protected void onDetachedFromWindow() {
             super.onDetachedFromWindow();
             getHolder().removeCallback(mSurfaceHolderCallback);
+        }
+    }
+
+    @KeyguardBouncerScope
+    public static class Factory {
+        private final Context mContext;
+        private final KeyguardSecurityContainer mParent;
+        private final KeyguardUpdateMonitor mUpdateMonitor;
+        private final Handler mHandler;
+
+        @Inject
+        public Factory(Context context, KeyguardSecurityContainer parent,
+                KeyguardUpdateMonitor updateMonitor, @Main Handler handler) {
+            mContext = context;
+            mParent = parent;
+            mUpdateMonitor = updateMonitor;
+            mHandler = handler;
+        }
+
+        public AdminSecondaryLockScreenController create(KeyguardSecurityCallback callback) {
+            return new AdminSecondaryLockScreenController(mContext, mParent, mUpdateMonitor,
+                    callback, mHandler);
         }
     }
 }

@@ -1,8 +1,11 @@
 package android.telephony;
 
 import android.annotation.IntDef;
+import android.net.NetworkAgent;
+import android.net.NetworkCapabilities;
 import android.telecom.Connection;
 import android.telephony.data.ApnSetting;
+import android.telephony.ims.ImsCallProfile;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -125,7 +128,9 @@ public class Annotation {
             ApnSetting.TYPE_EMERGENCY,
             ApnSetting.TYPE_MCX,
             ApnSetting.TYPE_XCAP,
-            // ApnSetting.TYPE_ENTERPRISE
+            ApnSetting.TYPE_BIP,
+            ApnSetting.TYPE_VSIM,
+            ApnSetting.TYPE_ENTERPRISE
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ApnType {
@@ -447,6 +452,9 @@ public class Annotation {
             DataFailCause.VSNCP_RECONNECT_NOT_ALLOWED,
             DataFailCause.IPV6_PREFIX_UNAVAILABLE,
             DataFailCause.HANDOFF_PREFERENCE_CHANGED,
+            DataFailCause.SLICE_REJECTED,
+            DataFailCause.MATCH_ALL_RULE_NOT_ALLOWED,
+            DataFailCause.ALL_MATCHING_RULES_FAILED,
             DataFailCause.OEM_DCFAILCAUSE_1,
             DataFailCause.OEM_DCFAILCAUSE_2,
             DataFailCause.OEM_DCFAILCAUSE_3,
@@ -487,7 +495,7 @@ public class Annotation {
             PreciseCallState.PRECISE_CALL_STATE_HOLDING,
             PreciseCallState.PRECISE_CALL_STATE_DIALING,
             PreciseCallState.PRECISE_CALL_STATE_ALERTING,
-            PreciseCallState. PRECISE_CALL_STATE_INCOMING,
+            PreciseCallState.PRECISE_CALL_STATE_INCOMING,
             PreciseCallState.PRECISE_CALL_STATE_WAITING,
             PreciseCallState.PRECISE_CALL_STATE_DISCONNECTED,
             PreciseCallState.PRECISE_CALL_STATE_DISCONNECTING})
@@ -648,7 +656,7 @@ public class Annotation {
             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_LTE_CA,
             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_LTE_ADVANCED_PRO,
             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA,
-            TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA_MMWAVE})
+            TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_ADVANCED})
     public @interface OverrideNetworkType {}
 
     /**
@@ -661,4 +669,104 @@ public class Annotation {
         TelephonyManager.THERMAL_MITIGATION_RESULT_INVALID_STATE,
         TelephonyManager.THERMAL_MITIGATION_RESULT_UNKNOWN_ERROR})
     public @interface ThermalMitigationResult {}
+
+    /**
+     * Per Android API guideline 8.15, annotation can't be public APIs. So duplicate
+     * android.net.NetworkCapabilities.NetCapability here. Must update here when new capabilities
+     * are added in {@link NetworkCapabilities}.
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = { "NET_CAPABILITY_" }, value = {
+            NetworkCapabilities.NET_CAPABILITY_MMS,
+            NetworkCapabilities.NET_CAPABILITY_SUPL,
+            NetworkCapabilities.NET_CAPABILITY_DUN,
+            NetworkCapabilities.NET_CAPABILITY_FOTA,
+            NetworkCapabilities.NET_CAPABILITY_IMS,
+            NetworkCapabilities.NET_CAPABILITY_CBS,
+            NetworkCapabilities.NET_CAPABILITY_WIFI_P2P,
+            NetworkCapabilities.NET_CAPABILITY_IA,
+            NetworkCapabilities.NET_CAPABILITY_RCS,
+            NetworkCapabilities.NET_CAPABILITY_XCAP,
+            NetworkCapabilities.NET_CAPABILITY_EIMS,
+            NetworkCapabilities.NET_CAPABILITY_NOT_METERED,
+            NetworkCapabilities.NET_CAPABILITY_INTERNET,
+            NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED,
+            NetworkCapabilities.NET_CAPABILITY_TRUSTED,
+            NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+            NetworkCapabilities.NET_CAPABILITY_VALIDATED,
+            NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL,
+            NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING,
+            NetworkCapabilities.NET_CAPABILITY_FOREGROUND,
+            NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED,
+            NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED,
+            NetworkCapabilities.NET_CAPABILITY_OEM_PAID,
+            NetworkCapabilities.NET_CAPABILITY_MCX,
+            NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY,
+            NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED,
+            NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE,
+            NetworkCapabilities.NET_CAPABILITY_VEHICLE_INTERNAL,
+            NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED,
+            NetworkCapabilities.NET_CAPABILITY_ENTERPRISE,
+            NetworkCapabilities.NET_CAPABILITY_VSIM,
+            NetworkCapabilities.NET_CAPABILITY_BIP,
+            NetworkCapabilities.NET_CAPABILITY_HEAD_UNIT,
+            NetworkCapabilities.NET_CAPABILITY_MMTEL,
+            NetworkCapabilities.NET_CAPABILITY_PRIORITIZE_LATENCY,
+            NetworkCapabilities.NET_CAPABILITY_PRIORITIZE_BANDWIDTH
+    })
+    public @interface NetCapability { }
+
+    /**
+     * Per Android API guideline 8.15, annotation can't be public APIs. So duplicate
+     * android.net.NetworkAgent.ValidationStatus here. Must update here when new validation status
+     * are added in {@link NetworkAgent}.
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = { "VALIDATION_STATUS_" }, value = {
+            NetworkAgent.VALIDATION_STATUS_VALID,
+            NetworkAgent.VALIDATION_STATUS_NOT_VALID
+    })
+    public @interface ValidationStatus {}
+
+    /**
+     * IMS call Service types
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = { "SERVICE_TYPE_" }, value = {
+            ImsCallProfile.SERVICE_TYPE_NONE,
+            ImsCallProfile.SERVICE_TYPE_NORMAL,
+            ImsCallProfile.SERVICE_TYPE_EMERGENCY,
+    })
+    public @interface ImsCallServiceType {}
+
+    /**
+     * IMS call types
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = { "CALL_TYPE_" }, value = {
+            ImsCallProfile.CALL_TYPE_NONE,
+            ImsCallProfile.CALL_TYPE_VOICE_N_VIDEO,
+            ImsCallProfile.CALL_TYPE_VOICE,
+            ImsCallProfile.CALL_TYPE_VIDEO_N_VOICE,
+            ImsCallProfile.CALL_TYPE_VT,
+            ImsCallProfile.CALL_TYPE_VT_TX,
+            ImsCallProfile.CALL_TYPE_VT_RX,
+            ImsCallProfile.CALL_TYPE_VT_NODIR,
+            ImsCallProfile.CALL_TYPE_VS,
+            ImsCallProfile.CALL_TYPE_VS_TX,
+            ImsCallProfile.CALL_TYPE_VS_RX,
+    })
+    public @interface ImsCallType {}
+
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = { "NET_CAPABILITY_ENTERPRISE_SUB_LEVEL" }, value = {
+            NetworkCapabilities.NET_ENTERPRISE_ID_1,
+            NetworkCapabilities.NET_ENTERPRISE_ID_2,
+            NetworkCapabilities.NET_ENTERPRISE_ID_3,
+            NetworkCapabilities.NET_ENTERPRISE_ID_4,
+            NetworkCapabilities.NET_ENTERPRISE_ID_5
+    })
+
+    public @interface EnterpriseId {}
 }

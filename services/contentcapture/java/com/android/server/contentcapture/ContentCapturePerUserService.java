@@ -35,6 +35,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.ActivityManagerInternal;
+import android.app.assist.ActivityId;
 import android.app.assist.AssistContent;
 import android.app.assist.AssistStructure;
 import android.content.ComponentName;
@@ -56,8 +57,10 @@ import android.service.contentcapture.FlushMetrics;
 import android.service.contentcapture.IContentCaptureServiceCallback;
 import android.service.contentcapture.IDataShareCallback;
 import android.service.contentcapture.SnapshotData;
+import android.service.voice.VoiceInteractionManagerInternal;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.EventLog;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.util.SparseBooleanArray;
@@ -67,6 +70,7 @@ import android.view.contentcapture.DataShareRequest;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.os.IResultReceiver;
+import com.android.internal.util.CollectionUtils;
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.server.LocalServices;
 import com.android.server.contentcapture.RemoteContentCaptureService.ContentCaptureServiceCallbacks;
@@ -85,6 +89,10 @@ final class ContentCapturePerUserService
         implements ContentCaptureServiceCallbacks {
 
     private static final String TAG = ContentCapturePerUserService.class.getSimpleName();
+
+    private static final int EVENT_LOG_CONNECT_STATE_DIED = 0;
+    static final int EVENT_LOG_CONNECT_STATE_CONNECTED = 1;
+    static final int EVENT_LOG_CONNECT_STATE_DISCONNECTED = 2;
 
     @GuardedBy("mLock")
     private final SparseArray<ContentCaptureServerSession> mSessions = new SparseArray<>();
@@ -188,6 +196,12 @@ final class ContentCapturePerUserService
         Slog.w(TAG, "remote service died: " + service);
         synchronized (mLock) {
             mZombie = true;
+            ComponentName serviceComponent = getServiceComponentName();
+            writeServiceEvent(
+                    FrameworkStatsLog.CONTENT_CAPTURE_SERVICE_EVENTS__EVENT__ON_REMOTE_SERVICE_DIED,
+                    serviceComponent);
+            EventLog.writeEvent(EventLogTags.CC_CONNECT_STATE_CHANGED, mUserId,
+                    EVENT_LOG_CONNECT_STATE_DIED, 0);
         }
     }
 
@@ -241,6 +255,7 @@ final class ContentCapturePerUserService
 
     @GuardedBy("mLock")
     public void startSessionLocked(@NonNull IBinder activityToken,
+            @NonNull IBinder shareableActivityToken,
             @NonNull ActivityPresentationInfo activityPresentationInfo, int sessionId, int uid,
             int flags, @NonNull IResultReceiver clientReceiver) {
         if (activityPresentationInfo == null) {
@@ -277,7 +292,7 @@ final class ContentCapturePerUserService
             writeSessionEvent(sessionId,
                     FrameworkStatsLog.CONTENT_CAPTURE_SESSION_EVENTS__EVENT__SESSION_NOT_CREATED,
                     STATE_DISABLED | STATE_NO_SERVICE, serviceComponentName,
-                    componentName, /* isChildSession= */ false);
+                    /* isChildSession= */ false);
             return;
         }
         if (serviceComponentName == null) {
@@ -301,7 +316,7 @@ final class ContentCapturePerUserService
             writeSessionEvent(sessionId,
                     FrameworkStatsLog.CONTENT_CAPTURE_SESSION_EVENTS__EVENT__SESSION_NOT_CREATED,
                     STATE_DISABLED | STATE_NOT_WHITELISTED, serviceComponentName,
-                    componentName, /* isChildSession= */ false);
+                    /* isChildSession= */ false);
             return;
         }
 
@@ -315,7 +330,7 @@ final class ContentCapturePerUserService
             writeSessionEvent(sessionId,
                     FrameworkStatsLog.CONTENT_CAPTURE_SESSION_EVENTS__EVENT__SESSION_NOT_CREATED,
                     STATE_DISABLED | STATE_DUPLICATED_ID,
-                    serviceComponentName, componentName, /* isChildSession= */ false);
+                    serviceComponentName, /* isChildSession= */ false);
             return;
         }
 
@@ -332,7 +347,7 @@ final class ContentCapturePerUserService
             writeSessionEvent(sessionId,
                     FrameworkStatsLog.CONTENT_CAPTURE_SESSION_EVENTS__EVENT__SESSION_NOT_CREATED,
                     STATE_DISABLED | STATE_NO_SERVICE, serviceComponentName,
-                    componentName, /* isChildSession= */ false);
+                    /* isChildSession= */ false);
             return;
         }
 
@@ -340,8 +355,8 @@ final class ContentCapturePerUserService
         mRemoteService.ensureBoundLocked();
 
         final ContentCaptureServerSession newSession = new ContentCaptureServerSession(mLock,
-                activityToken, this, componentName, clientReceiver, taskId, displayId, sessionId,
-                uid, flags);
+                activityToken, new ActivityId(taskId, shareableActivityToken), this, componentName,
+                clientReceiver, taskId, displayId, sessionId, uid, flags);
         if (mMaster.verbose) {
             Slog.v(TAG, "startSession(): new session for "
                     + ComponentName.flattenToShortString(componentName) + " and id " + sessionId);
@@ -413,12 +428,25 @@ final class ContentCapturePerUserService
         }
         if (callingUid != packageUid && !LocalServices.getService(ActivityManagerInternal.class)
                 .hasRunningActivity(callingUid, packageName)) {
-            final String[] packages = pm.getPackagesForUid(callingUid);
-            final String callingPackage = packages != null ? packages[0] : "uid-" + callingUid;
-            Slog.w(TAG, "App (package=" + callingPackage + ", UID=" + callingUid
-                    + ") passed package (" + packageName + ") owned by UID " + packageUid);
 
-            throw new SecurityException("Invalid package: " + packageName);
+            VoiceInteractionManagerInternal.HotwordDetectionServiceIdentity
+                    hotwordDetectionServiceIdentity =
+                    LocalServices.getService(VoiceInteractionManagerInternal.class)
+                            .getHotwordDetectionServiceIdentity();
+
+            boolean isHotwordDetectionServiceCall =
+                    hotwordDetectionServiceIdentity != null
+                            && callingUid == hotwordDetectionServiceIdentity.getIsolatedUid()
+                            && packageUid == hotwordDetectionServiceIdentity.getOwnerUid();
+
+            if (!isHotwordDetectionServiceCall) {
+                final String[] packages = pm.getPackagesForUid(callingUid);
+                final String callingPackage = packages != null ? packages[0] : "uid-" + callingUid;
+                Slog.w(TAG, "App (package=" + callingPackage + ", UID=" + callingUid
+                        + ") passed package (" + packageName + ") owned by UID " + packageUid);
+
+                throw new SecurityException("Invalid package: " + packageName);
+            }
         }
     }
 
@@ -427,8 +455,8 @@ final class ContentCapturePerUserService
             @NonNull Bundle data) {
         final int id = getSessionId(activityToken);
         final Bundle assistData = data.getBundle(ASSIST_KEY_DATA);
-        final AssistStructure assistStructure = data.getParcelable(ASSIST_KEY_STRUCTURE);
-        final AssistContent assistContent = data.getParcelable(ASSIST_KEY_CONTENT);
+        final AssistStructure assistStructure = data.getParcelable(ASSIST_KEY_STRUCTURE, android.app.assist.AssistStructure.class);
+        final AssistContent assistContent = data.getParcelable(ASSIST_KEY_CONTENT, android.app.assist.AssistContent.class);
         final SnapshotData snapshotData = new SnapshotData(assistData,
                 assistStructure, assistContent);
         if (id != NO_SESSION_ID) {
@@ -510,13 +538,23 @@ final class ContentCapturePerUserService
         return mConditionsByPkg.get(packageName);
     }
 
+    @Nullable
+    ArraySet<String> getContentCaptureAllowlist() {
+        ArraySet<String> allowPackages;
+        synchronized (mLock) {
+            allowPackages = mMaster.mGlobalContentCaptureOptions.getWhitelistedPackages(mUserId);
+        }
+        return allowPackages;
+    }
+
     @GuardedBy("mLock")
-    void onActivityEventLocked(@NonNull ComponentName componentName, @ActivityEventType int type) {
+    void onActivityEventLocked(@NonNull ActivityId activityId,
+            @NonNull ComponentName componentName, @ActivityEventType int type) {
         if (mRemoteService == null) {
             if (mMaster.debug) Slog.d(mTag, "onActivityEvent(): no remote service");
             return;
         }
-        final ActivityEvent event = new ActivityEvent(componentName, type);
+        final ActivityEvent event = new ActivityEvent(activityId, componentName, type);
 
         if (mMaster.verbose) Slog.v(mTag, "onActivityEvent(): " + event);
 
@@ -595,8 +633,18 @@ final class ContentCapturePerUserService
                         ? "null_activities" : activities.size() + " activities") + ")"
                         + " for user " + mUserId);
             }
+
+            ArraySet<String> oldList =
+                    mMaster.mGlobalContentCaptureOptions.getWhitelistedPackages(mUserId);
+            EventLog.writeEvent(EventLogTags.CC_CURRENT_ALLOWLIST, mUserId,
+                    CollectionUtils.size(oldList));
+
             mMaster.mGlobalContentCaptureOptions.setWhitelist(mUserId, packages, activities);
+            EventLog.writeEvent(EventLogTags.CC_SET_ALLOWLIST, mUserId,
+                    CollectionUtils.size(packages), CollectionUtils.size(activities));
             writeSetWhitelistEvent(getServiceComponentName(), packages, activities);
+
+            updateContentCaptureOptions(oldList);
 
             // Must disable session that are not the allowlist anymore...
             final int numSessions = mSessions.size();
@@ -666,8 +714,28 @@ final class ContentCapturePerUserService
         @Override
         public void writeSessionFlush(int sessionId, ComponentName app, FlushMetrics flushMetrics,
                 ContentCaptureOptions options, int flushReason) {
-            ContentCaptureMetricsLogger.writeSessionFlush(sessionId, getServiceComponentName(), app,
+            ContentCaptureMetricsLogger.writeSessionFlush(sessionId, getServiceComponentName(),
                     flushMetrics, options, flushReason);
+        }
+
+        /** Updates {@link ContentCaptureOptions} for all newly added packages on allowlist. */
+        private void updateContentCaptureOptions(@Nullable ArraySet<String> oldList) {
+            ArraySet<String> adding = mMaster.mGlobalContentCaptureOptions
+                    .getWhitelistedPackages(mUserId);
+            int addingCount = CollectionUtils.size(adding);
+            EventLog.writeEvent(EventLogTags.CC_CURRENT_ALLOWLIST, mUserId, addingCount);
+
+            if (oldList != null && adding != null) {
+                adding.removeAll(oldList);
+            }
+            addingCount = CollectionUtils.size(adding);
+            EventLog.writeEvent(EventLogTags.CC_UPDATE_OPTIONS, mUserId, addingCount);
+            for (int i = 0; i < addingCount; i++) {
+                String packageName = adding.valueAt(i);
+                ContentCaptureOptions options = mMaster.mGlobalContentCaptureOptions
+                        .getOptions(mUserId, packageName);
+                mMaster.updateOptions(packageName, options);
+            }
         }
     }
 }

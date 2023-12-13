@@ -16,10 +16,14 @@
 
 #include "tests/common/TestUtils.h"
 
-#include <SkBlurDrawLooper.h>
+#include <SkBitmap.h>
+#include <SkBlendMode.h>
+#include <SkColor.h>
 #include <SkColorMatrixFilter.h>
 #include <SkColorSpace.h>
-#include <SkImagePriv.h>
+#include <SkImageInfo.h>
+#include <SkPaint.h>
+#include <SkPath.h>
 #include <SkPathOps.h>
 #include <SkShader.h>
 #include <gtest/gtest.h>
@@ -62,11 +66,11 @@ TEST(SkiaBehavior, lightingColorFilter_simplify) {
 TEST(SkiaBehavior, porterDuffCreateIsCached) {
     SkPaint paint;
     paint.setBlendMode(SkBlendMode::kOverlay);
-    auto expected = paint.getBlendMode();
+    auto expected = paint.asBlendMode();
     paint.setBlendMode(SkBlendMode::kClear);
-    ASSERT_NE(expected, paint.getBlendMode());
+    ASSERT_NE(expected, paint.asBlendMode());
     paint.setBlendMode(SkBlendMode::kOverlay);
-    ASSERT_EQ(expected, paint.getBlendMode());
+    ASSERT_EQ(expected, paint.asBlendMode());
 }
 
 TEST(SkiaBehavior, pathIntersection) {
@@ -85,15 +89,3 @@ TEST(SkiaBehavior, srgbColorSpaceIsSingleton) {
     ASSERT_EQ(sRGB1.get(), sRGB2.get());
 }
 
-TEST(SkiaBehavior, blurDrawLooper) {
-    sk_sp<SkDrawLooper> looper = SkBlurDrawLooper::Make(SK_ColorRED, 5.0f, 3.0f, 4.0f);
-
-    SkDrawLooper::BlurShadowRec blur;
-    bool success = looper->asABlurShadow(&blur);
-    ASSERT_TRUE(success);
-
-    ASSERT_EQ(SK_ColorRED, blur.fColor);
-    ASSERT_EQ(5.0f, blur.fSigma);
-    ASSERT_EQ(3.0f, blur.fOffset.fX);
-    ASSERT_EQ(4.0f, blur.fOffset.fY);
-}

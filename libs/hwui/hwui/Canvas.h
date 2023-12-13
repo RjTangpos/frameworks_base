@@ -16,23 +16,28 @@
 
 #pragma once
 
-#include <cutils/compiler.h>
-#include <utils/Functor.h>
-
-#include <androidfw/ResourceTypes.h>
-#include "GlFunctorLifecycleListener.h"
-#include "Properties.h"
-#include "utils/Macros.h"
-
+#include <SaveFlags.h>
 #include <SkBitmap.h>
 #include <SkCanvas.h>
 #include <SkMatrix.h>
+#include <androidfw/ResourceTypes.h>
+#include <cutils/compiler.h>
+#include <utils/Functor.h>
+
+#include "Properties.h"
+#include "pipeline/skia/AnimatedDrawables.h"
+#include "utils/Macros.h"
 
 class SkAnimatedImage;
+enum class SkBlendMode;
 class SkCanvasState;
+class SkRRect;
+class SkRuntimeShaderBuilder;
 class SkVertices;
+class Mesh;
 
 namespace minikin {
+class Font;
 class Layout;
 class MeasuredText;
 enum class Bidi : uint8_t;
@@ -46,34 +51,6 @@ class CanvasPropertyPaint;
 class CanvasPropertyPrimitive;
 class DeferredLayerUpdater;
 class RenderNode;
-
-namespace skiapipeline {
-class SkiaDisplayList;
-}
-
-/**
- * Data structure that holds the list of commands used in display list stream
- */
-using DisplayList = skiapipeline::SkiaDisplayList;
-}
-
-namespace SaveFlags {
-
-// These must match the corresponding Canvas API constants.
-enum {
-    Matrix = 0x01,
-    Clip = 0x02,
-    HasAlphaLayer = 0x04,
-    ClipToLayer = 0x10,
-
-    // Helper constant
-    MatrixClip = Matrix | Clip,
-};
-typedef uint32_t Flags;
-
-}  // namespace SaveFlags
-
-namespace uirenderer {
 namespace VectorDrawable {
 class Tree;
 }
@@ -151,8 +128,8 @@ public:
 
     virtual void resetRecording(int width, int height,
                                 uirenderer::RenderNode* renderNode = nullptr) = 0;
-    virtual uirenderer::DisplayList* finishRecording() = 0;
-    virtual void insertReorderBarrier(bool enableReorder) = 0;
+    virtual void finishRecording(uirenderer::RenderNode* destination) = 0;
+    virtual void enableZ(bool enableZ) = 0;
 
     bool isHighContrastText() const { return uirenderer::Properties::enableHighContrastText; }
 
@@ -167,14 +144,16 @@ public:
                             uirenderer::CanvasPropertyPrimitive* y,
                             uirenderer::CanvasPropertyPrimitive* radius,
                             uirenderer::CanvasPropertyPaint* paint) = 0;
+    virtual void drawRipple(const uirenderer::skiapipeline::RippleDrawableParams& params) = 0;
 
     virtual void drawLayer(uirenderer::DeferredLayerUpdater* layerHandle) = 0;
     virtual void drawRenderNode(uirenderer::RenderNode* renderNode) = 0;
-    virtual void callDrawGLFunction(Functor* functor,
-                                    uirenderer::GlFunctorLifecycleListener* listener) = 0;
+
     virtual void drawWebViewFunctor(int /*functor*/) {
         LOG_ALWAYS_FATAL("Not supported");
     }
+
+    virtual void punchHole(const SkRRect& rect, float alpha) = 0;
 
     // ----------------------------------------------------------------------------
     // Canvas state operations
@@ -185,12 +164,10 @@ public:
     virtual int save(SaveFlags::Flags flags) = 0;
     virtual void restore() = 0;
     virtual void restoreToCount(int saveCount) = 0;
-    virtual void restoreUnclippedLayer(int saveCount, const SkPaint& paint) = 0;
+    virtual void restoreUnclippedLayer(int saveCount, const Paint& paint) = 0;
 
-    virtual int saveLayer(float left, float top, float right, float bottom, const SkPaint* paint,
-                          SaveFlags::Flags flags) = 0;
-    virtual int saveLayerAlpha(float left, float top, float right, float bottom, int alpha,
-                               SaveFlags::Flags flags) = 0;
+    virtual int saveLayer(float left, float top, float right, float bottom, const SkPaint* paint) = 0;
+    virtual int saveLayerAlpha(float left, float top, float right, float bottom, int alpha) = 0;
     virtual int saveUnclippedLayer(int, int, int, int) = 0;
 
     // Matrix
@@ -210,6 +187,12 @@ public:
 
     virtual bool clipRect(float left, float top, float right, float bottom, SkClipOp op) = 0;
     virtual bool clipPath(const SkPath* path, SkClipOp op) = 0;
+    // Resets clip to wide open, used to emulate the now-removed SkClipOp::kReplace on
+    // apps with compatibility < P. Canvases for version P and later are restricted to
+    // intersect and difference at the Java level, matching SkClipOp's definition.
+    // NOTE: These functions are deprecated and will be removed in a future release
+    virtual bool replaceClipRect_deprecated(float left, float top, float right, float bottom) = 0;
+    virtual bool replaceClipPath_deprecated(const SkPath* path) = 0;
 
     // filters
     virtual PaintFilter* getPaintFilter() = 0;
@@ -222,7 +205,7 @@ public:
     // Canvas draw operations
     // ----------------------------------------------------------------------------
     virtual void drawColor(int color, SkBlendMode mode) = 0;
-    virtual void drawPaint(const SkPaint& paint) = 0;
+    virtual void drawPaint(const Paint& paint) = 0;
 
     // Geometry
     virtual void drawPoint(float x, float y, const Paint& paint) = 0;
@@ -244,6 +227,7 @@ public:
                          float sweepAngle, bool useCenter, const Paint& paint) = 0;
     virtual void drawPath(const SkPath& path, const Paint& paint) = 0;
     virtual void drawVertices(const SkVertices*, SkBlendMode, const Paint& paint) = 0;
+    virtual void drawMesh(const Mesh& mesh, sk_sp<SkBlender>, const Paint& paint) = 0;
 
     // Bitmap-based
     virtual void drawBitmap(Bitmap& bitmap, float left, float top, const Paint* paint) = 0;
@@ -264,6 +248,9 @@ public:
      * Draws a VectorDrawable onto the canvas.
      */
     virtual void drawVectorDrawable(VectorDrawableRoot* tree) = 0;
+
+    void drawGlyphs(const minikin::Font& font, const int* glyphIds, const float* positions,
+                    int glyphCount, const Paint& paint);
 
     /**
      * Converts utf16 text to glyphs, calculating position and boundary,
@@ -298,8 +285,7 @@ protected:
      * totalAdvance: used to define width of text decorations (underlines, strikethroughs).
      */
     virtual void drawGlyphs(ReadGlyphFunc glyphFunc, int count, const Paint& paint, float x,
-                            float y, float boundsLeft, float boundsTop, float boundsRight,
-                            float boundsBottom, float totalAdvance) = 0;
+                            float y,float totalAdvance) = 0;
     virtual void drawLayoutOnPath(const minikin::Layout& layout, float hOffset, float vOffset,
                                   const Paint& paint, const SkPath& path, size_t start,
                                   size_t end) = 0;

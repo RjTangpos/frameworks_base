@@ -24,8 +24,10 @@
 #include <hwui/Paint.h>
 #include <utils/Log.h>
 
+#include "SkBitmap.h"
 #include "SkCanvas.h"
 #include "SkLatticeIter.h"
+#include "SkRect.h"
 #include "SkRegion.h"
 #include "GraphicsJNI.h"
 #include "NinePatchPeeker.h"
@@ -64,10 +66,10 @@ public:
     }
 
     static jlong validateNinePatchChunk(JNIEnv* env, jobject, jbyteArray obj) {
-        size_t chunkSize = env->GetArrayLength(obj);
+        size_t chunkSize = obj != NULL ? env->GetArrayLength(obj) : 0;
         if (chunkSize < (int) (sizeof(Res_png_9patch))) {
             jniThrowRuntimeException(env, "Array too small for chunk.");
-            return NULL;
+            return 0;
         }
 
         int8_t* storage = new int8_t[chunkSize];

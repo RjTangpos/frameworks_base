@@ -23,7 +23,7 @@ import static org.junit.Assert.fail;
 import android.app.PropertyInvalidatedCache;
 import android.content.pm.UserInfo;
 import android.os.Looper;
-import android.os.UserManagerInternal;
+import android.platform.test.annotations.Postsubmit;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.MediumTest;
@@ -46,6 +46,7 @@ import java.util.LinkedHashSet;
  * -w com.android.frameworks.servicestests/androidx.test.runner.AndroidJUnitRunner
  * </pre>
  */
+@Postsubmit
 @RunWith(AndroidJUnit4.class)
 @MediumTest
 public class UserManagerServiceIdRecyclingTest {
@@ -110,7 +111,7 @@ public class UserManagerServiceIdRecyclingTest {
 
     private void removeUser(int userId) {
         mUserManagerService.removeUserInfo(userId);
-        mUserManagerService.addRemovingUserIdLocked(userId);
+        mUserManagerService.addRemovingUserId(userId);
     }
 
     private void assertNoNextIdAvailable(String message) {

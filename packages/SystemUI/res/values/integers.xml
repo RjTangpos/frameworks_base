@@ -17,26 +17,34 @@
 <resources>
     <integer name="biometric_dialog_text_gravity">8388611</integer> <!-- gravity start -->
 
-    <!-- Action footer width used for layout_width to indicate WRAP_CONTENT (along with a weight of
-         0) as we can allow the carrier text to stretch as far as needed in the QS footer. -->
-    <integer name="qs_footer_actions_width">0</integer>
-    <integer name="qs_footer_actions_weight">1</integer>
-
-    <!-- Maximum number of bubbles to render and animate at one time. While the animations used are
-         lightweight translation animations, this number can be reduced on lower end devices if any
-         performance issues arise. -->
-    <integer name="bubbles_max_rendered">5</integer>
-
-    <!-- Number of columns in bubble overflow. -->
-    <integer name="bubbles_overflow_columns">4</integer>
-
-    <!-- Maximum number of bubbles we allow in overflow before we dismiss the oldest one. -->
-    <integer name="bubbles_max_overflow">16</integer>
+    <integer name="qs_security_footer_maxLines">2</integer>
 
     <integer name="magnification_default_scale">2</integer>
+
+    <integer name="dock_enter_exit_duration">250</integer>
 
     <!-- The position of the volume dialog on the screen.
          See com.android.systemui.volume.VolumeDialogImpl.
          Value 21 corresponds to RIGHT|CENTER_VERTICAL. -->
     <integer name="volume_dialog_gravity">21</integer>
+
+    <!-- The time it takes for the over scroll release animation to complete, in milli seconds.  -->
+    <integer name="lockscreen_shade_over_scroll_release_duration">0</integer>
+
+    <!-- Values for transition of QS Headers -->
+    <integer name="fade_out_complete_frame">14</integer>
+    <integer name="fade_in_start_frame">58</integer>
+    <!-- Percentage of displacement for items in QQS to guarantee matching with bottom of clock at
+         fade_out_complete_frame -->
+    <dimen name="percent_displacement_at_fade_out" format="float">0.1066</dimen>
+
+    <integer name="shade_carrier_max_em">7</integer>
+
+    <!-- Maximum number of notification icons shown on the Always on Display
+        (excluding overflow dot) -->
+    <integer name="max_notif_icons_on_aod">3</integer>
+    <!-- Maximum number of notification icons shown on the lockscreen (excluding overflow dot) -->
+    <integer name="max_notif_icons_on_lockscreen">3</integer>
+    <!-- Maximum number of notification icons shown in the status bar (excluding overflow dot) -->
+    <integer name="max_notif_static_icons">4</integer>
 </resources>

@@ -2,13 +2,15 @@ package com.android.systemui.statusbar
 
 import android.app.Notification
 import android.os.RemoteException
+import android.util.Log
 import com.android.internal.statusbar.IStatusBarService
 import com.android.internal.statusbar.NotificationVisibility
+import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.dagger.qualifiers.UiBackground
 import com.android.systemui.util.Assert
 import java.util.concurrent.Executor
 import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
  * Class to shim calls to IStatusBarManager#onNotificationClick/#onNotificationActionClick that
@@ -18,10 +20,11 @@ import javax.inject.Singleton
  * NOTE: this class eats exceptions from system server, as no current client of these APIs cares
  * about errors
  */
-@Singleton
+@SysUISingleton
 public class NotificationClickNotifier @Inject constructor(
     val barService: IStatusBarService,
-    @Main val mainExecutor: Executor
+    @Main val mainExecutor: Executor,
+    @UiBackground val backgroundExecutor: Executor
 ) {
     val listeners = mutableListOf<NotificationInteractionListener>()
 
@@ -48,13 +51,14 @@ public class NotificationClickNotifier @Inject constructor(
         visibility: NotificationVisibility,
         generatedByAssistant: Boolean
     ) {
-        try {
-            barService.onNotificationActionClick(
-                    key, actionIndex, action, visibility, generatedByAssistant)
-        } catch (e: RemoteException) {
-            // nothing
+        backgroundExecutor.execute {
+            try {
+                barService.onNotificationActionClick(
+                        key, actionIndex, action, visibility, generatedByAssistant)
+            } catch (e: RemoteException) {
+                // nothing
+            }
         }
-
         mainExecutor.execute {
             notifyListenersAboutInteraction(key)
         }

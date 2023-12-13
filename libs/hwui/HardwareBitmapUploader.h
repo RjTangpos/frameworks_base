@@ -17,10 +17,13 @@
 #pragma once
 
 #include <hwui/Bitmap.h>
+#include <SkRefCnt.h>
+
+class SkBitmap;
 
 namespace android::uirenderer {
 
-class ANDROID_API HardwareBitmapUploader {
+class HardwareBitmapUploader {
 public:
     static void initialize();
     static void terminate();
@@ -29,10 +32,14 @@ public:
 
 #ifdef __ANDROID__
     static bool hasFP16Support();
+    static bool has1010102Support();
+    static bool hasAlpha8Support();
 #else
     static bool hasFP16Support() {
         return true;
     }
+    static bool has1010102Support() { return true; }
+    static bool hasAlpha8Support() { return true; }
 #endif
 };
 

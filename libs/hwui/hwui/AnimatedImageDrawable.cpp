@@ -19,7 +19,8 @@
 #include "AnimatedImageThread.h"
 #endif
 
-#include "utils/TraceUtils.h"
+#include <gui/TraceUtils.h>
+#include "pipeline/skia/SkiaUtils.h"
 
 #include <SkPicture.h>
 #include <SkRefCnt.h>
@@ -28,9 +29,11 @@
 
 namespace android {
 
-AnimatedImageDrawable::AnimatedImageDrawable(sk_sp<SkAnimatedImage> animatedImage, size_t bytesUsed)
-        : mSkAnimatedImage(std::move(animatedImage)), mBytesUsed(bytesUsed) {
-    mTimeToShowNextSnapshot = ms2ns(mSkAnimatedImage->currentFrameDuration());
+AnimatedImageDrawable::AnimatedImageDrawable(sk_sp<SkAnimatedImage> animatedImage, size_t bytesUsed,
+                                             SkEncodedImageFormat format)
+        : mSkAnimatedImage(std::move(animatedImage)), mBytesUsed(bytesUsed), mFormat(format) {
+    mTimeToShowNextSnapshot = ms2ns(currentFrameDuration());
+    setStagingBounds(mSkAnimatedImage->getBounds());
 }
 
 void AnimatedImageDrawable::syncProperties() {
@@ -90,7 +93,7 @@ bool AnimatedImageDrawable::isDirty(nsecs_t* outDelay) {
         // directly from mSkAnimatedImage.
         lock.unlock();
         std::unique_lock imageLock{mImageLock};
-        *outDelay = ms2ns(mSkAnimatedImage->currentFrameDuration());
+        *outDelay = ms2ns(currentFrameDuration());
         return true;
     } else {
         // The next snapshot has not yet been decoded, but we've already passed
@@ -107,7 +110,7 @@ AnimatedImageDrawable::Snapshot AnimatedImageDrawable::decodeNextFrame() {
     Snapshot snap;
     {
         std::unique_lock lock{mImageLock};
-        snap.mDurationMS = mSkAnimatedImage->decodeNextFrame();
+        snap.mDurationMS = adjustFrameDuration(mSkAnimatedImage->decodeNextFrame());
         snap.mPic.reset(mSkAnimatedImage->newPictureSnapshot());
     }
 
@@ -121,27 +124,43 @@ AnimatedImageDrawable::Snapshot AnimatedImageDrawable::reset() {
         std::unique_lock lock{mImageLock};
         mSkAnimatedImage->reset();
         snap.mPic.reset(mSkAnimatedImage->newPictureSnapshot());
-        snap.mDurationMS = mSkAnimatedImage->currentFrameDuration();
+        snap.mDurationMS = currentFrameDuration();
     }
 
     return snap;
 }
 
+// Update the matrix to map from the intrinsic bounds of the SkAnimatedImage to
+// the bounds specified by Drawable#setBounds.
+static void handleBounds(SkMatrix* matrix, const SkRect& intrinsicBounds, const SkRect& bounds) {
+    matrix->preTranslate(bounds.left(), bounds.top());
+    matrix->preScale(bounds.width()  / intrinsicBounds.width(),
+                     bounds.height() / intrinsicBounds.height());
+}
+
 // Only called on the RenderThread.
 void AnimatedImageDrawable::onDraw(SkCanvas* canvas) {
+    // Store the matrix used to handle bounds and mirroring separate from the
+    // canvas. We may need to invert the matrix to determine the proper bounds
+    // to pass to saveLayer, and this matrix (as opposed to, potentially, the
+    // canvas' matrix) only uses scale and translate, so it must be invertible.
+    SkMatrix matrix;
+    SkAutoCanvasRestore acr(canvas, true);
+    handleBounds(&matrix, mSkAnimatedImage->getBounds(), mProperties.mBounds);
+
+    if (mProperties.mMirrored) {
+        matrix.preTranslate(mSkAnimatedImage->getBounds().width(), 0);
+        matrix.preScale(-1, 1);
+    }
+
     std::optional<SkPaint> lazyPaint;
-    SkAutoCanvasRestore acr(canvas, false);
     if (mProperties.mAlpha != SK_AlphaOPAQUE || mProperties.mColorFilter.get()) {
         lazyPaint.emplace();
         lazyPaint->setAlpha(mProperties.mAlpha);
         lazyPaint->setColorFilter(mProperties.mColorFilter);
-        lazyPaint->setFilterQuality(kLow_SkFilterQuality);
     }
-    if (mProperties.mMirrored) {
-        canvas->save();
-        canvas->translate(mSkAnimatedImage->getBounds().width(), 0);
-        canvas->scale(-1, 1);
-    }
+
+    canvas->concat(matrix);
 
     const bool starting = mStarting;
     mStarting = false;
@@ -151,7 +170,11 @@ void AnimatedImageDrawable::onDraw(SkCanvas* canvas) {
         // The image is not animating, and never was. Draw directly from
         // mSkAnimatedImage.
         if (lazyPaint) {
-            canvas->saveLayer(mSkAnimatedImage->getBounds(), &*lazyPaint);
+            SkMatrix inverse;
+            (void) matrix.invert(&inverse);
+            SkRect r = mProperties.mBounds;
+            inverse.mapRect(&r);
+            canvas->saveLayer(r, &*lazyPaint);
         }
 
         std::unique_lock lock{mImageLock};
@@ -211,17 +234,31 @@ void AnimatedImageDrawable::onDraw(SkCanvas* canvas) {
 }
 
 int AnimatedImageDrawable::drawStaging(SkCanvas* canvas) {
-    SkAutoCanvasRestore acr(canvas, false);
+    // Store the matrix used to handle bounds and mirroring separate from the
+    // canvas. We may need to invert the matrix to determine the proper bounds
+    // to pass to saveLayer, and this matrix (as opposed to, potentially, the
+    // canvas' matrix) only uses scale and translate, so it must be invertible.
+    SkMatrix matrix;
+    SkAutoCanvasRestore acr(canvas, true);
+    handleBounds(&matrix, mSkAnimatedImage->getBounds(), mStagingProperties.mBounds);
+
+    if (mStagingProperties.mMirrored) {
+        matrix.preTranslate(mSkAnimatedImage->getBounds().width(), 0);
+        matrix.preScale(-1, 1);
+    }
+
+    canvas->concat(matrix);
+
     if (mStagingProperties.mAlpha != SK_AlphaOPAQUE || mStagingProperties.mColorFilter.get()) {
         SkPaint paint;
         paint.setAlpha(mStagingProperties.mAlpha);
         paint.setColorFilter(mStagingProperties.mColorFilter);
-        canvas->saveLayer(mSkAnimatedImage->getBounds(), &paint);
-    }
-    if (mStagingProperties.mMirrored) {
-        canvas->save();
-        canvas->translate(mSkAnimatedImage->getBounds().width(), 0);
-        canvas->scale(-1, 1);
+
+        SkMatrix inverse;
+        (void) matrix.invert(&inverse);
+        SkRect r = mStagingProperties.mBounds;
+        inverse.mapRect(&r);
+        canvas->saveLayer(r, &paint);
     }
 
     if (!mRunning) {
@@ -238,7 +275,7 @@ int AnimatedImageDrawable::drawStaging(SkCanvas* canvas) {
         {
             std::unique_lock lock{mImageLock};
             mSkAnimatedImage->reset();
-            durationMS = mSkAnimatedImage->currentFrameDuration();
+            durationMS = currentFrameDuration();
         }
         {
             std::unique_lock lock{mSwapLock};
@@ -270,7 +307,7 @@ int AnimatedImageDrawable::drawStaging(SkCanvas* canvas) {
     {
         std::unique_lock lock{mImageLock};
         if (update) {
-            durationMS = mSkAnimatedImage->decodeNextFrame();
+            durationMS = adjustFrameDuration(mSkAnimatedImage->decodeNextFrame());
         }
 
         canvas->drawDrawable(mSkAnimatedImage.get());
@@ -292,6 +329,28 @@ int AnimatedImageDrawable::drawStaging(SkCanvas* canvas) {
     }
 
     return ns2ms(mTimeToShowNextSnapshot - mCurrentTime);
+}
+
+SkRect AnimatedImageDrawable::onGetBounds() {
+    // This must return a bounds that is valid for all possible states,
+    // including if e.g. the client calls setBounds.
+    return SkRectMakeLargest();
+}
+
+int AnimatedImageDrawable::adjustFrameDuration(int durationMs) {
+    if (durationMs == SkAnimatedImage::kFinished) {
+        return SkAnimatedImage::kFinished;
+    }
+
+    if (mFormat == SkEncodedImageFormat::kGIF) {
+        // Match Chrome & Firefox behavior that gifs with a duration <= 10ms is bumped to 100ms
+        return durationMs <= 10 ? 100 : durationMs;
+    }
+    return durationMs;
+}
+
+int AnimatedImageDrawable::currentFrameDuration() {
+    return adjustFrameDuration(mSkAnimatedImage->currentFrameDuration());
 }
 
 }  // namespace android

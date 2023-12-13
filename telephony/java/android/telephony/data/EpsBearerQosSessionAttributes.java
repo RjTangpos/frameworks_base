@@ -32,7 +32,12 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Provides Qos attributes of an EPS bearer.
+ * Provides QOS attributes of an EPS bearer.
+ *
+ * <p> The dedicated EPS bearer along with QOS is allocated by the LTE network and notified to the
+ * device. The Telephony framework creates the {@link EpsBearerQosSessionAttributes} object which
+ * represents the QOS of the dedicated bearer and notifies the same to applications via
+ * {@link QosCallback}.
  *
  * {@hide}
  */
@@ -204,6 +209,26 @@ public final class EpsBearerQosSessionAttributes implements Parcelable, QosSessi
             dest.writeByteArray(address.getAddress().getAddress());
             dest.writeInt(address.getPort());
         }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        EpsBearerQosSessionAttributes epsBearerAttr = (EpsBearerQosSessionAttributes) o;
+        return mQci == epsBearerAttr.mQci
+                && mMaxUplinkBitRate == epsBearerAttr.mMaxUplinkBitRate
+                && mMaxDownlinkBitRate == epsBearerAttr.mMaxDownlinkBitRate
+                && mGuaranteedUplinkBitRate == epsBearerAttr.mGuaranteedUplinkBitRate
+                && mGuaranteedDownlinkBitRate == epsBearerAttr.mGuaranteedDownlinkBitRate
+                && mRemoteAddresses.size() == epsBearerAttr.mRemoteAddresses.size()
+                && mRemoteAddresses.containsAll(epsBearerAttr.mRemoteAddresses);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(mQci, mMaxUplinkBitRate, mMaxDownlinkBitRate,
+                mGuaranteedUplinkBitRate, mGuaranteedDownlinkBitRate, mRemoteAddresses);
     }
 
     @NonNull

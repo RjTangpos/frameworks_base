@@ -23,6 +23,7 @@ import android.media.IMediaRouterClient;
 import android.media.MediaRoute2Info;
 import android.media.MediaRouterClientState;
 import android.media.RouteDiscoveryPreference;
+import android.media.RouteListingPreference;
 import android.media.RoutingSessionInfo;
 import android.os.Bundle;
 
@@ -39,6 +40,7 @@ interface IMediaRouterService {
     MediaRouterClientState getState(IMediaRouterClient client);
     boolean isPlaybackActive(IMediaRouterClient client);
 
+    void setBluetoothA2dpOn(IMediaRouterClient client, boolean on);
     void setDiscoveryRequest(IMediaRouterClient client, int routeTypes, boolean activeScan);
     void setSelectedRoute(IMediaRouterClient client, String routeId, boolean explicit);
     void requestSetVolume(IMediaRouterClient client, String routeId, int volume);
@@ -48,6 +50,7 @@ interface IMediaRouterService {
     // MediaRouterService.java for readability.
 
     // Methods for MediaRouter2
+    boolean verifyPackageExists(String clientPackageName);
     List<MediaRoute2Info> getSystemRoutes();
     RoutingSessionInfo getSystemSessionInfo();
 
@@ -55,6 +58,8 @@ interface IMediaRouterService {
     void unregisterRouter2(IMediaRouter2 router);
     void setDiscoveryRequestWithRouter2(IMediaRouter2 router,
             in RouteDiscoveryPreference preference);
+    void setRouteListingPreference(IMediaRouter2 router,
+            in @nullable RouteListingPreference routeListingPreference);
     void setRouteVolumeWithRouter2(IMediaRouter2 router, in MediaRoute2Info route, int volume);
 
     void requestCreateSessionWithRouter2(IMediaRouter2 router, int requestId, long managerRequestId,
@@ -68,7 +73,9 @@ interface IMediaRouterService {
     void releaseSessionWithRouter2(IMediaRouter2 router, String sessionId);
 
     // Methods for MediaRouter2Manager
-    List<RoutingSessionInfo> getActiveSessions(IMediaRouter2Manager manager);
+    List<RoutingSessionInfo> getRemoteSessions(IMediaRouter2Manager manager);
+    RoutingSessionInfo getSystemSessionInfoForPackage(
+            IMediaRouter2Manager manager, String packageName);
     void registerManager(IMediaRouter2Manager manager, String packageName);
     void unregisterManager(IMediaRouter2Manager manager);
     void setRouteVolumeWithManager(IMediaRouter2Manager manager, int requestId,
@@ -87,4 +94,5 @@ interface IMediaRouterService {
     void setSessionVolumeWithManager(IMediaRouter2Manager manager, int requestId,
             String sessionId, int volume);
     void releaseSessionWithManager(IMediaRouter2Manager manager, int requestId, String sessionId);
+    boolean showMediaOutputSwitcher(String packageName);
 }

@@ -36,20 +36,9 @@ RENDERTHREAD_TEST(CanvasContext, create) {
     auto rootNode = TestUtils::createNode(0, 0, 200, 400, nullptr);
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, rootNode.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, rootNode.get(), &contextFactory, 0, 0));
 
-    ASSERT_FALSE(canvasContext->hasSurface());
+    ASSERT_FALSE(canvasContext->hasOutputTarget());
 
     canvasContext->destroy();
-}
-
-RENDERTHREAD_TEST(CanvasContext, invokeFunctor) {
-    TestUtils::MockFunctor functor;
-    CanvasContext::invokeFunctor(renderThread, &functor);
-    if (Properties::getRenderPipelineType() == RenderPipelineType::SkiaVulkan) {
-        // we currently don't support OpenGL WebViews on the Vulkan backend
-        ASSERT_EQ(functor.getLastMode(), DrawGlInfo::kModeProcessNoContext);
-    } else {
-        ASSERT_EQ(functor.getLastMode(), DrawGlInfo::kModeProcess);
-    }
 }

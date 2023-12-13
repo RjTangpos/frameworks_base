@@ -24,13 +24,15 @@ package {
 android_test {
     name: "RollbackTest",
     manifest: "RollbackTest/AndroidManifest.xml",
+    platform_apis: true,
     srcs: ["RollbackTest/src/**/*.java"],
     static_libs: ["androidx.test.rules", "cts-rollback-lib", "cts-install-lib"],
     test_suites: ["general-tests"],
     test_config: "RollbackTest.xml",
     java_resources: [
         ":com.android.apex.apkrollback.test_v2",
-        ":com.android.apex.apkrollback.test_v2Crashing"
+        ":com.android.apex.apkrollback.test_v2Crashing",
+        ":test.rebootless_apex_v2",
     ],
 }
 
@@ -46,7 +48,11 @@ java_test_host {
     ],
     test_suites: ["general-tests"],
     test_config: "StagedRollbackTest.xml",
-    data: [":com.android.apex.apkrollback.test_v1"],
+    data: [
+        ":com.android.apex.apkrollback.test_v1",
+        ":test.rebootless_apex_v1",
+        ":RollbackTest",
+    ],
 }
 
 java_test_host {
@@ -56,6 +62,7 @@ java_test_host {
     static_libs: ["RollbackTestLib", "frameworks-base-hostutils"],
     test_suites: ["general-tests"],
     test_config: "NetworkStagedRollbackTest.xml",
+    data: [":RollbackTest"],
 }
 
 java_test_host {
@@ -67,6 +74,7 @@ java_test_host {
     ],
     test_suites: ["general-tests"],
     test_config: "MultiUserRollbackTest.xml",
+    data : [":RollbackTest"],
 }
 
 java_library_host {

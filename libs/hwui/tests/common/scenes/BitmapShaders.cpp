@@ -14,7 +14,17 @@
  * limitations under the License.
  */
 
-#include <SkImagePriv.h>
+#include <SkBitmap.h>
+#include <SkBlendMode.h>
+#include <SkCanvas.h>
+#include <SkImage.h>
+#include <SkImageInfo.h>
+#include <SkPaint.h>
+#include <SkRect.h>
+#include <SkRefCnt.h>
+#include <SkSamplingOptions.h>
+#include <SkShader.h>
+#include <SkTileMode.h>
 #include "hwui/Paint.h"
 #include "TestSceneBase.h"
 #include "tests/common/BitmapAllocationTestUtils.h"
@@ -44,15 +54,16 @@ public:
                     skCanvas.drawRect(SkRect::MakeXYWH(100, 100, 100, 100), skPaint);
                 });
 
+        SkSamplingOptions sampling;
         Paint paint;
         sk_sp<SkImage> image = hwuiBitmap->makeImage();
         sk_sp<SkShader> repeatShader =
-                image->makeShader(SkTileMode::kRepeat, SkTileMode::kRepeat);
+                image->makeShader(SkTileMode::kRepeat, SkTileMode::kRepeat, sampling);
         paint.setShader(std::move(repeatShader));
         canvas.drawRoundRect(0, 0, 500, 500, 50.0f, 50.0f, paint);
 
         sk_sp<SkShader> mirrorShader =
-                image->makeShader(SkTileMode::kMirror, SkTileMode::kMirror);
+                image->makeShader(SkTileMode::kMirror, SkTileMode::kMirror, sampling);
         paint.setShader(std::move(mirrorShader));
         canvas.drawRoundRect(0, 600, 500, 1100, 50.0f, 50.0f, paint);
     }

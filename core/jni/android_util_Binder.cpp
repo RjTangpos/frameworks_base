@@ -25,6 +25,7 @@
 #include <inttypes.h>
 #include <mutex>
 #include <stdio.h>
+#include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -35,11 +36,11 @@
 #include <binder/IPCThreadState.h>
 #include <binder/IServiceManager.h>
 #include <binder/Parcel.h>
-#include <binder/ParcelRef.h>
 #include <binder/ProcessState.h>
 #include <binder/Stability.h>
 #include <binderthreadstate/CallerUtils.h>
 #include <cutils/atomic.h>
+#include <cutils/threads.h>
 #include <log/log.h>
 #include <utils/KeyedVector.h>
 #include <utils/List.h>
@@ -396,6 +397,9 @@ protected:
     {
         JNIEnv* env = javavm_to_jnienv(mVM);
 
+        LOG_ALWAYS_FATAL_IF(env == nullptr,
+                            "Binder thread started or Java binder used, but env null. Attach JVM?");
+
         ALOGV("onTransact() on %p calling object %p in env %p vm %p\n", this, mObject, env, mVM);
 
         IPCThreadState* thread_state = IPCThreadState::self();
@@ -409,9 +413,13 @@ protected:
 
         if (env->ExceptionCheck()) {
             ScopedLocalRef<jthrowable> excep(env, env->ExceptionOccurred());
-            binder_report_exception(env, excep.get(),
-                                    "*** Uncaught remote exception!  "
-                                    "(Exceptions are not yet supported across processes.)");
+
+            auto state = IPCThreadState::self();
+            String8 msg;
+            msg.appendFormat("*** Uncaught remote exception! Exceptions are not yet supported "
+                             "across processes. Client PID %d UID %d.",
+                             state->getCallingPid(), state->getCallingUid());
+            binder_report_exception(env, excep.get(), msg.c_str());
             res = JNI_FALSE;
         }
 
@@ -427,6 +435,7 @@ protected:
             ScopedLocalRef<jthrowable> excep(env, env->ExceptionOccurred());
             binder_report_exception(env, excep.get(),
                                     "*** Uncaught exception in onBinderStrictModePolicyChange");
+            // TODO: should turn this to fatal?
         }
 
         // Need to always call through the native implementation of
@@ -795,6 +804,12 @@ sp<IBinder> ibinderForJavaObject(JNIEnv* env, jobject obj)
     if (env->IsInstanceOf(obj, gBinderOffsets.mClass)) {
         JavaBBinderHolder* jbh = (JavaBBinderHolder*)
             env->GetLongField(obj, gBinderOffsets.mObject);
+
+        if (jbh == nullptr) {
+            ALOGE("JavaBBinderHolder null on binder");
+            return nullptr;
+        }
+
         return jbh->get(env, obj);
     }
 
@@ -871,9 +886,9 @@ void signalExceptionForError(JNIEnv* env, jobject obj, status_t err,
         case FAILED_TRANSACTION: {
             ALOGE("!!! FAILED BINDER TRANSACTION !!!  (parcel size = %d)", parcelSize);
             const char* exceptionToThrow;
-            char msg[128];
+            std::string msg;
             // TransactionTooLargeException is a checked exception, only throw from certain methods.
-            // FIXME: Transaction too large is the most common reason for FAILED_TRANSACTION
+            // TODO(b/28321379): Transaction size is the most common cause for FAILED_TRANSACTION
             //        but it is not the only one.  The Binder driver can return BR_FAILED_REPLY
             //        for other reasons also, such as if the transaction is malformed or
             //        refers to an FD that has been closed.  We should change the driver
@@ -881,7 +896,7 @@ void signalExceptionForError(JNIEnv* env, jobject obj, status_t err,
             if (canThrowRemoteException && parcelSize > 200*1024) {
                 // bona fide large payload
                 exceptionToThrow = "android/os/TransactionTooLargeException";
-                snprintf(msg, sizeof(msg)-1, "data parcel size %d bytes", parcelSize);
+                msg = base::StringPrintf("data parcel size %d bytes", parcelSize);
             } else {
                 // Heuristic: a payload smaller than this threshold "shouldn't" be too
                 // big, so it's probably some other, more subtle problem.  In practice
@@ -890,10 +905,10 @@ void signalExceptionForError(JNIEnv* env, jobject obj, status_t err,
                 exceptionToThrow = (canThrowRemoteException)
                         ? "android/os/DeadObjectException"
                         : "java/lang/RuntimeException";
-                snprintf(msg, sizeof(msg)-1,
-                        "Transaction failed on small parcel; remote process probably died");
+                msg = "Transaction failed on small parcel; remote process probably died, but "
+                      "this could also be caused by running out of binder buffer space";
             }
-            jniThrowException(env, exceptionToThrow, msg);
+            jniThrowException(env, exceptionToThrow, msg.c_str());
         } break;
         case FDS_NOT_ALLOWED:
             jniThrowException(env, "java/lang/RuntimeException",
@@ -959,8 +974,7 @@ static jint android_os_Binder_getCallingUid()
     return IPCThreadState::self()->getCallingUid();
 }
 
-static jboolean android_os_Binder_isHandlingTransaction()
-{
+static jboolean android_os_Binder_isDirectlyHandlingTransaction() {
     return getCurrentServingCall() == BinderCallType::BINDER;
 }
 
@@ -969,18 +983,13 @@ static jlong android_os_Binder_clearCallingIdentity()
     return IPCThreadState::self()->clearCallingIdentity();
 }
 
-static void android_os_Binder_restoreCallingIdentity(JNIEnv* env, jobject clazz, jlong token)
+static void android_os_Binder_restoreCallingIdentity(jlong token)
 {
-    // XXX temporary validation check to debug crashes.
-    int uid = (int)(token>>32);
-    if (uid > 0 && uid < 999) {
-        // In Android currently there are no uids in this range.
-        char buf[128];
-        sprintf(buf, "Restoring bad calling ident: 0x%" PRIx64, token);
-        jniThrowException(env, "java/lang/IllegalStateException", buf);
-        return;
-    }
     IPCThreadState::self()->restoreCallingIdentity(token);
+}
+
+static jboolean android_os_Binder_hasExplicitIdentity() {
+    return IPCThreadState::self()->hasExplicitIdentity();
 }
 
 static void android_os_Binder_setThreadStrictModePolicy(jint policyMask)
@@ -1065,6 +1074,7 @@ static void android_os_Binder_setExtension(JNIEnv* env, jobject obj, jobject ext
 
 // ----------------------------------------------------------------------------
 
+// clang-format off
 static const JNINativeMethod gBinderMethods[] = {
      /* name, signature, funcPtr */
     // @CriticalNative
@@ -1072,10 +1082,13 @@ static const JNINativeMethod gBinderMethods[] = {
     // @CriticalNative
     { "getCallingUid", "()I", (void*)android_os_Binder_getCallingUid },
     // @CriticalNative
-    { "isHandlingTransaction", "()Z", (void*)android_os_Binder_isHandlingTransaction },
+    { "isDirectlyHandlingTransaction", "()Z", (void*)android_os_Binder_isDirectlyHandlingTransaction },
     // @CriticalNative
     { "clearCallingIdentity", "()J", (void*)android_os_Binder_clearCallingIdentity },
+    // @CriticalNative
     { "restoreCallingIdentity", "(J)V", (void*)android_os_Binder_restoreCallingIdentity },
+    // @CriticalNative
+    { "hasExplicitIdentity", "()Z", (void*)android_os_Binder_hasExplicitIdentity },
     // @CriticalNative
     { "setThreadStrictModePolicy", "(I)V", (void*)android_os_Binder_setThreadStrictModePolicy },
     // @CriticalNative
@@ -1096,6 +1109,7 @@ static const JNINativeMethod gBinderMethods[] = {
     { "getExtension", "()Landroid/os/IBinder;", (void*)android_os_Binder_getExtension },
     { "setExtension", "(Landroid/os/IBinder;)V", (void*)android_os_Binder_setExtension },
 };
+// clang-format on
 
 const char* const kBinderPathName = "android/os/Binder";
 
@@ -1388,8 +1402,7 @@ static bool should_time_binder_calls() {
 }
 
 static jboolean android_os_BinderProxy_transact(JNIEnv* env, jobject obj,
-        jint code, jobject dataObj, jobject replyObj, jboolean replyObjOwnsNativeParcel,
-        jint flags) // throws RemoteException
+        jint code, jobject dataObj, jobject replyObj, jint flags) // throws RemoteException
 {
     if (dataObj == NULL) {
         jniThrowNullPointerException(env, NULL);
@@ -1430,21 +1443,6 @@ static jboolean android_os_BinderProxy_transact(JNIEnv* env, jobject obj,
     //printf("Transact from Java code to %p sending: ", target); data->print();
     status_t err = target->transact(code, *data, reply, flags);
     //if (reply) printf("Transact from Java code to %p received: ", target); reply->print();
-
-    if (reply) {
-        if (replyObjOwnsNativeParcel) {
-            // as per Parcel java class constructor, here, "reply" MUST be a "ParcelRef"
-            // only for Parcel that contained Binder objects
-            if (reply->objectsCount() > 0) {
-                IPCThreadState::self()->createTransactionReference(static_cast<ParcelRef*>(reply));
-            }
-        } else {
-            // as per Parcel.java, if Parcel java object NOT owning native Parcel object, it will
-            // NOT destroy the native Parcel object upon GC(finalize()), so, there will be no race
-            // condtion in this case. Please refer to the java class methods: Parcel.finalize(),
-            // Parcel.destroy().
-        }
-    }
 
     if (kEnableBinderSample) {
         if (time_binder_calls) {
@@ -1574,7 +1572,7 @@ static const JNINativeMethod gBinderProxyMethods[] = {
     {"pingBinder",          "()Z", (void*)android_os_BinderProxy_pingBinder},
     {"isBinderAlive",       "()Z", (void*)android_os_BinderProxy_isBinderAlive},
     {"getInterfaceDescriptor", "()Ljava/lang/String;", (void*)android_os_BinderProxy_getInterfaceDescriptor},
-    {"transactNative",      "(ILandroid/os/Parcel;Landroid/os/Parcel;ZI)Z", (void*)android_os_BinderProxy_transact},
+    {"transactNative",      "(ILandroid/os/Parcel;Landroid/os/Parcel;I)Z", (void*)android_os_BinderProxy_transact},
     {"linkToDeath",         "(Landroid/os/IBinder$DeathRecipient;I)V", (void*)android_os_BinderProxy_linkToDeath},
     {"unlinkToDeath",       "(Landroid/os/IBinder$DeathRecipient;I)Z", (void*)android_os_BinderProxy_unlinkToDeath},
     {"getNativeFinalizer",  "()J", (void*)android_os_BinderProxy_getNativeFinalizer},

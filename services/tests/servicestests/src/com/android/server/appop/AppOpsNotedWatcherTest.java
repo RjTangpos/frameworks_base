@@ -64,12 +64,14 @@ public class AppOpsNotedWatcherTest {
         // Verify that we got called for the ops being noted
         final InOrder inOrder = inOrder(listener);
         inOrder.verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
-                .times(1)).onOpNoted(eq(AppOpsManager.OP_FINE_LOCATION),
+                .times(1)).onOpNoted(eq(AppOpsManager.OPSTR_FINE_LOCATION),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
+                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
         inOrder.verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
-                .times(1)).onOpNoted(eq(AppOpsManager.OP_CAMERA),
+                .times(1)).onOpNoted(eq(AppOpsManager.OPSTR_CAMERA),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
+                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
 
         // Stop watching
@@ -92,8 +94,9 @@ public class AppOpsNotedWatcherTest {
 
         // Verify it's watched again
         verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
-                .times(2)).onOpNoted(eq(AppOpsManager.OP_FINE_LOCATION),
+                .times(2)).onOpNoted(eq(AppOpsManager.OPSTR_FINE_LOCATION),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
+                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
 
         // Finish up

@@ -20,12 +20,12 @@
 #include <regex>
 
 #include "Command.h"
-#include "Diagnostics.h"
 #include "Resource.h"
-#include "split/TableSplitter.h"
+#include "androidfw/IDiagnostics.h"
 #include "format/binary/TableFlattener.h"
 #include "format/proto/ProtoSerialize.h"
 #include "link/ManifestFixer.h"
+#include "split/TableSplitter.h"
 #include "trace/TraceBuffer.h"
 
 namespace aapt {
@@ -45,21 +45,21 @@ struct LinkOptions {
   bool auto_add_overlay = false;
   bool override_styles_instead_of_overlaying = false;
   OutputFormat output_format = OutputFormat::kApk;
-  Maybe<std::string> rename_resources_package;
+  std::optional<std::string> rename_resources_package;
 
   // Java/Proguard options.
-  Maybe<std::string> generate_java_class_path;
-  Maybe<std::string> custom_java_package;
+  std::optional<std::string> generate_java_class_path;
+  std::optional<std::string> custom_java_package;
   std::set<std::string> extra_java_packages;
-  Maybe<std::string> generate_text_symbols_path;
-  Maybe<std::string> generate_proguard_rules_path;
-  Maybe<std::string> generate_main_dex_proguard_rules_path;
+  std::optional<std::string> generate_text_symbols_path;
+  std::optional<std::string> generate_proguard_rules_path;
+  std::optional<std::string> generate_main_dex_proguard_rules_path;
   bool generate_conditional_proguard_rules = false;
   bool generate_minimal_proguard_rules = false;
   bool generate_non_final_ids = false;
   bool no_proguard_location_reference = false;
   std::vector<std::string> javadoc_annotations;
-  Maybe<std::string> private_symbols;
+  std::optional<std::string> private_symbols;
 
   // Optimizations/features.
   bool no_auto_version = false;
@@ -69,8 +69,9 @@ struct LinkOptions {
   bool no_resource_removal = false;
   bool no_xml_namespaces = false;
   bool do_not_compress_anything = false;
+  bool use_sparse_encoding = false;
   std::unordered_set<std::string> extensions_to_not_compress;
-  Maybe<std::regex> regex_to_not_compress;
+  std::optional<std::regex> regex_to_not_compress;
 
   // Static lib options.
   bool no_static_lib_packages = false;
@@ -97,7 +98,7 @@ struct LinkOptions {
 
   // Stable ID options.
   std::unordered_map<ResourceName, ResourceId> stable_id_map;
-  Maybe<std::string> resource_id_map_path;
+  std::optional<std::string> resource_id_map_path;
 
   // When 'true', allow reserved package IDs to be used for applications. Pre-O, the platform
   // treats negative resource IDs [those with a package ID of 0x80 or higher] as invalid.
@@ -111,8 +112,7 @@ struct LinkOptions {
 
 class LinkCommand : public Command {
  public:
-  explicit LinkCommand(IDiagnostics* diag) : Command("link", "l"),
-                                             diag_(diag) {
+  explicit LinkCommand(android::IDiagnostics* diag) : Command("link", "l"), diag_(diag) {
     SetDescription("Links resources into an apk.");
     AddRequiredFlag("-o", "Output path.", &options_.output_path, Command::kPath);
     AddRequiredFlag("--manifest", "Path to the Android manifest to build.",
@@ -157,8 +157,11 @@ class LinkCommand : public Command {
             "defaults. Use this only when building runtime resource overlay packages.",
         &options_.no_resource_removal);
     AddOptionalSwitch("--enable-sparse-encoding",
-        "This decreases APK size at the cost of resource retrieval performance.",
-        &options_.table_flattener_options.use_sparse_entries);
+                      "This decreases APK size at the cost of resource retrieval performance.",
+                      &options_.use_sparse_encoding);
+    AddOptionalSwitch("--enable-compact-entries",
+        "This decreases APK size by using compact resource entries for simple data types.",
+        &options_.table_flattener_options.use_compact_entries);
     AddOptionalSwitch("-x", "Legacy flag that specifies to use the package identifier 0x01.",
         &legacy_x_flag_);
     AddOptionalSwitch("-z", "Require localization of strings marked 'suggested'.",
@@ -190,8 +193,11 @@ class LinkCommand : public Command {
     AddOptionalFlag("--version-name",
         "Version name to inject into the AndroidManifest.xml if none is present.",
         &options_.manifest_fixer_options.version_name_default);
+    AddOptionalFlag("--revision-code",
+        "Revision code (integer) to inject into the AndroidManifest.xml if none is\n"
+            "present.", &options_.manifest_fixer_options.revision_code_default);
     AddOptionalSwitch("--replace-version",
-        "If --version-code and/or --version-name are specified, these\n"
+        "If --version-code, --version-name, and/or --revision-code are specified, these\n"
             "values will replace any value already in the manifest. By\n"
             "default, nothing is changed if the manifest already defines\n"
             "these attributes.",
@@ -203,6 +209,13 @@ class LinkCommand : public Command {
     AddOptionalFlag("--compile-sdk-version-name",
         "Version name to inject into the AndroidManifest.xml if none is present.",
         &options_.manifest_fixer_options.compile_sdk_version_codename);
+    AddOptionalSwitch(
+        "--no-compile-sdk-metadata",
+        "Suppresses output of compile SDK-related attributes in AndroidManifest.xml,\n"
+        "including android:compileSdkVersion and platformBuildVersion.",
+        &options_.manifest_fixer_options.no_compile_sdk_metadata);
+    AddOptionalFlagList("--fingerprint-prefix", "Fingerprint prefix to add to install constraints.",
+                        &options_.manifest_fixer_options.fingerprint_prefixes);
     AddOptionalSwitch("--shared-lib", "Generates a shared Android runtime library.",
         &shared_lib_);
     AddOptionalSwitch("--static-lib", "Generate a static Android library.", &static_lib_);
@@ -267,6 +280,8 @@ class LinkCommand : public Command {
         "Changes the name of the target package for overlay. Most useful\n"
             "when used in conjunction with --rename-manifest-package.",
         &options_.manifest_fixer_options.rename_overlay_target_package);
+    AddOptionalFlag("--rename-overlay-category", "Changes the category for the overlay.",
+                    &options_.manifest_fixer_options.rename_overlay_category);
     AddOptionalFlagList("-0", "File suffix not to compress.",
         &options_.extensions_to_not_compress);
     AddOptionalSwitch("--no-compress", "Do not compress any resources.",
@@ -313,25 +328,25 @@ class LinkCommand : public Command {
   int Action(const std::vector<std::string>& args) override;
 
  private:
-  IDiagnostics* diag_;
+  android::IDiagnostics* diag_;
   LinkOptions options_;
 
   std::vector<std::string> overlay_arg_list_;
   std::vector<std::string> extra_java_packages_;
-  Maybe<std::string> package_id_;
+  std::optional<std::string> package_id_;
   std::vector<std::string> configs_;
-  Maybe<std::string> preferred_density_;
-  Maybe<std::string> product_list_;
-  Maybe<std::string> no_compress_regex;
+  std::optional<std::string> preferred_density_;
+  std::optional<std::string> product_list_;
+  std::optional<std::string> no_compress_regex;
   bool legacy_x_flag_ = false;
   bool require_localization_ = false;
   bool verbose_ = false;
   bool shared_lib_ = false;
   bool static_lib_ = false;
   bool proto_format_ = false;
-  Maybe<std::string> stable_id_file_path_;
+  std::optional<std::string> stable_id_file_path_;
   std::vector<std::string> split_args_;
-  Maybe<std::string> trace_folder_;
+  std::optional<std::string> trace_folder_;
 };
 
 }// namespace aapt

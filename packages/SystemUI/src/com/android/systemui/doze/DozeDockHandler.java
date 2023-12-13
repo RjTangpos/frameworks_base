@@ -17,35 +17,46 @@
 package com.android.systemui.doze;
 
 import android.hardware.display.AmbientDisplayConfiguration;
-import android.os.UserHandle;
 import android.util.Log;
 
 import com.android.systemui.dock.DockManager;
 import com.android.systemui.doze.DozeMachine.State;
+import com.android.systemui.doze.dagger.DozeScope;
+import com.android.systemui.settings.UserTracker;
 
 import java.io.PrintWriter;
+
+import javax.inject.Inject;
 
 /**
  * Handles dock events for ambient state changes.
  */
+@DozeScope
 public class DozeDockHandler implements DozeMachine.Part {
 
     private static final String TAG = "DozeDockHandler";
     private static final boolean DEBUG = DozeService.DEBUG;
 
     private final AmbientDisplayConfiguration mConfig;
-    private final DozeMachine mMachine;
+    private DozeMachine mMachine;
     private final DockManager mDockManager;
+    private final UserTracker mUserTracker;
     private final DockEventListener mDockEventListener;
 
     private int mDockState = DockManager.STATE_NONE;
 
-    DozeDockHandler(AmbientDisplayConfiguration config, DozeMachine machine,
-            DockManager dockManager) {
-        mMachine = machine;
+    @Inject
+    DozeDockHandler(AmbientDisplayConfiguration config, DockManager dockManager,
+            UserTracker userTracker) {
         mConfig = config;
         mDockManager = dockManager;
+        mUserTracker = userTracker;
         mDockEventListener = new DockEventListener();
+    }
+
+    @Override
+    public void setDozeMachine(DozeMachine dozeMachine) {
+        mMachine = dozeMachine;
     }
 
     @Override
@@ -92,7 +103,7 @@ public class DozeDockHandler implements DozeMachine.Part {
                     nextState = State.DOZE_AOD_DOCKED;
                     break;
                 case DockManager.STATE_NONE:
-                    nextState = mConfig.alwaysOnEnabled(UserHandle.USER_CURRENT) ? State.DOZE_AOD
+                    nextState = mConfig.alwaysOnEnabled(mUserTracker.getUserId()) ? State.DOZE_AOD
                             : State.DOZE;
                     break;
                 case DockManager.STATE_DOCKED_HIDE:

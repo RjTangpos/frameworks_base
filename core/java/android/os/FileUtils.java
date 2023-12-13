@@ -22,6 +22,8 @@ import static android.os.ParcelFileDescriptor.MODE_READ_ONLY;
 import static android.os.ParcelFileDescriptor.MODE_READ_WRITE;
 import static android.os.ParcelFileDescriptor.MODE_TRUNCATE;
 import static android.os.ParcelFileDescriptor.MODE_WRITE_ONLY;
+import static android.system.OsConstants.EINVAL;
+import static android.system.OsConstants.ENOSYS;
 import static android.system.OsConstants.F_OK;
 import static android.system.OsConstants.O_ACCMODE;
 import static android.system.OsConstants.O_APPEND;
@@ -40,13 +42,19 @@ import static android.system.OsConstants.W_OK;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
+import android.app.AppGlobals;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ContentResolver;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
 import android.provider.DocumentsContract.Document;
+import android.provider.MediaStore;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.StructStat;
 import android.text.TextUtils;
+import android.util.DataUnit;
 import android.util.Log;
 import android.util.Slog;
 import android.webkit.MimeTypeMap;
@@ -108,6 +116,9 @@ public final class FileUtils {
     private FileUtils() {
     }
 
+    private static final String CAMERA_DIR_LOWER_CASE = "/storage/emulated/" + UserHandle.myUserId()
+            + "/dcim/camera";
+
     /** Regular expression for safe filenames: no spaces or metacharacters.
       *
       * Use a preload holder so that FileUtils can be compile-time initialized.
@@ -118,6 +129,7 @@ public final class FileUtils {
 
     // non-final so it can be toggled by Robolectric's ShadowFileUtils
     private static boolean sEnableCopyOptimizations = true;
+    private static volatile int sMediaProviderAppId = -1;
 
     private static final long COPY_CHECKPOINT_BYTES = 524288;
 
@@ -432,7 +444,19 @@ public final class FileUtils {
                 final StructStat st_in = Os.fstat(in);
                 final StructStat st_out = Os.fstat(out);
                 if (S_ISREG(st_in.st_mode) && S_ISREG(st_out.st_mode)) {
-                    return copyInternalSendfile(in, out, count, signal, executor, listener);
+                    try {
+                        return copyInternalSendfile(in, out, count, signal, executor, listener);
+                    } catch (ErrnoException e) {
+                        if (e.errno == EINVAL || e.errno == ENOSYS) {
+                            // sendfile(2) will fail in at least any of the following conditions:
+                            // 1. |in| doesn't support mmap(2)
+                            // 2. |out| was opened with O_APPEND
+                            // We fallback to userspace copy if that fails
+                            return copyInternalUserspace(in, out, count, signal, executor,
+                                    listener);
+                        }
+                        throw e;
+                    }
                 } else if (S_ISFIFO(st_in.st_mode) || S_ISFIFO(st_out.st_mode)) {
                     return copyInternalSplice(in, out, count, signal, executor, listener);
                 }
@@ -1270,6 +1294,14 @@ public final class FileUtils {
      * Round the given size of a storage device to a nice round power-of-two
      * value, such as 256MB or 32GB. This avoids showing weird values like
      * "29.5GB" in UI.
+     * Round ranges:
+     * ...
+     * (128 GB; 256 GB]   -> 256 GB
+     * (256 GB; 512 GB]   -> 512 GB
+     * (512 GB; 1000 GB]  -> 1000 GB
+     * (1000 GB; 2000 GB] -> 2000 GB
+     * ...
+     * etc
      *
      * @hide
      */
@@ -1283,7 +1315,88 @@ public final class FileUtils {
                 pow *= 1000;
             }
         }
+
+        Log.d(TAG, String.format("Rounded bytes from %d to %d", size, val * pow));
         return val * pow;
+    }
+
+    private static long toBytes(long value, String unit) {
+        unit = unit.toUpperCase();
+
+        if ("B".equals(unit)) {
+            return value;
+        }
+
+        if ("K".equals(unit) || "KB".equals(unit)) {
+            return DataUnit.KILOBYTES.toBytes(value);
+        }
+
+        if ("M".equals(unit) || "MB".equals(unit)) {
+            return DataUnit.MEGABYTES.toBytes(value);
+        }
+
+        if ("G".equals(unit) || "GB".equals(unit)) {
+            return DataUnit.GIGABYTES.toBytes(value);
+        }
+
+        if ("KI".equals(unit) || "KIB".equals(unit)) {
+            return DataUnit.KIBIBYTES.toBytes(value);
+        }
+
+        if ("MI".equals(unit) || "MIB".equals(unit)) {
+            return DataUnit.MEBIBYTES.toBytes(value);
+        }
+
+        if ("GI".equals(unit) || "GIB".equals(unit)) {
+            return DataUnit.GIBIBYTES.toBytes(value);
+        }
+
+        return Long.MIN_VALUE;
+    }
+
+    /**
+     * @param fmtSize The string that contains the size to be parsed. The
+     *   expected format is:
+     *
+     *   <p>"^((\\s*[-+]?[0-9]+)\\s*(B|K|KB|M|MB|G|GB|Ki|KiB|Mi|MiB|Gi|GiB)\\s*)$"
+     *
+     *   <p>For example: 10Kb, 500GiB, 100mb. The unit is not case sensitive.
+     *
+     * @return the size in bytes. If {@code fmtSize} has invalid format, it
+     *   returns {@link Long#MIN_VALUE}.
+     * @hide
+     */
+    public static long parseSize(@Nullable String fmtSize) {
+        if (fmtSize == null || fmtSize.isBlank()) {
+            return Long.MIN_VALUE;
+        }
+
+        int sign = 1;
+        fmtSize = fmtSize.trim();
+        char first = fmtSize.charAt(0);
+        if (first == '-' ||  first == '+') {
+            if (first == '-') {
+                sign = -1;
+            }
+
+            fmtSize = fmtSize.substring(1);
+        }
+
+        int index = 0;
+        // Find the last index of the value in fmtSize.
+        while (index < fmtSize.length() && Character.isDigit(fmtSize.charAt(index))) {
+            index++;
+        }
+
+        // Check if number and units are present.
+        if (index == 0 || index == fmtSize.length()) {
+            return Long.MIN_VALUE;
+        }
+
+        long value = sign * Long.valueOf(fmtSize.substring(0, index));
+        String unit = fmtSize.substring(index).trim();
+
+        return toBytes(value, unit);
     }
 
     /**
@@ -1432,6 +1545,42 @@ public final class FileUtils {
         } else {
             throw new IllegalArgumentException("Bad mode: " + mode);
         }
+    }
+
+    /** {@hide} */
+    @VisibleForTesting
+    public static ParcelFileDescriptor convertToModernFd(FileDescriptor fd) {
+        Context context = AppGlobals.getInitialApplication();
+        if (UserHandle.getAppId(Process.myUid()) == getMediaProviderAppId(context)) {
+            // Never convert modern fd for MediaProvider, because this requires
+            // MediaStore#scanFile and can cause infinite loops when MediaProvider scans
+            return null;
+        }
+
+        try (ParcelFileDescriptor dupFd = ParcelFileDescriptor.dup(fd)) {
+            return MediaStore.getOriginalMediaFormatFileDescriptor(context, dupFd);
+        } catch (Exception e) {
+            // Ignore error
+            return null;
+        }
+    }
+
+    private static int getMediaProviderAppId(Context context) {
+        if (sMediaProviderAppId != -1) {
+            return sMediaProviderAppId;
+        }
+
+        PackageManager pm = context.getPackageManager();
+        ProviderInfo provider = context.getPackageManager().resolveContentProvider(
+                MediaStore.AUTHORITY, PackageManager.MATCH_DIRECT_BOOT_AWARE
+                | PackageManager.MATCH_DIRECT_BOOT_UNAWARE
+                | PackageManager.MATCH_SYSTEM_ONLY);
+        if (provider == null) {
+            return -1;
+        }
+
+        sMediaProviderAppId = UserHandle.getAppId(provider.applicationInfo.uid);
+        return sMediaProviderAppId;
     }
 
     /** {@hide} */

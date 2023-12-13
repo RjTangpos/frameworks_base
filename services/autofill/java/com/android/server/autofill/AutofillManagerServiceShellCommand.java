@@ -17,6 +17,7 @@
 package com.android.server.autofill;
 
 import static android.service.autofill.AutofillFieldClassificationService.EXTRA_SCORES;
+import static android.service.autofill.AutofillService.EXTRA_RESULT;
 
 import static com.android.server.autofill.AutofillManagerService.RECEIVER_BUNDLE_EXTRA_SESSIONS;
 
@@ -89,6 +90,9 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
             pw.println("  get bind-instant-service-allowed");
             pw.println("    Gets whether binding to services provided by instant apps is allowed");
             pw.println("");
+            pw.println("  get saved-password-count");
+            pw.println("    Gets the number of saved passwords in the current service.");
+            pw.println("");
             pw.println("  set log_level [off | debug | verbose]");
             pw.println("    Sets the Autofill log level.");
             pw.println("");
@@ -111,6 +115,11 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
             pw.println("");
             pw.println("  set default-augmented-service-enabled USER_ID [true|false]");
             pw.println("    Enable / disable the default augmented autofill service for the user.");
+            pw.println("");
+            pw.println("  set temporary-detection-service USER_ID [COMPONENT_NAME DURATION]");
+            pw.println("    Temporarily (for DURATION ms) changes the autofill detection service "
+                    + "implementation.");
+            pw.println("    To reset, call with [COMPONENT_NAME 0].");
             pw.println("");
             pw.println("  get default-augmented-service-enabled USER_ID");
             pw.println("    Checks whether the default augmented autofill service is enabled for "
@@ -145,6 +154,10 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
                 return getBindInstantService(pw);
             case "default-augmented-service-enabled":
                 return getDefaultAugmentedServiceEnabled(pw);
+            case "field-detection-service-enabled":
+                return isFieldDetectionServiceEnabled(pw);
+            case "saved-password-count":
+                return getSavedPasswordCount(pw);
             default:
                 pw.println("Invalid set: " + what);
                 return -1;
@@ -169,6 +182,8 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
                 return setTemporaryAugmentedService(pw);
             case "default-augmented-service-enabled":
                 return setDefaultAugmentedServiceEnabled(pw);
+            case "temporary-detection-service":
+                return setTemporaryDetectionService(pw);
             default:
                 pw.println("Invalid set: " + what);
                 return -1;
@@ -245,7 +260,7 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
 
         final CountDownLatch latch = new CountDownLatch(1);
         mService.calculateScore(algorithm, value1, value2, new RemoteCallback((result) -> {
-            final Scores scores = result.getParcelable(EXTRA_SCORES);
+            final Scores scores = result.getParcelable(EXTRA_SCORES, android.service.autofill.AutofillFieldClassificationService.Scores.class);
             if (scores == null) {
                 pw.println("no score");
             } else {
@@ -311,6 +326,32 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
         }
     }
 
+    private int setTemporaryDetectionService(PrintWriter pw) {
+        final int userId = getNextIntArgRequired();
+        final String serviceName = getNextArg();
+        if (serviceName == null) {
+            mService.resetTemporaryDetectionService(userId);
+            return 0;
+        }
+        final int duration = getNextIntArgRequired();
+        if (duration <= 0) {
+            mService.resetTemporaryDetectionService(userId);
+            return 0;
+        }
+
+        mService.setTemporaryDetectionService(userId, serviceName, duration);
+        pw.println("Autofill Detection Service temporarily set to " + serviceName + " for "
+                + duration + "ms");
+        return 0;
+    }
+
+    private int isFieldDetectionServiceEnabled(PrintWriter pw) {
+        final int userId = getNextIntArgRequired();
+        boolean enabled = mService.isFieldDetectionServiceEnabledForUser(userId);
+        pw.println(enabled);
+        return 0;
+    }
+
     private int setTemporaryAugmentedService(PrintWriter pw) {
         final int userId = getNextIntArgRequired();
         final String serviceName = getNextArg();
@@ -342,6 +383,25 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
         return 0;
     }
 
+    private int getSavedPasswordCount(PrintWriter pw) {
+        final int userId = getNextIntArgRequired();
+        CountDownLatch latch = new CountDownLatch(1);
+        IResultReceiver resultReceiver = new IResultReceiver.Stub() {
+            @Override
+            public void send(int resultCode, Bundle resultData) {
+                pw.println("resultCode=" + resultCode);
+                if (resultCode == 0 && resultData != null) {
+                    pw.println("value=" + resultData.getInt(EXTRA_RESULT));
+                }
+                latch.countDown();
+            }
+        };
+        if (mService.requestSavedPasswordCount(userId, resultReceiver)) {
+            waitForLatch(pw, latch);
+        }
+        return 0;
+    }
+
     private int requestDestroy(PrintWriter pw) {
         if (!isNextArgSessions(pw)) {
             return -1;
@@ -355,7 +415,7 @@ public final class AutofillManagerServiceShellCommand extends ShellCommand {
                 latch.countDown();
             }
         };
-        return requestSessionCommon(pw, latch, () -> mService.destroySessions(userId, receiver));
+        return requestSessionCommon(pw, latch, () -> mService.removeAllSessions(userId, receiver));
     }
 
     private int requestList(PrintWriter pw) {

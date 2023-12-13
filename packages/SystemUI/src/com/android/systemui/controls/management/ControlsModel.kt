@@ -71,6 +71,11 @@ interface ControlsModel {
          * Use to notify that the model has changed for the first time
          */
         fun onFirstChange()
+
+        /**
+         * Use to notify that the model has changed
+         */
+        fun onChange()
     }
 
     /**
@@ -114,6 +119,7 @@ data class ControlStatusWrapper(
     val controlStatus: ControlStatus
 ) : ElementWrapper(), ControlInterface by controlStatus
 
+@Suppress("UNUSED_PARAMETER") // Use function instead of lambda for compile time alloc
 private fun nullIconGetter(_a: ComponentName, _b: String): Icon? = null
 
 data class ControlInfoWrapper(
@@ -131,7 +137,7 @@ data class ControlInfoWrapper(
         controlInfo: ControlInfo,
         favorite: Boolean,
         customIconGetter: (ComponentName, String) -> Icon?
-    ): this(component, controlInfo, favorite) {
+    ) : this(component, controlInfo, favorite) {
         this.customIconGetter = customIconGetter
     }
 

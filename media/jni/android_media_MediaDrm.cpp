@@ -37,6 +37,7 @@
 #include <mediadrm/DrmUtils.h>
 #include <mediadrm/IDrmMetricsConsumer.h>
 #include <mediadrm/IDrm.h>
+#include <utils/Vector.h>
 
 using ::android::os::PersistableBundle;
 namespace drm = ::android::hardware::drm;
@@ -187,6 +188,11 @@ struct KeyStatusFields {
     jclass classId;
 };
 
+struct LogMessageFields {
+    jmethodID init;
+    jclass classId;
+};
+
 struct fields_t {
     jfieldID context;
     jmethodID post_event;
@@ -208,6 +214,7 @@ struct fields_t {
     jmethodID createFromParcelId;
     jclass parcelCreatorClassId;
     KeyStatusFields keyStatus;
+    LogMessageFields logMessage;
 };
 
 static fields_t gFields;
@@ -224,6 +231,33 @@ jbyteArray hidlVectorToJByteArray(const hardware::hidl_vec<uint8_t> &vector) {
     return result;
 }
 
+jobject hidlLogMessagesToJavaList(JNIEnv *env, const Vector<drm::V1_4::LogMessage> &logs) {
+    jclass clazz = gFields.arraylistClassId;
+    jobject arrayList = env->NewObject(clazz, gFields.arraylist.init);
+    clazz = gFields.logMessage.classId;
+    for (auto log: logs) {
+        jobject jLog = env->NewObject(clazz, gFields.logMessage.init,
+                static_cast<jlong>(log.timeMs),
+                static_cast<jint>(log.priority),
+                env->NewStringUTF(log.message.c_str()));
+        env->CallBooleanMethod(arrayList, gFields.arraylist.add, jLog);
+    }
+    return arrayList;
+}
+
+int drmThrowException(JNIEnv* env, const char *className, const DrmStatus &err, const char *msg) {
+    using namespace android::jnihelp;
+    jstring _detailMessage = CreateExceptionMsg(env, msg);
+    int _status = ThrowException(env, className, "(Ljava/lang/String;III)V",
+                                 _detailMessage,
+                                 err.getCdmErr(),
+                                 err.getOemErr(),
+                                 err.getContext());
+    if (_detailMessage != NULL) {
+        env->DeleteLocalRef(_detailMessage);
+    }
+    return _status;
+}
 }  // namespace anonymous
 
 // ----------------------------------------------------------------------------
@@ -323,17 +357,63 @@ void JNIDrmListener::notify(DrmPlugin::EventType eventType, int extra,
     }
 }
 
-static void throwStateException(JNIEnv *env, const char *msg, status_t err) {
-    ALOGE("Illegal state exception: %s (%d)", msg, err);
+jint MediaErrorToJavaError(status_t err) {
+#define STATUS_CASE(status) \
+    case status: \
+        return J##status
 
+    switch (err) {
+        STATUS_CASE(ERROR_DRM_UNKNOWN);
+        STATUS_CASE(ERROR_DRM_NO_LICENSE);
+        STATUS_CASE(ERROR_DRM_LICENSE_EXPIRED);
+        STATUS_CASE(ERROR_DRM_RESOURCE_BUSY);
+        STATUS_CASE(ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION);
+        STATUS_CASE(ERROR_DRM_SESSION_NOT_OPENED);
+        STATUS_CASE(ERROR_DRM_CANNOT_HANDLE);
+        STATUS_CASE(ERROR_DRM_INSUFFICIENT_SECURITY);
+        STATUS_CASE(ERROR_DRM_FRAME_TOO_LARGE);
+        STATUS_CASE(ERROR_DRM_SESSION_LOST_STATE);
+        STATUS_CASE(ERROR_DRM_CERTIFICATE_MALFORMED);
+        STATUS_CASE(ERROR_DRM_CERTIFICATE_MISSING);
+        STATUS_CASE(ERROR_DRM_CRYPTO_LIBRARY);
+        STATUS_CASE(ERROR_DRM_GENERIC_OEM);
+        STATUS_CASE(ERROR_DRM_GENERIC_PLUGIN);
+        STATUS_CASE(ERROR_DRM_INIT_DATA);
+        STATUS_CASE(ERROR_DRM_KEY_NOT_LOADED);
+        STATUS_CASE(ERROR_DRM_LICENSE_PARSE);
+        STATUS_CASE(ERROR_DRM_LICENSE_POLICY);
+        STATUS_CASE(ERROR_DRM_LICENSE_RELEASE);
+        STATUS_CASE(ERROR_DRM_LICENSE_REQUEST_REJECTED);
+        STATUS_CASE(ERROR_DRM_LICENSE_RESTORE);
+        STATUS_CASE(ERROR_DRM_LICENSE_STATE);
+        STATUS_CASE(ERROR_DRM_MEDIA_FRAMEWORK);
+        STATUS_CASE(ERROR_DRM_PROVISIONING_CERTIFICATE);
+        STATUS_CASE(ERROR_DRM_PROVISIONING_CONFIG);
+        STATUS_CASE(ERROR_DRM_PROVISIONING_PARSE);
+        STATUS_CASE(ERROR_DRM_PROVISIONING_REQUEST_REJECTED);
+        STATUS_CASE(ERROR_DRM_PROVISIONING_RETRY);
+        STATUS_CASE(ERROR_DRM_RESOURCE_CONTENTION);
+        STATUS_CASE(ERROR_DRM_SECURE_STOP_RELEASE);
+        STATUS_CASE(ERROR_DRM_STORAGE_READ);
+        STATUS_CASE(ERROR_DRM_STORAGE_WRITE);
+        STATUS_CASE(ERROR_DRM_ZERO_SUBSAMPLES);
+#undef STATUS_CASE
+    }
+    return static_cast<jint>(err);
+}
+
+static void throwStateException(JNIEnv *env, const char *msg, const DrmStatus &err) {
+    ALOGE("Illegal state exception: %s (%d)", msg, static_cast<status_t>(err));
+
+    jint jerr = MediaErrorToJavaError(err);
     jobject exception = env->NewObject(gFields.stateException.classId,
-            gFields.stateException.init, static_cast<int>(err),
-            env->NewStringUTF(msg));
+            gFields.stateException.init, env->NewStringUTF(msg), static_cast<int>(jerr),
+            err.getCdmErr(), err.getOemErr(), err.getContext());
     env->Throw(static_cast<jthrowable>(exception));
 }
 
-static void throwSessionException(JNIEnv *env, const char *msg, status_t err) {
-    ALOGE("Session exception: %s (%d)", msg, err);
+static void throwSessionException(JNIEnv *env, const char *msg, const DrmStatus &err) {
+    ALOGE("Session exception: %s (%d)", msg, static_cast<status_t>(err));
 
     jint jErrorCode = 0;
     switch(err) {
@@ -345,10 +425,13 @@ static void throwSessionException(JNIEnv *env, const char *msg, status_t err) {
     }
 
     jobject exception = env->NewObject(gFields.sessionException.classId,
-            gFields.sessionException.init, static_cast<int>(err),
-            env->NewStringUTF(msg));
+            gFields.sessionException.init,
+            env->NewStringUTF(msg),
+            jErrorCode,
+            err.getCdmErr(),
+            err.getOemErr(),
+            err.getContext());
 
-    env->SetIntField(exception, gFields.sessionException.errorCode, jErrorCode);
     env->Throw(static_cast<jthrowable>(exception));
 }
 
@@ -357,43 +440,11 @@ static bool isSessionException(status_t err) {
 }
 
 static bool throwExceptionAsNecessary(
-        JNIEnv *env, status_t err, const char *msg = NULL) {
-
-    const char *drmMessage = NULL;
-
-    switch (err) {
-    case ERROR_DRM_UNKNOWN:
-        drmMessage = "General DRM error";
-        break;
-    case ERROR_DRM_NO_LICENSE:
-        drmMessage = "No license";
-        break;
-    case ERROR_DRM_LICENSE_EXPIRED:
-        drmMessage = "License expired";
-        break;
-    case ERROR_DRM_SESSION_NOT_OPENED:
-        drmMessage = "Session not opened";
-        break;
-    case ERROR_DRM_DECRYPT_UNIT_NOT_INITIALIZED:
-        drmMessage = "Not initialized";
-        break;
-    case ERROR_DRM_DECRYPT:
-        drmMessage = "Decrypt error";
-        break;
-    case ERROR_DRM_CANNOT_HANDLE:
-        drmMessage = "Invalid parameter or data format";
-        break;
-    case ERROR_DRM_INVALID_STATE:
-        drmMessage = "Invalid state";
-        break;
-    default:
-        break;
-    }
-
-    String8 vendorMessage;
-    if (err >= ERROR_DRM_VENDOR_MIN && err <= ERROR_DRM_VENDOR_MAX) {
-        vendorMessage = String8::format("DRM vendor-defined error: %d", err);
-        drmMessage = vendorMessage.string();
+        JNIEnv *env, const sp<IDrm> &drm, const DrmStatus &err, const char *msg = NULL) {
+    std::string msgStr;
+    if (drm != NULL && err != OK) {
+        msgStr = DrmUtils::GetExceptionMessage(err, msg, drm);
+        msg = msgStr.c_str();
     }
 
     if (err == BAD_VALUE || err == ERROR_DRM_CANNOT_HANDLE) {
@@ -403,31 +454,21 @@ static bool throwExceptionAsNecessary(
         jniThrowException(env, "java/lang/UnsupportedOperationException", msg);
         return true;
     } else if (err == ERROR_DRM_NOT_PROVISIONED) {
-        jniThrowException(env, "android/media/NotProvisionedException", msg);
+        drmThrowException(env, "android/media/NotProvisionedException", err, msg);
         return true;
     } else if (err == ERROR_DRM_RESOURCE_BUSY) {
-        jniThrowException(env, "android/media/ResourceBusyException", msg);
+        drmThrowException(env, "android/media/ResourceBusyException", err, msg);
         return true;
     } else if (err == ERROR_DRM_DEVICE_REVOKED) {
-        jniThrowException(env, "android/media/DeniedByServerException", msg);
+        drmThrowException(env, "android/media/DeniedByServerException", err, msg);
         return true;
     } else if (err == DEAD_OBJECT) {
-        jniThrowException(env, "android/media/MediaDrmResetException",
-                "mediaserver died");
+        jniThrowException(env, "android/media/MediaDrmResetException", msg);
         return true;
     } else if (isSessionException(err)) {
         throwSessionException(env, msg, err);
         return true;
     } else if (err != OK) {
-        String8 errbuf;
-        if (drmMessage != NULL) {
-            if (msg == NULL) {
-                msg = drmMessage;
-            } else {
-                errbuf = String8::format("%s: %s", msg, drmMessage);
-                msg = errbuf.string();
-            }
-        }
         throwStateException(env, msg, err);
         return true;
     }
@@ -469,7 +510,7 @@ sp<IDrm> JDrm::MakeDrm(const uint8_t uuid[16], const String8 &appPackageName) {
         return NULL;
     }
 
-    status_t err = drm->createPlugin(uuid, appPackageName);
+    DrmStatus err = drm->createPlugin(uuid, appPackageName);
 
     if (err != OK) {
         return NULL;
@@ -891,11 +932,11 @@ static void android_media_MediaDrm_native_init(JNIEnv *env) {
     gFields.arraylistClassId = static_cast<jclass>(env->NewGlobalRef(clazz));
 
     FIND_CLASS(clazz, "android/media/MediaDrm$MediaDrmStateException");
-    GET_METHOD_ID(gFields.stateException.init, clazz, "<init>", "(ILjava/lang/String;)V");
+    GET_METHOD_ID(gFields.stateException.init, clazz, "<init>", "(Ljava/lang/String;IIII)V");
     gFields.stateException.classId = static_cast<jclass>(env->NewGlobalRef(clazz));
 
     FIND_CLASS(clazz, "android/media/MediaDrm$SessionException");
-    GET_METHOD_ID(gFields.sessionException.init, clazz, "<init>", "(ILjava/lang/String;)V");
+    GET_METHOD_ID(gFields.sessionException.init, clazz, "<init>", "(Ljava/lang/String;IIII)V");
     gFields.sessionException.classId = static_cast<jclass>(env->NewGlobalRef(clazz));
     GET_FIELD_ID(gFields.sessionException.errorCode, clazz, "mErrorCode", "I");
 
@@ -907,6 +948,10 @@ static void android_media_MediaDrm_native_init(JNIEnv *env) {
     FIND_CLASS(clazz, "android/media/MediaDrm$KeyStatus");
     gFields.keyStatus.classId = static_cast<jclass>(env->NewGlobalRef(clazz));
     GET_METHOD_ID(gFields.keyStatus.init, clazz, "<init>", "([BI)V");
+
+    FIND_CLASS(clazz, "android/media/MediaDrm$LogMessage");
+    gFields.logMessage.classId = static_cast<jclass>(env->NewGlobalRef(clazz));
+    GET_METHOD_ID(gFields.logMessage.init, clazz, "<init>", "(JILjava/lang/String;)V");
 }
 
 static void android_media_MediaDrm_native_setup(
@@ -939,10 +984,12 @@ static void android_media_MediaDrm_native_setup(
     status_t err = drm->initCheck();
 
     if (err != OK) {
+        auto logs(DrmUtils::gLogBuf.getLogs());
+        auto msg(DrmUtils::GetExceptionMessage(err, "Failed to instantiate drm object", logs));
         jniThrowException(
                 env,
                 "android/media/UnsupportedSchemeException",
-                "Failed to instantiate drm object.");
+                msg.c_str());
         return;
     }
 
@@ -973,20 +1020,11 @@ DrmPlugin::SecurityLevel jintToSecurityLevel(jint jlevel) {
 }
 
 static jbyteArray android_media_MediaDrm_getSupportedCryptoSchemesNative(JNIEnv *env) {
-    std::vector<uint8_t> bv;
-    for (auto &factory : DrmUtils::MakeDrmFactories()) {
-        sp<drm::V1_3::IDrmFactory> factoryV1_3 = drm::V1_3::IDrmFactory::castFrom(factory);
-        if (factoryV1_3 == nullptr) {
-            continue;
-        }
-        factoryV1_3->getSupportedCryptoSchemes(
-            [&](const hardware::hidl_vec<hardware::hidl_array<uint8_t, 16>>& schemes) {
-                for (const auto &scheme : schemes) {
-                    bv.insert(bv.end(), scheme.data(), scheme.data() + scheme.size());
-                }
-            });
-    }
+    sp<IDrm> drm = android::DrmUtils::MakeDrm();
+    if (drm == NULL) return env->NewByteArray(0);
 
+    std::vector<uint8_t> bv;
+    drm->getSupportedSchemes(bv);
     jbyteArray jUuidBytes = env->NewByteArray(bv.size());
     env->SetByteArrayRegion(jUuidBytes, 0, bv.size(), reinterpret_cast<const jbyte *>(bv.data()));
     return jUuidBytes;
@@ -1021,7 +1059,7 @@ static jboolean android_media_MediaDrm_isCryptoSchemeSupportedNative(
     status_t err = JDrm::IsCryptoSchemeSupported(uuid.array(), mimeType,
             securityLevel, &isSupported);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to query crypto scheme support")) {
+    if (throwExceptionAsNecessary(env, NULL, err, "Failed to query crypto scheme support")) {
         return false;
     }
     return isSupported;
@@ -1042,9 +1080,9 @@ static jbyteArray android_media_MediaDrm_openSession(
         return NULL;
     }
 
-    status_t err = drm->openSession(level, sessionId);
+    DrmStatus err = drm->openSession(level, sessionId);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to open session")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to open session")) {
         return NULL;
     }
 
@@ -1061,9 +1099,9 @@ static void android_media_MediaDrm_closeSession(
 
     Vector<uint8_t> sessionId(JByteArrayToVector(env, jsessionId));
 
-    status_t err = drm->closeSession(sessionId);
+    DrmStatus err = drm->closeSession(sessionId);
 
-    throwExceptionAsNecessary(env, err, "Failed to close session");
+    throwExceptionAsNecessary(env, drm, err, "Failed to close session");
 }
 
 static jobject android_media_MediaDrm_getKeyRequest(
@@ -1113,10 +1151,10 @@ static jobject android_media_MediaDrm_getKeyRequest(
     String8 defaultUrl;
     DrmPlugin::KeyRequestType keyRequestType;
 
-    status_t err = drm->getKeyRequest(sessionId, initData, mimeType,
-            keyType, optParams, request, defaultUrl, &keyRequestType);
+    DrmStatus err = drm->getKeyRequest(sessionId, initData, mimeType, keyType, optParams, request,
+                                       defaultUrl, &keyRequestType);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get key request")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get key request")) {
         return NULL;
     }
 
@@ -1184,9 +1222,9 @@ static jbyteArray android_media_MediaDrm_provideKeyResponse(
     Vector<uint8_t> response(JByteArrayToVector(env, jresponse));
     Vector<uint8_t> keySetId;
 
-    status_t err = drm->provideKeyResponse(sessionId, response, keySetId);
+    DrmStatus err = drm->provideKeyResponse(sessionId, response, keySetId);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to handle key response")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to handle key response")) {
         return NULL;
     }
     return VectorToJByteArray(env, keySetId);
@@ -1208,9 +1246,9 @@ static void android_media_MediaDrm_removeKeys(
 
     Vector<uint8_t> keySetId(JByteArrayToVector(env, jkeysetId));
 
-    status_t err = drm->removeKeys(keySetId);
+    DrmStatus err = drm->removeKeys(keySetId);
 
-    throwExceptionAsNecessary(env, err, "Failed to remove keys");
+    throwExceptionAsNecessary(env, drm, err, "Failed to remove keys");
 }
 
 static void android_media_MediaDrm_restoreKeys(
@@ -1231,9 +1269,9 @@ static void android_media_MediaDrm_restoreKeys(
     Vector<uint8_t> sessionId(JByteArrayToVector(env, jsessionId));
     Vector<uint8_t> keySetId(JByteArrayToVector(env, jkeysetId));
 
-    status_t err = drm->restoreKeys(sessionId, keySetId);
+    DrmStatus err = drm->restoreKeys(sessionId, keySetId);
 
-    throwExceptionAsNecessary(env, err, "Failed to restore keys");
+    throwExceptionAsNecessary(env, drm, err, "Failed to restore keys");
 }
 
 static jobject android_media_MediaDrm_queryKeyStatus(
@@ -1247,9 +1285,9 @@ static jobject android_media_MediaDrm_queryKeyStatus(
 
     KeyedVector<String8, String8> infoMap;
 
-    status_t err = drm->queryKeyStatus(sessionId, infoMap);
+    DrmStatus err = drm->queryKeyStatus(sessionId, infoMap);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to query key status")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to query key status")) {
         return NULL;
     }
 
@@ -1277,9 +1315,9 @@ static jobject android_media_MediaDrm_getProvisionRequestNative(
     }
 
     String8 certAuthority = JStringToString8(env, jcertAuthority);
-    status_t err = drm->getProvisionRequest(certType, certAuthority, request, defaultUrl);
+    DrmStatus err = drm->getProvisionRequest(certType, certAuthority, request, defaultUrl);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get provision request")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get provision request")) {
         return NULL;
     }
 
@@ -1318,7 +1356,7 @@ static jobject android_media_MediaDrm_provideProvisionResponseNative(
     Vector<uint8_t> response(JByteArrayToVector(env, jresponse));
     Vector<uint8_t> certificate, wrappedKey;
 
-    status_t err = drm->provideProvisionResponse(response, certificate, wrappedKey);
+    DrmStatus err = drm->provideProvisionResponse(response, certificate, wrappedKey);
 
     // Fill out return obj
     jclass clazz = gFields.certificateClassId;
@@ -1334,7 +1372,7 @@ static jobject android_media_MediaDrm_provideProvisionResponseNative(
         env->SetObjectField(certificateObj, gFields.certificate.wrappedPrivateKey, jwrappedKey);
     }
 
-    throwExceptionAsNecessary(env, err, "Failed to handle provision response");
+    throwExceptionAsNecessary(env, drm, err, "Failed to handle provision response");
     return certificateObj;
 }
 
@@ -1348,9 +1386,9 @@ static jobject android_media_MediaDrm_getSecureStops(
 
     List<Vector<uint8_t>> secureStops;
 
-    status_t err = drm->getSecureStops(secureStops);
+    DrmStatus err = drm->getSecureStops(secureStops);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get secure stops")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get secure stops")) {
         return NULL;
     }
 
@@ -1367,9 +1405,9 @@ static jobject android_media_MediaDrm_getSecureStopIds(
 
     List<Vector<uint8_t>> secureStopIds;
 
-    status_t err = drm->getSecureStopIds(secureStopIds);
+    DrmStatus err = drm->getSecureStopIds(secureStopIds);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get secure stop Ids")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get secure stop Ids")) {
         return NULL;
     }
 
@@ -1386,9 +1424,9 @@ static jbyteArray android_media_MediaDrm_getSecureStop(
 
     Vector<uint8_t> secureStop;
 
-    status_t err = drm->getSecureStop(JByteArrayToVector(env, ssid), secureStop);
+    DrmStatus err = drm->getSecureStop(JByteArrayToVector(env, ssid), secureStop);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get secure stop")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get secure stop")) {
         return NULL;
     }
 
@@ -1405,9 +1443,9 @@ static void android_media_MediaDrm_releaseSecureStops(
 
     Vector<uint8_t> ssRelease(JByteArrayToVector(env, jssRelease));
 
-    status_t err = drm->releaseSecureStops(ssRelease);
+    DrmStatus err = drm->releaseSecureStops(ssRelease);
 
-    throwExceptionAsNecessary(env, err, "Failed to release secure stops");
+    throwExceptionAsNecessary(env, drm, err, "Failed to release secure stops");
 }
 
 static void android_media_MediaDrm_removeSecureStop(
@@ -1418,9 +1456,9 @@ static void android_media_MediaDrm_removeSecureStop(
         return;
     }
 
-    status_t err = drm->removeSecureStop(JByteArrayToVector(env, ssid));
+    DrmStatus err = drm->removeSecureStop(JByteArrayToVector(env, ssid));
 
-    throwExceptionAsNecessary(env, err, "Failed to remove secure stop");
+    throwExceptionAsNecessary(env, drm, err, "Failed to remove secure stop");
 }
 
 static void android_media_MediaDrm_removeAllSecureStops(
@@ -1431,9 +1469,9 @@ static void android_media_MediaDrm_removeAllSecureStops(
         return;
     }
 
-    status_t err = drm->removeAllSecureStops();
+    DrmStatus err = drm->removeAllSecureStops();
 
-    throwExceptionAsNecessary(env, err, "Failed to remove all secure stops");
+    throwExceptionAsNecessary(env, drm, err, "Failed to remove all secure stops");
 }
 
 
@@ -1470,9 +1508,9 @@ static jint android_media_MediaDrm_getConnectedHdcpLevel(JNIEnv *env,
     DrmPlugin::HdcpLevel connected = DrmPlugin::kHdcpNone;
     DrmPlugin::HdcpLevel max = DrmPlugin::kHdcpNone;
 
-    status_t err = drm->getHdcpLevels(&connected, &max);
+    DrmStatus err = drm->getHdcpLevels(&connected, &max);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get HDCP levels")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get HDCP levels")) {
         return gHdcpLevels.kHdcpLevelUnknown;
     }
     return HdcpLevelTojint(connected);
@@ -1489,9 +1527,9 @@ static jint android_media_MediaDrm_getMaxHdcpLevel(JNIEnv *env,
     DrmPlugin::HdcpLevel connected = DrmPlugin::kHdcpLevelUnknown;
     DrmPlugin::HdcpLevel max = DrmPlugin::kHdcpLevelUnknown;
 
-    status_t err = drm->getHdcpLevels(&connected, &max);
+    DrmStatus err = drm->getHdcpLevels(&connected, &max);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get HDCP levels")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get HDCP levels")) {
         return gHdcpLevels.kHdcpLevelUnknown;
     }
     return HdcpLevelTojint(max);
@@ -1506,9 +1544,9 @@ static jint android_media_MediaDrm_getOpenSessionCount(JNIEnv *env,
     }
 
     uint32_t open = 0, max = 0;
-    status_t err = drm->getNumberOfSessions(&open, &max);
+    DrmStatus err = drm->getNumberOfSessions(&open, &max);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get number of sessions")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get number of sessions")) {
         return 0;
     }
     return open;
@@ -1523,9 +1561,9 @@ static jint android_media_MediaDrm_getMaxSessionCount(JNIEnv *env,
     }
 
     uint32_t open = 0, max = 0;
-    status_t err = drm->getNumberOfSessions(&open, &max);
+    DrmStatus err = drm->getNumberOfSessions(&open, &max);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get number of sessions")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get number of sessions")) {
         return 0;
     }
     return max;
@@ -1543,9 +1581,9 @@ static jint android_media_MediaDrm_getSecurityLevel(JNIEnv *env,
 
     DrmPlugin::SecurityLevel level = DrmPlugin::kSecurityLevelUnknown;
 
-    status_t err = drm->getSecurityLevel(sessionId, &level);
+    DrmStatus err = drm->getSecurityLevel(sessionId, &level);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get security level")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get security level")) {
         return gSecurityLevels.kSecurityLevelUnknown;
     }
 
@@ -1575,9 +1613,9 @@ static jobject android_media_MediaDrm_getOfflineLicenseKeySetIds(
 
     List<Vector<uint8_t> > keySetIds;
 
-    status_t err = drm->getOfflineLicenseKeySetIds(keySetIds);
+    DrmStatus err = drm->getOfflineLicenseKeySetIds(keySetIds);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get offline key set Ids")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get offline key set Ids")) {
         return NULL;
     }
 
@@ -1592,9 +1630,9 @@ static void android_media_MediaDrm_removeOfflineLicense(
         return;
     }
 
-    status_t err = drm->removeOfflineLicense(JByteArrayToVector(env, keySetId));
+    DrmStatus err = drm->removeOfflineLicense(JByteArrayToVector(env, keySetId));
 
-    throwExceptionAsNecessary(env, err, "Failed to remove offline license");
+    throwExceptionAsNecessary(env, drm, err, "Failed to remove offline license");
 }
 
 static jint android_media_MediaDrm_getOfflineLicenseState(JNIEnv *env,
@@ -1609,9 +1647,9 @@ static jint android_media_MediaDrm_getOfflineLicenseState(JNIEnv *env,
 
     DrmPlugin::OfflineLicenseState state = DrmPlugin::kOfflineLicenseStateUnknown;
 
-    status_t err = drm->getOfflineLicenseState(keySetId, &state);
+    DrmStatus err = drm->getOfflineLicenseState(keySetId, &state);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get offline license state")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get offline license state")) {
         return gOfflineLicenseStates.kOfflineLicenseStateUnknown;
     }
 
@@ -1642,9 +1680,9 @@ static jstring android_media_MediaDrm_getPropertyString(
     String8 name = JStringToString8(env, jname);
     String8 value;
 
-    status_t err = drm->getPropertyString(name, value);
+    DrmStatus err = drm->getPropertyString(name, value);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get property")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get property")) {
         return NULL;
     }
 
@@ -1668,9 +1706,9 @@ static jbyteArray android_media_MediaDrm_getPropertyByteArray(
     String8 name = JStringToString8(env, jname);
     Vector<uint8_t> value;
 
-    status_t err = drm->getPropertyByteArray(name, value);
+    DrmStatus err = drm->getPropertyByteArray(name, value);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to get property")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get property")) {
         return NULL;
     }
 
@@ -1700,9 +1738,9 @@ static void android_media_MediaDrm_setPropertyString(
     String8 name = JStringToString8(env, jname);
     String8 value = JStringToString8(env, jvalue);
 
-    status_t err = drm->setPropertyString(name, value);
+    DrmStatus err = drm->setPropertyString(name, value);
 
-    throwExceptionAsNecessary(env, err, "Failed to set property");
+    throwExceptionAsNecessary(env, drm, err, "Failed to set property");
 }
 
 static void android_media_MediaDrm_setPropertyByteArray(
@@ -1728,9 +1766,9 @@ static void android_media_MediaDrm_setPropertyByteArray(
     String8 name = JStringToString8(env, jname);
     Vector<uint8_t> value = JByteArrayToVector(env, jvalue);
 
-    status_t err = drm->setPropertyByteArray(name, value);
+    DrmStatus err = drm->setPropertyByteArray(name, value);
 
-    throwExceptionAsNecessary(env, err, "Failed to set property");
+    throwExceptionAsNecessary(env, drm, err, "Failed to set property");
 }
 
 static void android_media_MediaDrm_setCipherAlgorithmNative(
@@ -1752,9 +1790,9 @@ static void android_media_MediaDrm_setCipherAlgorithmNative(
     Vector<uint8_t> sessionId(JByteArrayToVector(env, jsessionId));
     String8 algorithm = JStringToString8(env, jalgorithm);
 
-    status_t err = drm->setCipherAlgorithm(sessionId, algorithm);
+    DrmStatus err = drm->setCipherAlgorithm(sessionId, algorithm);
 
-    throwExceptionAsNecessary(env, err, "Failed to set cipher algorithm");
+    throwExceptionAsNecessary(env, drm, err, "Failed to set cipher algorithm");
 }
 
 static void android_media_MediaDrm_setMacAlgorithmNative(
@@ -1776,9 +1814,9 @@ static void android_media_MediaDrm_setMacAlgorithmNative(
     Vector<uint8_t> sessionId(JByteArrayToVector(env, jsessionId));
     String8 algorithm = JStringToString8(env, jalgorithm);
 
-    status_t err = drm->setMacAlgorithm(sessionId, algorithm);
+    DrmStatus err = drm->setMacAlgorithm(sessionId, algorithm);
 
-    throwExceptionAsNecessary(env, err, "Failed to set mac algorithm");
+    throwExceptionAsNecessary(env, drm, err, "Failed to set mac algorithm");
 }
 
 
@@ -1804,9 +1842,9 @@ static jbyteArray android_media_MediaDrm_encryptNative(
     Vector<uint8_t> iv(JByteArrayToVector(env, jiv));
     Vector<uint8_t> output;
 
-    status_t err = drm->encrypt(sessionId, keyId, input, iv, output);
+    DrmStatus err = drm->encrypt(sessionId, keyId, input, iv, output);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to encrypt")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to encrypt")) {
         return NULL;
     }
 
@@ -1835,8 +1873,8 @@ static jbyteArray android_media_MediaDrm_decryptNative(
     Vector<uint8_t> iv(JByteArrayToVector(env, jiv));
     Vector<uint8_t> output;
 
-    status_t err = drm->decrypt(sessionId, keyId, input, iv, output);
-    if (throwExceptionAsNecessary(env, err, "Failed to decrypt")) {
+    DrmStatus err = drm->decrypt(sessionId, keyId, input, iv, output);
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to decrypt")) {
         return NULL;
     }
 
@@ -1864,9 +1902,9 @@ static jbyteArray android_media_MediaDrm_signNative(
     Vector<uint8_t> message(JByteArrayToVector(env, jmessage));
     Vector<uint8_t> signature;
 
-    status_t err = drm->sign(sessionId, keyId, message, signature);
+    DrmStatus err = drm->sign(sessionId, keyId, message, signature);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to sign")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to sign")) {
         return NULL;
     }
 
@@ -1895,9 +1933,9 @@ static jboolean android_media_MediaDrm_verifyNative(
     Vector<uint8_t> signature(JByteArrayToVector(env, jsignature));
     bool match;
 
-    status_t err = drm->verify(sessionId, keyId, message, signature, match);
+    DrmStatus err = drm->verify(sessionId, keyId, message, signature, match);
 
-    throwExceptionAsNecessary(env, err, "Failed to verify");
+    throwExceptionAsNecessary(env, drm, err, "Failed to verify");
     return match;
 }
 
@@ -1913,7 +1951,7 @@ android_media_MediaDrm_native_getMetrics(JNIEnv *env, jobject thiz)
     // Retrieve current metrics snapshot from drm.
     PersistableBundle metrics;
     sp<IDrmMetricsConsumer> consumer(new DrmMetricsConsumer(&metrics));
-    status_t err = drm->getMetrics(consumer);
+    DrmStatus err = drm->getMetrics(consumer);
     if (err != OK) {
         ALOGE("getMetrics failed: %d", (int)err);
         return (jobject) NULL;
@@ -1944,15 +1982,80 @@ static jbyteArray android_media_MediaDrm_signRSANative(
     Vector<uint8_t> message(JByteArrayToVector(env, jmessage));
     Vector<uint8_t> signature;
 
-    status_t err = drm->signRSA(sessionId, algorithm, message, wrappedKey, signature);
+    DrmStatus err = drm->signRSA(sessionId, algorithm, message, wrappedKey, signature);
 
-    if (throwExceptionAsNecessary(env, err, "Failed to sign")) {
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to sign")) {
         return NULL;
     }
 
     return VectorToJByteArray(env, signature);
 }
 
+static jboolean android_media_MediaDrm_requiresSecureDecoder(
+        JNIEnv *env, jobject thiz, jstring jmimeType,
+        jint jSecurityLevel) {
+    sp<IDrm> drm = GetDrm(env, thiz);
+    if (!CheckDrm(env, drm)) {
+        return JNI_FALSE;
+    }
+
+    String8 mimeType;
+    if (jmimeType != NULL) {
+        mimeType = JStringToString8(env, jmimeType);
+    }
+
+    DrmPlugin::SecurityLevel securityLevel = jintToSecurityLevel(jSecurityLevel);
+    if (securityLevel == DrmPlugin::kSecurityLevelUnknown) {
+        jniThrowException(env, "java/lang/IllegalArgumentException", "Invalid security level");
+        return JNI_FALSE;
+    }
+
+    bool required = false;
+    DrmStatus err = OK;
+    if (securityLevel == DrmPlugin::kSecurityLevelMax) {
+        err = drm->requiresSecureDecoder(mimeType.c_str(), &required);
+    } else {
+        err = drm->requiresSecureDecoder(mimeType.c_str(), securityLevel, &required);
+    }
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to query secure decoder requirement")) {
+        return false;
+    }
+    return required;
+}
+
+static void android_media_MediaDrm_setPlaybackId(
+        JNIEnv *env, jobject thiz, jbyteArray jsessionId,
+        jstring jplaybackId) {
+    sp<IDrm> drm = GetDrm(env, thiz);
+    if (!CheckSession(env, drm, jsessionId)) {
+        return;
+    }
+
+    Vector<uint8_t> sessionId(JByteArrayToVector(env, jsessionId));
+
+    String8 playbackId;
+    if (jplaybackId != NULL) {
+        playbackId = JStringToString8(env, jplaybackId);
+    }
+    DrmStatus err = drm->setPlaybackId(sessionId, playbackId.c_str());
+    throwExceptionAsNecessary(env, drm, err, "Failed to set playbackId");
+}
+
+static jobject android_media_MediaDrm_getLogMessages(
+        JNIEnv *env, jobject thiz) {
+    sp<IDrm> drm = GetDrm(env, thiz);
+    if (!CheckDrm(env, drm)) {
+        return NULL;
+    }
+
+    Vector<drm::V1_4::LogMessage> logs;
+    DrmStatus err = drm->getLogMessages(logs);
+    ALOGI("drm->getLogMessages %zu logs", logs.size());
+    if (throwExceptionAsNecessary(env, drm, err, "Failed to get log messages")) {
+        return NULL;
+    }
+    return hidlLogMessagesToJavaList(env, logs);
+}
 
 static const JNINativeMethod gMethods[] = {
     { "native_release", "()V", (void *)android_media_MediaDrm_native_release },
@@ -1968,13 +2071,13 @@ static const JNINativeMethod gMethods[] = {
     { "isCryptoSchemeSupportedNative", "([BLjava/lang/String;I)Z",
       (void *)android_media_MediaDrm_isCryptoSchemeSupportedNative },
 
-    { "openSession", "(I)[B",
+    { "openSessionNative", "(I)[B",
       (void *)android_media_MediaDrm_openSession },
 
-    { "closeSession", "([B)V",
+    { "closeSessionNative", "([B)V",
       (void *)android_media_MediaDrm_closeSession },
 
-    { "getKeyRequest", "([B[BLjava/lang/String;ILjava/util/HashMap;)"
+    { "getKeyRequestNative", "([B[BLjava/lang/String;ILjava/util/HashMap;)"
       "Landroid/media/MediaDrm$KeyRequest;",
       (void *)android_media_MediaDrm_getKeyRequest },
 
@@ -2075,6 +2178,15 @@ static const JNINativeMethod gMethods[] = {
 
     { "getMetricsNative", "()Landroid/os/PersistableBundle;",
       (void *)android_media_MediaDrm_native_getMetrics },
+
+    { "requiresSecureDecoder", "(Ljava/lang/String;I)Z",
+      (void *)android_media_MediaDrm_requiresSecureDecoder },
+
+    { "setPlaybackId", "([BLjava/lang/String;)V",
+      (void *)android_media_MediaDrm_setPlaybackId },
+
+    { "getLogMessages", "()Ljava/util/List;",
+      (void *)android_media_MediaDrm_getLogMessages },
 };
 
 int register_android_media_Drm(JNIEnv *env) {

@@ -30,12 +30,18 @@ import static android.hardware.gnss.V2_1.IGnssMeasurementCallback.GnssMeasuremen
 import android.annotation.FloatRange;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.SuppressLint;
+import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 
 /**
  * A class representing a GNSS satellite measurement, containing raw and computed information.
@@ -67,12 +73,16 @@ public final class GnssMeasurement implements Parcelable {
     private double mFullInterSignalBiasUncertaintyNanos;
     private double mSatelliteInterSignalBiasNanos;
     private double mSatelliteInterSignalBiasUncertaintyNanos;
+    @Nullable private SatellitePvt mSatellitePvt;
+    @Nullable private Collection<CorrelationVector> mReadOnlyCorrelationVectors;
 
     // The following enumerations must be in sync with the values declared in GNSS HAL.
 
     private static final int HAS_NO_FLAGS = 0;
     private static final int HAS_CODE_TYPE = (1 << 14);
     private static final int HAS_BASEBAND_CN0 = (1 << 15);
+    private static final int HAS_SATELLITE_PVT = (1 << 20);
+    private static final int HAS_CORRELATION_VECTOR = (1 << 21);
 
     /**
      * The status of the multipath indicator.
@@ -169,8 +179,8 @@ public final class GnssMeasurement implements Parcelable {
      * @hide
      */
     @IntDef(flag = true, prefix = { "ADR_STATE_" }, value = {
-            ADR_STATE_VALID, ADR_STATE_RESET, ADR_STATE_CYCLE_SLIP, ADR_STATE_HALF_CYCLE_RESOLVED,
-            ADR_STATE_HALF_CYCLE_REPORTED
+            ADR_STATE_UNKNOWN, ADR_STATE_VALID, ADR_STATE_RESET, ADR_STATE_CYCLE_SLIP,
+            ADR_STATE_HALF_CYCLE_RESOLVED, ADR_STATE_HALF_CYCLE_REPORTED
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface AdrState {}
@@ -204,6 +214,25 @@ public final class GnssMeasurement implements Parcelable {
      *
      * <p> When this bit is unset, the {@link #getAccumulatedDeltaRangeMeters()} corresponds to the
      * carrier phase measurement plus an accumulated integer number of carrier half cycles.
+     *
+     * <p> For signals that have databits, the carrier phase tracking loops typically use a costas
+     * loop discriminator.  This type of tracking loop introduces a half-cycle ambiguity that is
+     * resolved by searching through the received data for known patterns of databits (e.g. GPS uses
+     * the TLM word) which then determines the polarity of the incoming data and resolves the
+     * half-cycle ambiguity.
+     *
+     * <p>Before the half-cycle ambiguity has been resolved it is possible that the ADR_STATE_VALID
+     * flag is set:
+     *
+     * <ul>
+     *   <li> In cases where ADR_STATE_HALF_CYCLE_REPORTED is not set, the
+     *   ADR_STATE_HALF_CYCLE_RESOLVED flag will not be available. Here, a half wave length will be
+     *   added to the returned accumulated delta range uncertainty to indicate the half cycle
+     *   ambiguity.
+     *   <li> In cases where ADR_STATE_HALF_CYCLE_REPORTED is set, half cycle ambiguity will be
+     *   indicated via both the ADR_STATE_HALF_CYCLE_RESOLVED flag and as well a half wave length
+     *   added to the returned accumulated delta range uncertainty.
+     * </ul>
      */
     public static final int ADR_STATE_HALF_CYCLE_RESOLVED = (1<<3);
 
@@ -274,6 +303,8 @@ public final class GnssMeasurement implements Parcelable {
         mSatelliteInterSignalBiasNanos = measurement.mSatelliteInterSignalBiasNanos;
         mSatelliteInterSignalBiasUncertaintyNanos =
                 measurement.mSatelliteInterSignalBiasUncertaintyNanos;
+        mSatellitePvt = measurement.mSatellitePvt;
+        mReadOnlyCorrelationVectors = measurement.mReadOnlyCorrelationVectors;
     }
 
     /**
@@ -351,9 +382,9 @@ public final class GnssMeasurement implements Parcelable {
     }
 
     /**
-     * Gets per-satellite sync state.
+     * Gets per-satellite-signal sync state.
      *
-     * <p>It represents the current sync state for the associated satellite.
+     * <p>It represents the current sync state for the associated satellite signal.
      *
      * <p>This value helps interpret {@link #getReceivedSvTimeNanos()}.
      */
@@ -466,24 +497,29 @@ public final class GnssMeasurement implements Parcelable {
      *   <thead>
      *     <tr>
      *       <td />
-     *       <td colspan="3"><strong>GPS/QZSS</strong></td>
+     *       <td colspan="4"><strong>GPS/QZSS</strong></td>
      *       <td><strong>GLNS</strong></td>
-     *       <td colspan="2"><strong>BDS</strong></td>
+     *       <td colspan="4"><strong>BDS</strong></td>
      *       <td colspan="3"><strong>GAL</strong></td>
      *       <td><strong>SBAS</strong></td>
+     *       <td><strong>IRNSS</strong></td>
      *     </tr>
      *     <tr>
      *       <td><strong>State Flag</strong></td>
      *       <td><strong>L1 C/A</strong></td>
+     *       <td><strong>L1 C(P)</strong></td>
      *       <td><strong>L5I</strong></td>
      *       <td><strong>L5Q</strong></td>
      *       <td><strong>L1OF</strong></td>
      *       <td><strong>B1I (D1)</strong></td>
-     *       <td><strong>B1I &nbsp;(D2)</strong></td>
+     *       <td><strong>B1I (D2)</strong></td>
+     *       <td><strong>B1C (P)</strong></td>
+     *       <td><strong>B2AQ </strong></td>
      *       <td><strong>E1B</strong></td>
      *       <td><strong>E1C</strong></td>
      *       <td><strong>E5AQ</strong></td>
      *       <td><strong>L1 C/A</strong></td>
+     *       <td><strong>L5C</strong></td>
      *     </tr>
      *   </thead>
      *   <tbody>
@@ -501,19 +537,27 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>0</td>
      *       <td>0</td>
      *       <td>0</td>
+     *       <td>0</td>
+     *       <td>0</td>
+     *       <td>0</td>
+     *       <td>0</td>
      *     </tr>
      *     <tr>
      *       <td>
      *         <strong>STATE_CODE_LOCK</strong>
      *       </td>
      *       <td>1 ms</td>
+     *       <td>10 ms</td>
      *       <td>1 ms</td>
      *       <td>1 ms</td>
      *       <td>1 ms</td>
      *       <td>1 ms</td>
+     *       <td>1 ms</td>
+     *       <td>10 ms</td>
      *       <td>1 ms</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>1 ms</td>
      *       <td>1 ms</td>
      *       <td>1 ms</td>
      *     </tr>
@@ -521,67 +565,95 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>
      *         <strong>STATE_SYMBOL_SYNC</strong>
      *       </td>
-     *       <td>20 ms (optional)</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>10 ms</td>
-     *       <td>1 ms (optional)</td>
+     *       <td>-</td>
      *       <td>10 ms</td>
-     *       <td>20 ms (optional)</td>
+     *       <td>-</td>
      *       <td>2 ms</td>
-     *       <td>4 ms (optional)</td>
-     *       <td>4 ms (optional)</td>
-     *       <td>1 ms (optional)</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>2 ms</td>
+     *       <td>-</td>
      *     </tr>
      *     <tr>
      *       <td>
      *         <strong>STATE_BIT_SYNC</strong>
      *       </td>
      *       <td>20 ms</td>
+     *       <td>-</td>
      *       <td>20 ms</td>
-     *       <td>1 ms (optional)</td>
+     *       <td>-</td>
      *       <td>20 ms</td>
      *       <td>20 ms</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>8 ms</td>
      *       <td>-</td>
-     *       <td>1 ms (optional)</td>
+     *       <td>-</td>
      *       <td>4 ms</td>
+     *       <td>20 ms</td>
      *     </tr>
      *     <tr>
      *       <td>
      *         <strong>STATE_SUBFRAME_SYNC</strong>
      *       </td>
-     *       <td>6s</td>
-     *       <td>6s</td>
-     *       <td>-</td>
-     *       <td>2 s</td>
      *       <td>6 s</td>
      *       <td>-</td>
+     *       <td>6 s</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>6 s</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>100 ms</td>
      *       <td>-</td>
+     *       <td>-</td>
+     *       <td>100 ms</td>
+     *       <td>-</td>
+     *       <td>6 s</td>
      *     </tr>
      *     <tr>
      *       <td>
      *         <strong>STATE_TOW_DECODED</strong>
      *       </td>
-     *       <td colspan="2">1 week</td>
+     *       <td>1 week</td>
      *       <td>-</td>
-     *       <td>1 day</td>
-     *       <td colspan="2">1 week</td>
-     *       <td colspan="2">1 week</td>
+     *       <td>1 week</td>
      *       <td>-</td>
+     *       <td>-</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>-</td>
+     *       <td>1 week</td>
      *       <td>1 week</td>
      *     </tr>
      *     <tr>
      *       <td>
      *         <strong>STATE_TOW_KNOWN</strong>
      *       </td>
-     *       <td colspan="3">1 week</td>
-     *       <td>1 day</td>
-     *       <td colspan="2">1 week</td>
-     *       <td colspan="3">1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>-</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
+     *       <td>1 week</td>
      *       <td>1 week</td>
      *     </tr>
      *     <tr>
@@ -591,7 +663,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
      *       <td>2 s</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
@@ -606,7 +682,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
      *       <td>1 day</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
@@ -621,7 +701,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
      *       <td>1 day</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
@@ -638,7 +722,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
      *       <td>2 ms</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
@@ -653,7 +741,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
      *       <td>600 ms</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
@@ -669,8 +761,12 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>4 ms</td>
      *       <td>4 ms</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *     </tr>
@@ -685,7 +781,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>100 ms</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *     </tr>
@@ -694,14 +794,18 @@ public final class GnssMeasurement implements Parcelable {
      *         <strong>STATE_2ND_CODE_LOCK</strong>
      *       </td>
      *       <td>-</td>
-     *       <td>10 ms (optional)</td>
+     *       <td>18000 ms</td>
+     *       <td>10 ms</td>
      *       <td>20 ms</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
-     *       <td>-</td>
-     *       <td>100 ms (optional)</td>
+     *       <td>18000 ms</td>
      *       <td>100 ms</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>100 ms</td>
+     *       <td>-</td>
      *       <td>-</td>
      *     </tr>
      *     <tr>
@@ -714,7 +818,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>2 s</td>
+     *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
@@ -732,7 +840,11 @@ public final class GnssMeasurement implements Parcelable {
      *       <td>-</td>
      *       <td>-</td>
      *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
+     *       <td>-</td>
      *       <td>1 s</td>
+     *       <td>-</td>
      *     </tr>
      *   </tbody>
      * </table>
@@ -901,8 +1013,59 @@ public final class GnssMeasurement implements Parcelable {
     /**
      * Gets 'Accumulated Delta Range' state.
      *
-     * <p>It indicates whether {@link #getAccumulatedDeltaRangeMeters()} is reset or there is a
-     * cycle slip (indicating 'loss of lock').
+     * <p>This indicates the state of the {@link #getAccumulatedDeltaRangeMeters()} measurement. See
+     * the table below for a detailed interpretation of each state.
+     *
+     * <table border="1">
+     * <thead>
+     * <tr>
+     * <th>ADR_STATE</th>
+     * <th>Time of relevance</th>
+     * <th>Interpretation</th>
+     * </tr>
+     * </thead>
+     * <tbody>
+     * <tr>
+     * <td>UNKNOWN</td>
+     * <td>ADR(t)</td>
+     * <td>No valid carrier phase information is available at time t.</td>
+     * </tr>
+     * <tr>
+     * <td>VALID</td>
+     * <td>ADR(t)</td>
+     * <td>Valid carrier phase information is available at time t. This indicates that this
+     * measurement can be used as a reference for future measurements. However, to compare it to
+     * previous measurements to compute delta range, other bits should be checked. Specifically,
+     * it can be used for delta range computation if it is valid and has no reset or cycle  slip at
+     * this epoch i.e. if VALID_BIT == 1 && CYCLE_SLIP_BIT == 0 && RESET_BIT == 0.</td>
+     * </tr>
+     * <tr>
+     * <td>RESET</td>
+     * <td>ADR(t) - ADR(t-1)</td>
+     * <td>Carrier phase accumulation has been restarted between current time t and previous time
+     * t-1. This indicates that this measurement can be used as a reference for future measurements,
+     * but it should not be compared to previous measurements to compute delta range.</td>
+     * </tr>
+     * <tr>
+     * <td>CYCLE_SLIP</td>
+     * <td>ADR(t) - ADR(t-1)</td>
+     * <td>Cycle slip(s) have been detected between the current time t and previous time t-1. This
+     * indicates that this measurement can be used as a reference for future measurements. Clients
+     * can use a measurement with a cycle slip to compute delta range against previous measurements
+     * at their own risk.</td>
+     * </tr>
+     * <tr>
+     * <td>HALF_CYCLE_RESOLVED</td>
+     * <td>ADR(t)</td>
+     * <td>Half cycle ambiguity is resolved at time t.</td>
+     * </tr>
+     * <tr>
+     * <td>HALF_CYCLE_REPORTED</td>
+     * <td>ADR(t)</td>
+     * <td>Half cycle ambiguity is reported at time t.</td>
+     * </tr>
+     * </tbody>
+     * </table>
      */
     @AdrState
     public int getAccumulatedDeltaRangeState() {
@@ -976,9 +1139,6 @@ public final class GnssMeasurement implements Parcelable {
      * with integer ambiguity resolution, to determine highly precise relative location between
      * receivers.
      *
-     * <p>This includes ensuring that all half-cycle ambiguities are resolved before this value is
-     * reported as {@link #ADR_STATE_VALID}.
-     *
      * <p>The alignment of the phase measurement will not be adjusted by the receiver so the
      * in-phase and quadrature phase components will have a quarter cycle offset as they do when
      * transmitted from the satellites. If the measurement is from a combination of the in-phase
@@ -1033,13 +1193,7 @@ public final class GnssMeasurement implements Parcelable {
      * Gets the carrier frequency of the tracked signal.
      *
      * <p>For example it can be the GPS central frequency for L1 = 1575.45 MHz, or L2 = 1227.60 MHz,
-     * L5 = 1176.45 MHz, varying GLO channels, etc. If the field is not set, it is the primary
-     * common use central frequency, e.g. L1 = 1575.45 MHz for GPS.
-     *
-     * <p> For an L1, L5 receiver tracking a satellite on L1 and L5 at the same time, two raw
-     * measurement objects will be reported for this same satellite, in one of the measurement
-     * objects, all the values related to L1 will be filled, and in the other all of the values
-     * related to L5 will be filled.
+     * L5 = 1176.45 MHz, varying GLO channels, etc.
      *
      * <p>The value is only available if {@link #hasCarrierFrequencyHz()} is {@code true}.
      *
@@ -1308,7 +1462,10 @@ public final class GnssMeasurement implements Parcelable {
     /**
      * Returns {@code true} if {@link #getAutomaticGainControlLevelDb()} is available,
      * {@code false} otherwise.
+     *
+     * @deprecated Use {@link GnssMeasurementsEvent#getGnssAutomaticGainControls()} instead.
      */
+    @Deprecated
     public boolean hasAutomaticGainControlLevelDb() {
         return isFlagSet(HAS_AUTOMATIC_GAIN_CONTROL);
     }
@@ -1317,10 +1474,10 @@ public final class GnssMeasurement implements Parcelable {
      * Gets the Automatic Gain Control level in dB.
      *
      * <p> AGC acts as a variable gain amplifier adjusting the power of the incoming signal. The AGC
-     * level may be used to indicate potential interference. When AGC is at a nominal level, this
-     * value must be set as 0. Higher gain (and/or lower input power) shall be output as a positive
-     * number. Hence in cases of strong jamming, in the band of this signal, this value will go more
-     * negative.
+     * level may be used to indicate potential interference. Higher gain (and/or lower input power)
+     * shall be output as a positive number. Hence in cases of strong jamming, in the band of this
+     * signal, this value will go more negative. This value must be consistent given the same level
+     * of the incoming signal power.
      *
      * <p> Note: Different hardware designs (e.g. antenna, pre-amplification, or other RF HW
      * components) may also affect the typical output of of this value on any given hardware design
@@ -1328,7 +1485,10 @@ public final class GnssMeasurement implements Parcelable {
      * indicative of changes on input signal power in the frequency band for this measurement.
      *
      * <p> The value is only available if {@link #hasAutomaticGainControlLevelDb()} is {@code true}
+     *
+     * @deprecated Use {@link GnssMeasurementsEvent#getGnssAutomaticGainControls()} instead.
      */
+    @Deprecated
     public double getAutomaticGainControlLevelDb() {
         return mAutomaticGainControlLevelInDb;
     }
@@ -1336,7 +1496,9 @@ public final class GnssMeasurement implements Parcelable {
     /**
      * Sets the Automatic Gain Control level in dB.
      * @hide
+     * @deprecated Use {@link GnssMeasurementsEvent.Builder#setGnssAutomaticGainControls()} instead.
      */
+    @Deprecated
     @TestApi
     public void setAutomaticGainControlLevelInDb(double agcLevelDb) {
         setFlag(HAS_AUTOMATIC_GAIN_CONTROL);
@@ -1363,50 +1525,61 @@ public final class GnssMeasurement implements Parcelable {
     /**
      * Gets the GNSS measurement's code type.
      *
-     * <p>Similar to the Attribute field described in RINEX 3.03, e.g., in Tables 4-10, and Table
-     * A2 at the RINEX 3.03 Update 1 Document.
+     * <p>Similar to the Attribute field described in RINEX 4.00, e.g., in Tables 9-16 (see
+     * https://igs.org/wg/rinex/#documents-formats).
      *
-     * <p>Returns "A" for GALILEO E1A, GALILEO E6A, IRNSS L5A, IRNSS SA.
+     * <p>Returns "A" for GALILEO E1A, GALILEO E6A, IRNSS L5A SPS, IRNSS SA SPS, GLONASS G1a L1OCd,
+     * GLONASS G2a L2CSI.
      *
-     * <p>Returns "B" for GALILEO E1B, GALILEO E6B, IRNSS L5B, IRNSS SB.
+     * <p>Returns "B" for GALILEO E1B, GALILEO E6B, IRNSS L5B RS (D), IRNSS SB RS (D), GLONASS G1a
+     * L1OCp, GLONASS G2a L2OCp, QZSS L1Sb.
      *
-     * <p>Returns "C" for GPS L1 C/A,  GPS L2 C/A, GLONASS G1 C/A, GLONASS G2 C/A, GALILEO E1C,
-     * GALILEO E6C, SBAS L1 C/A, QZSS L1 C/A, IRNSS L5C.
+     * <p>Returns "C" for GPS L1 C/A, GPS L2 C/A, GLONASS G1 C/A, GLONASS G2 C/A, GALILEO E1C,
+     * GALILEO E6C, SBAS L1 C/A, QZSS L1 C/A, IRNSS L5C RS (P), IRNSS SC RS (P).
      *
-     * <p>Returns "D" for BDS B1C D.
+     * <p>Returns "D" for GPS L2 (L1(C/A) + (P2-P1) (semi-codeless)), QZSS L5S(I), BDS B1C Data,
+     * BDS B2a Data, BDS B2b Data, BDS B2 (B2a+B2b) Data, BDS B3a Data.
+     *
+     * <p>Returns “E” for QZSS L1 C/B, QZSS L6E.
      *
      * <p>Returns "I" for GPS L5 I, GLONASS G3 I, GALILEO E5a I, GALILEO E5b I, GALILEO E5a+b I,
      * SBAS L5 I, QZSS L5 I, BDS B1 I, BDS B2 I, BDS B3 I.
      *
-     * <p>Returns "L" for GPS L1C (P), GPS L2C (L), QZSS L1C (P), QZSS L2C (L), LEX(6) L.
+     * <p>Returns "L" for GPS L1C (P), GPS L2C (L), QZSS L1C (P), QZSS L2C (L), QZSS L6P, BDS
+     * B1a Pilot.
      *
      * <p>Returns "M" for GPS L1M, GPS L2M.
      *
      * <p>Returns "N" for GPS L1 codeless, GPS L2 codeless.
      *
-     * <p>Returns "P" for GPS L1P, GPS L2P, GLONASS G1P, GLONASS G2P, BDS B1C P.
+     * <p>Returns "P" for GPS L1P, GPS L2P, GLONASS G1P, GLONASS G2P, BDS B1C Pilot, BDS B2a Pilot,
+     * BDS B2b Pilot, BDS B2 (B2a+B2b) Pilot, BDS B3a Pilot, QZSS L5S(Q).
      *
      * <p>Returns "Q" for GPS L5 Q, GLONASS G3 Q, GALILEO E5a Q, GALILEO E5b Q, GALILEO E5a+b Q,
      * SBAS L5 Q, QZSS L5 Q, BDS B1 Q, BDS B2 Q, BDS B3 Q.
      *
-     * <p>Returns "S" for GPS L1C (D), GPS L2C (M), QZSS L1C (D), QZSS L2C (M), LEX(6) S.
+     * <p>Returns "S" for GPS L1C (D), GPS L2C (M), QZSS L1C (D), QZSS L2C (M), QZSS L6D, BDS B1a
+     * Data.
      *
      * <p>Returns "W" for GPS L1 Z-tracking, GPS L2 Z-tracking.
      *
-     * <p>Returns "X" for GPS L1C (D+P), GPS L2C (M+L), GPS L5 (I+Q), GLONASS G3 (I+Q), GALILEO
-     * E1 (B+C), GALILEO E5a (I+Q), GALILEO E5b (I+Q), GALILEO E5a+b(I+Q), GALILEO E6 (B+C), SBAS
-     * L5 (I+Q), QZSS L1C (D+P), QZSS L2C (M+L), QZSS L5 (I+Q), LEX(6) (S+L), BDS B1 (I+Q), BDS
-     * B1C (D+P), BDS B2 (I+Q), BDS B3 (I+Q), IRNSS L5 (B+C).
+     * <p>Returns "X" for GPS L1C (D+P), GPS L2C (M+L), GPS L5 (I+Q), GLONASS G1a L1OCd+L1OCp,
+     * GLONASS G2a L2CSI+L2OCp, GLONASS G3 (I+Q), GALILEO E1 (B+C), GALILEO E5a (I+Q), GALILEO
+     * E5b (I+Q), GALILEO E5a+b (I+Q), GALILEO E6 (B+C), SBAS L5 (I+Q), QZSS L1C (D+P), QZSS L2C
+     * (M+L), QZSS L5 (I+Q), QZSS L6 (D+P), BDS B1 (I+Q), BDS B1C Data+Pilot, BDS B2a Data+Pilot,
+     * BDS B2 (I+Q), BDS B2 (B2a+B2b) Data+Pilot, BDS B3 (I+Q), IRNSS L5 (B+C), IRNSS S (B+C).
      *
      * <p>Returns "Y" for GPS L1Y, GPS L2Y.
      *
-     * <p>Returns "Z" for GALILEO E1 (A+B+C), GALILEO E6 (A+B+C), QZSS L1-SAIF.
+     * <p>Returns "Z" for GALILEO E1 (A+B+C), GALILEO E6 (A+B+C), QZSS L1S/L1-SAIF, QZSS L5S (I+Q),
+     * QZSS L6(D+E), BDS B1A Data+Pilot, BDS B2b Data+Pilot, BDS B3a Data+Pilot.
      *
      * <p>Returns "UNKNOWN" if the GNSS Measurement's code type is unknown.
      *
-     * <p>This is used to specify the observation descriptor defined in GNSS Observation Data File
-     * Header Section Description in the RINEX standard (Version 3.XX), in cases where the code type
-     * does not align with the above listed values. For example, if a code type "G" is added, this
+     * <p>The code type is used to specify the observation descriptor defined in GNSS Observation
+     * Data File Header Section Description in the RINEX standard (Version 4.00). In cases where
+     * the code type does not align with the above listed values, the code type from the most
+     * recent version of RINEX should be used. For example, if a code type "G" is added, this
      * string shall be set to "G".
      */
     @NonNull
@@ -1472,6 +1645,10 @@ public final class GnssMeasurement implements Parcelable {
      * reported full ISB.
      *
      * <p>The value does not include the inter-frequency Ionospheric bias.
+     *
+     * <p>The sign of the value is defined by the following equation:
+     * <pre>
+     *     corrected pseudorange = raw pseudorange - FullInterSignalBiasNanos</pre>
      *
      * <p>The value is only available if {@link #hasFullInterSignalBiasNanos()} is {@code true}.
      */
@@ -1569,6 +1746,10 @@ public final class GnssMeasurement implements Parcelable {
      * type in {@link GnssClock#getReferenceConstellationTypeForIsb())</li>
      * </ul>
      *
+     * <p>The sign of the value is defined by the following equation:
+     * <pre>
+     *     corrected pseudorange = raw pseudorange - SatelliteInterSignalBiasNanos</pre>
+     *
      * <p>The value is only available if {@link #hasSatelliteInterSignalBiasNanos()} is {@code
      * true}.
      */
@@ -1640,6 +1821,111 @@ public final class GnssMeasurement implements Parcelable {
         resetFlag(HAS_SATELLITE_ISB_UNCERTAINTY);
     }
 
+    /**
+     * Returns {@code true} if {@link #getSatellitePvt()} is available,
+     * {@code false} otherwise.
+     *
+     * @hide
+     */
+    @SystemApi
+    public boolean hasSatellitePvt() {
+        return isFlagSet(HAS_SATELLITE_PVT);
+    }
+
+    /**
+     * Gets the Satellite PVT data.
+     *
+     * <p>The value is only available if {@link #hasSatellitePvt()} is
+     * {@code true}.
+     *
+     * @hide
+     */
+    @Nullable
+    @SystemApi
+    public SatellitePvt getSatellitePvt() {
+        return mSatellitePvt;
+    }
+
+    /**
+     * Sets the Satellite PVT.
+     *
+     * @hide
+     */
+    @TestApi
+    public void setSatellitePvt(@Nullable SatellitePvt satellitePvt) {
+        if (satellitePvt == null) {
+            resetSatellitePvt();
+        } else {
+            setFlag(HAS_SATELLITE_PVT);
+            mSatellitePvt = satellitePvt;
+        }
+    }
+
+    /**
+     * Resets the Satellite PVT.
+     *
+     * @hide
+     */
+    @TestApi
+    public void resetSatellitePvt() {
+        resetFlag(HAS_SATELLITE_PVT);
+    }
+
+    /**
+     * Returns {@code true} if {@link #getCorrelationVectors()} is available,
+     * {@code false} otherwise.
+     *
+     * @hide
+     */
+    @SystemApi
+    public boolean hasCorrelationVectors() {
+        return isFlagSet(HAS_CORRELATION_VECTOR);
+    }
+
+    /**
+     * Gets read-only collection of CorrelationVector with each CorrelationVector corresponding to a
+     * frequency offset.
+     *
+     * <p>To represent correlation values over a 2D spaces (delay and frequency), a
+     * CorrelationVector is required per frequency offset, and each CorrelationVector contains
+     * correlation values at equally spaced spatial offsets.
+     *
+     * @hide
+     */
+    @Nullable
+    @SystemApi
+    @SuppressLint("NullableCollection")
+    public Collection<CorrelationVector> getCorrelationVectors() {
+        return mReadOnlyCorrelationVectors;
+    }
+
+    /**
+     * Sets the CorrelationVectors.
+     *
+     * @hide
+     */
+    @TestApi
+    public void setCorrelationVectors(
+            @SuppressLint("NullableCollection")
+            @Nullable Collection<CorrelationVector> correlationVectors) {
+        if (correlationVectors == null || correlationVectors.isEmpty()) {
+            resetCorrelationVectors();
+        } else {
+            setFlag(HAS_CORRELATION_VECTOR);
+            mReadOnlyCorrelationVectors = Collections.unmodifiableCollection(correlationVectors);
+        }
+    }
+
+    /**
+     * Resets the CorrelationVectors.
+     *
+     * @hide
+     */
+    @TestApi
+    public void resetCorrelationVectors() {
+        resetFlag(HAS_CORRELATION_VECTOR);
+        mReadOnlyCorrelationVectors = null;
+    }
 
     public static final @NonNull Creator<GnssMeasurement> CREATOR = new Creator<GnssMeasurement>() {
         @Override
@@ -1672,7 +1958,19 @@ public final class GnssMeasurement implements Parcelable {
             gnssMeasurement.mFullInterSignalBiasUncertaintyNanos = parcel.readDouble();
             gnssMeasurement.mSatelliteInterSignalBiasNanos = parcel.readDouble();
             gnssMeasurement.mSatelliteInterSignalBiasUncertaintyNanos = parcel.readDouble();
-
+            if (gnssMeasurement.hasSatellitePvt()) {
+                ClassLoader classLoader = getClass().getClassLoader();
+                gnssMeasurement.mSatellitePvt = parcel.readParcelable(classLoader, android.location.SatellitePvt.class);
+            }
+            if (gnssMeasurement.hasCorrelationVectors()) {
+                CorrelationVector[] correlationVectorsArray =
+                        new CorrelationVector[parcel.readInt()];
+                parcel.readTypedArray(correlationVectorsArray, CorrelationVector.CREATOR);
+                Collection<CorrelationVector> corrVecCollection =
+                        Arrays.asList(correlationVectorsArray);
+                gnssMeasurement.mReadOnlyCorrelationVectors =
+                        Collections.unmodifiableCollection(corrVecCollection);
+            }
             return gnssMeasurement;
         }
 
@@ -1710,6 +2008,16 @@ public final class GnssMeasurement implements Parcelable {
         parcel.writeDouble(mFullInterSignalBiasUncertaintyNanos);
         parcel.writeDouble(mSatelliteInterSignalBiasNanos);
         parcel.writeDouble(mSatelliteInterSignalBiasUncertaintyNanos);
+        if (hasSatellitePvt()) {
+            parcel.writeParcelable(mSatellitePvt, flags);
+        }
+        if (hasCorrelationVectors()) {
+            int correlationVectorCount = mReadOnlyCorrelationVectors.size();
+            CorrelationVector[] correlationVectorArray =
+                mReadOnlyCorrelationVectors.toArray(new CorrelationVector[correlationVectorCount]);
+            parcel.writeInt(correlationVectorArray.length);
+            parcel.writeTypedArray(correlationVectorArray, flags);
+        }
     }
 
     @Override
@@ -1813,6 +2121,17 @@ public final class GnssMeasurement implements Parcelable {
                             : null));
         }
 
+        if (hasSatellitePvt()) {
+            builder.append(mSatellitePvt.toString());
+        }
+
+        if (hasCorrelationVectors()) {
+            for (CorrelationVector correlationVector : mReadOnlyCorrelationVectors) {
+                builder.append(correlationVector.toString());
+                builder.append("\n");
+            }
+        }
+
         return builder.toString();
     }
 
@@ -1842,6 +2161,8 @@ public final class GnssMeasurement implements Parcelable {
         resetFullInterSignalBiasUncertaintyNanos();
         resetSatelliteInterSignalBiasNanos();
         resetSatelliteInterSignalBiasUncertaintyNanos();
+        resetSatellitePvt();
+        resetCorrelationVectors();
     }
 
     private void setFlag(int flag) {

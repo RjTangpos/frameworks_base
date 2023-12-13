@@ -15,6 +15,8 @@
  */
 package com.android.server.notification;
 
+import static android.text.TextUtils.formatSimple;
+
 import android.annotation.NonNull;
 import android.app.NotificationManager;
 import android.content.Context;
@@ -101,8 +103,11 @@ public class RankingHelper {
             notificationList.get(i).setGlobalSortKey(null);
         }
 
-        // rank each record individually
-        Collections.sort(notificationList, mPreliminaryComparator);
+        // Rank each record individually.
+        // Lock comparator state for consistent compare() results.
+        synchronized (mPreliminaryComparator.mStateLock) {
+            notificationList.sort(mPreliminaryComparator);
+        }
 
         synchronized (mProxyByGroupTmp) {
             // record individual ranking result and nominate proxies for each group
@@ -138,7 +143,7 @@ public class RankingHelper {
 
                 boolean isGroupSummary = record.getNotification().isGroupSummary();
                 record.setGlobalSortKey(
-                        String.format("crtcl=0x%04x:intrsv=%c:grnk=0x%04x:gsmry=%c:%s:rnk=0x%04x",
+                        formatSimple("crtcl=0x%04x:intrsv=%c:grnk=0x%04x:gsmry=%c:%s:rnk=0x%04x",
                         record.getCriticality(),
                         record.isRecentlyIntrusive()
                                 && record.getImportance() > NotificationManager.IMPORTANCE_MIN

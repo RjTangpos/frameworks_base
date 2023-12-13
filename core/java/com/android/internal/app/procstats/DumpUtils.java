@@ -27,10 +27,12 @@ import static com.android.internal.app.procstats.ProcessStats.ADJ_SCREEN_MOD;
 import static com.android.internal.app.procstats.ProcessStats.ADJ_SCREEN_OFF;
 import static com.android.internal.app.procstats.ProcessStats.ADJ_SCREEN_ON;
 import static com.android.internal.app.procstats.ProcessStats.STATE_BACKUP;
-import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED_ACTIVITY;
-import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED_ACTIVITY_CLIENT;
-import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED_EMPTY;
+import static com.android.internal.app.procstats.ProcessStats.STATE_BOUND_FGS;
+import static com.android.internal.app.procstats.ProcessStats.STATE_BOUND_TOP;
+import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED;
 import static com.android.internal.app.procstats.ProcessStats.STATE_COUNT;
+import static com.android.internal.app.procstats.ProcessStats.STATE_FGS;
+import static com.android.internal.app.procstats.ProcessStats.STATE_FROZEN;
 import static com.android.internal.app.procstats.ProcessStats.STATE_HEAVY_WEIGHT;
 import static com.android.internal.app.procstats.ProcessStats.STATE_HOME;
 import static com.android.internal.app.procstats.ProcessStats.STATE_IMPORTANT_BACKGROUND;
@@ -70,6 +72,9 @@ public final class DumpUtils {
         STATE_NAMES = new String[STATE_COUNT];
         STATE_NAMES[STATE_PERSISTENT]               = "Persist";
         STATE_NAMES[STATE_TOP]                      = "Top";
+        STATE_NAMES[STATE_BOUND_FGS]                = "BFgs";
+        STATE_NAMES[STATE_BOUND_TOP]                = "BTop";
+        STATE_NAMES[STATE_FGS]                      = "Fgs";
         STATE_NAMES[STATE_IMPORTANT_FOREGROUND]     = "ImpFg";
         STATE_NAMES[STATE_IMPORTANT_BACKGROUND]     = "ImpBg";
         STATE_NAMES[STATE_BACKUP]                   = "Backup";
@@ -79,13 +84,15 @@ public final class DumpUtils {
         STATE_NAMES[STATE_HEAVY_WEIGHT]             = "HeavyWt";
         STATE_NAMES[STATE_HOME]                     = "Home";
         STATE_NAMES[STATE_LAST_ACTIVITY]            = "LastAct";
-        STATE_NAMES[STATE_CACHED_ACTIVITY]          = "CchAct";
-        STATE_NAMES[STATE_CACHED_ACTIVITY_CLIENT]   = "CchCAct";
-        STATE_NAMES[STATE_CACHED_EMPTY]             = "CchEmty";
+        STATE_NAMES[STATE_CACHED]                   = "Cached";
+        STATE_NAMES[STATE_FROZEN]                   = "Frozen";
 
         STATE_LABELS = new String[STATE_COUNT];
         STATE_LABELS[STATE_PERSISTENT]              = "Persistent";
         STATE_LABELS[STATE_TOP]                     = "       Top";
+        STATE_LABELS[STATE_BOUND_FGS]               = "   Bnd Fgs";
+        STATE_LABELS[STATE_BOUND_TOP]               = "   Bnd Top";
+        STATE_LABELS[STATE_FGS]                     = "       Fgs";
         STATE_LABELS[STATE_IMPORTANT_FOREGROUND]    = "    Imp Fg";
         STATE_LABELS[STATE_IMPORTANT_BACKGROUND]    = "    Imp Bg";
         STATE_LABELS[STATE_BACKUP]                  = "    Backup";
@@ -95,15 +102,17 @@ public final class DumpUtils {
         STATE_LABELS[STATE_HEAVY_WEIGHT]            = " Heavy Wgt";
         STATE_LABELS[STATE_HOME]                    = "    (Home)";
         STATE_LABELS[STATE_LAST_ACTIVITY]           = "(Last Act)";
-        STATE_LABELS[STATE_CACHED_ACTIVITY]         = " (Cch Act)";
-        STATE_LABELS[STATE_CACHED_ACTIVITY_CLIENT]  = "(Cch CAct)";
-        STATE_LABELS[STATE_CACHED_EMPTY]            = "(Cch Emty)";
+        STATE_LABELS[STATE_CACHED]                  = "  (Cached)";
+        STATE_LABELS[STATE_FROZEN]                  = "    Frozen";
         STATE_LABEL_CACHED                          = "  (Cached)";
         STATE_LABEL_TOTAL                           = "     TOTAL";
 
         STATE_NAMES_CSV = new String[STATE_COUNT];
         STATE_NAMES_CSV[STATE_PERSISTENT]               = "pers";
         STATE_NAMES_CSV[STATE_TOP]                      = "top";
+        STATE_NAMES_CSV[STATE_BOUND_FGS]                = "bfgs";
+        STATE_NAMES_CSV[STATE_BOUND_TOP]                = "btop";
+        STATE_NAMES_CSV[STATE_FGS]                      = "fgs";
         STATE_NAMES_CSV[STATE_IMPORTANT_FOREGROUND]     = "impfg";
         STATE_NAMES_CSV[STATE_IMPORTANT_BACKGROUND]     = "impbg";
         STATE_NAMES_CSV[STATE_BACKUP]                   = "backup";
@@ -113,13 +122,15 @@ public final class DumpUtils {
         STATE_NAMES_CSV[STATE_HEAVY_WEIGHT]             = "heavy";
         STATE_NAMES_CSV[STATE_HOME]                     = "home";
         STATE_NAMES_CSV[STATE_LAST_ACTIVITY]            = "lastact";
-        STATE_NAMES_CSV[STATE_CACHED_ACTIVITY]          = "cch-activity";
-        STATE_NAMES_CSV[STATE_CACHED_ACTIVITY_CLIENT]   = "cch-aclient";
-        STATE_NAMES_CSV[STATE_CACHED_EMPTY]             = "cch-empty";
+        STATE_NAMES_CSV[STATE_CACHED]                   = "cached";
+        STATE_NAMES_CSV[STATE_FROZEN]                   = "frzn";
 
         STATE_TAGS = new String[STATE_COUNT];
         STATE_TAGS[STATE_PERSISTENT]                = "p";
         STATE_TAGS[STATE_TOP]                       = "t";
+        STATE_TAGS[STATE_BOUND_FGS]                 = "y";
+        STATE_TAGS[STATE_BOUND_TOP]                 = "z";
+        STATE_TAGS[STATE_FGS]                       = "g";
         STATE_TAGS[STATE_IMPORTANT_FOREGROUND]      = "f";
         STATE_TAGS[STATE_IMPORTANT_BACKGROUND]      = "b";
         STATE_TAGS[STATE_BACKUP]                    = "u";
@@ -129,13 +140,15 @@ public final class DumpUtils {
         STATE_TAGS[STATE_HEAVY_WEIGHT]              = "w";
         STATE_TAGS[STATE_HOME]                      = "h";
         STATE_TAGS[STATE_LAST_ACTIVITY]             = "l";
-        STATE_TAGS[STATE_CACHED_ACTIVITY]           = "a";
-        STATE_TAGS[STATE_CACHED_ACTIVITY_CLIENT]    = "c";
-        STATE_TAGS[STATE_CACHED_EMPTY]              = "e";
+        STATE_TAGS[STATE_CACHED]                    = "a";
+        STATE_TAGS[STATE_FROZEN]                    = "e";
 
         STATE_PROTO_ENUMS = new int[STATE_COUNT];
         STATE_PROTO_ENUMS[STATE_PERSISTENT] = ProcessStatsEnums.PROCESS_STATE_PERSISTENT;
         STATE_PROTO_ENUMS[STATE_TOP] = ProcessStatsEnums.PROCESS_STATE_TOP;
+        STATE_PROTO_ENUMS[STATE_BOUND_FGS] = ProcessStatsEnums.PROCESS_STATE_BOUND_FGS;
+        STATE_PROTO_ENUMS[STATE_BOUND_TOP] = ProcessStatsEnums.PROCESS_STATE_BOUND_TOP;
+        STATE_PROTO_ENUMS[STATE_FGS] = ProcessStatsEnums.PROCESS_STATE_FGS;
         STATE_PROTO_ENUMS[STATE_IMPORTANT_FOREGROUND] =
                 ProcessStatsEnums.PROCESS_STATE_IMPORTANT_FOREGROUND;
         STATE_PROTO_ENUMS[STATE_IMPORTANT_BACKGROUND] =
@@ -148,10 +161,8 @@ public final class DumpUtils {
         STATE_PROTO_ENUMS[STATE_HEAVY_WEIGHT] = ProcessStatsEnums.PROCESS_STATE_HEAVY_WEIGHT;
         STATE_PROTO_ENUMS[STATE_HOME] = ProcessStatsEnums.PROCESS_STATE_HOME;
         STATE_PROTO_ENUMS[STATE_LAST_ACTIVITY] = ProcessStatsEnums.PROCESS_STATE_LAST_ACTIVITY;
-        STATE_PROTO_ENUMS[STATE_CACHED_ACTIVITY] = ProcessStatsEnums.PROCESS_STATE_CACHED_ACTIVITY;
-        STATE_PROTO_ENUMS[STATE_CACHED_ACTIVITY_CLIENT] =
-                ProcessStatsEnums.PROCESS_STATE_CACHED_ACTIVITY_CLIENT;
-        STATE_PROTO_ENUMS[STATE_CACHED_EMPTY] = ProcessStatsEnums.PROCESS_STATE_CACHED_EMPTY;
+        STATE_PROTO_ENUMS[STATE_CACHED] = ProcessStatsEnums.PROCESS_STATE_CACHED_ACTIVITY;
+        STATE_PROTO_ENUMS[STATE_FROZEN] = ProcessStatsEnums.PROCESS_STATE_FROZEN;
 
         // Remap states, as defined by ProcessStats.java, to a reduced subset of states for data
         // aggregation / size reduction purposes.
@@ -160,6 +171,12 @@ public final class DumpUtils {
                 ProcessStatsEnums.AGGREGATED_PROCESS_STATE_PERSISTENT;
         PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_TOP] =
                 ProcessStatsEnums.AGGREGATED_PROCESS_STATE_TOP;
+        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_BOUND_FGS] =
+                ProcessStatsEnums.AGGREGATED_PROCESS_STATE_BOUND_TOP_OR_FGS;
+        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_BOUND_TOP] =
+                ProcessStatsEnums.AGGREGATED_PROCESS_STATE_BOUND_TOP_OR_FGS;
+        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_FGS] =
+                ProcessStatsEnums.AGGREGATED_PROCESS_STATE_FGS;
         PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_IMPORTANT_FOREGROUND] =
                 ProcessStatsEnums.AGGREGATED_PROCESS_STATE_IMPORTANT_FOREGROUND;
         PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_IMPORTANT_BACKGROUND] =
@@ -179,11 +196,9 @@ public final class DumpUtils {
                 ProcessStatsEnums.AGGREGATED_PROCESS_STATE_CACHED;
         PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_LAST_ACTIVITY] =
                 ProcessStatsEnums.AGGREGATED_PROCESS_STATE_CACHED;
-        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_CACHED_ACTIVITY] =
+        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_CACHED] =
                 ProcessStatsEnums.AGGREGATED_PROCESS_STATE_CACHED;
-        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_CACHED_ACTIVITY_CLIENT] =
-                ProcessStatsEnums.AGGREGATED_PROCESS_STATE_CACHED;
-        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_CACHED_EMPTY] =
+        PROCESS_STATS_STATE_TO_AGGREGATED_STATE[STATE_FROZEN] =
                 ProcessStatsEnums.AGGREGATED_PROCESS_STATE_CACHED;
     }
 

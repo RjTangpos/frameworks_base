@@ -17,6 +17,7 @@
 package com.android.settingslib.net;
 
 import android.app.AppGlobals;
+import android.app.usage.NetworkStats;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.IPackageManager;
@@ -116,13 +117,13 @@ public class UidDetailProvider {
                 detail.label = res.getString(R.string.process_kernel_label);
                 detail.icon = pm.getDefaultActivityIcon();
                 return detail;
-            case TrafficStats.UID_REMOVED:
+            case NetworkStats.Bucket.UID_REMOVED:
                 detail.label = res.getString(UserManager.supportsMultipleUsers()
                         ? R.string.data_usage_uninstalled_apps_users
                         : R.string.data_usage_uninstalled_apps);
                 detail.icon = pm.getDefaultActivityIcon();
                 return detail;
-            case TrafficStats.UID_TETHERING:
+            case NetworkStats.Bucket.UID_TETHERING:
                 final TetheringManager tm = mContext.getSystemService(TetheringManager.class);
                 detail.label = res.getString(Utils.getTetheringLabel(tm));
                 detail.icon = pm.getDefaultActivityIcon();
@@ -149,6 +150,7 @@ public class UidDetailProvider {
         // otherwise fall back to using packagemanager labels
         final String[] packageNames = pm.getPackagesForUid(uid);
         final int length = packageNames != null ? packageNames.length : 0;
+        String packageName = "";
         try {
             final int userId = UserHandle.getUserId(uid);
             UserHandle userHandle = new UserHandle(userId);
@@ -160,12 +162,13 @@ public class UidDetailProvider {
                     detail.label = info.loadLabel(pm).toString();
                     detail.icon = um.getBadgedIconForUser(info.loadIcon(pm),
                             new UserHandle(userId));
+                    packageName = packageNames[0];
                 }
             } else if (length > 1) {
                 detail.detailLabels = new CharSequence[length];
                 detail.detailContentDescriptions = new CharSequence[length];
                 for (int i = 0; i < length; i++) {
-                    final String packageName = packageNames[i];
+                    packageName = packageNames[i];
                     final PackageInfo packageInfo = pm.getPackageInfo(packageName, 0);
                     final ApplicationInfo appInfo = ipm.getApplicationInfo(packageName,
                             0 /* no flags */, userId);
@@ -182,6 +185,7 @@ public class UidDetailProvider {
                     }
                 }
             }
+            detail.packageName = packageName;
             detail.contentDescription = um.getBadgedLabelForUser(detail.label, userHandle);
         } catch (NameNotFoundException e) {
             Log.w(TAG, "Error while building UI detail for uid "+uid, e);

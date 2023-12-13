@@ -25,6 +25,7 @@ import android.media.AudioSystem;
 import android.media.MediaPlayer;
 import android.media.MediaPlayer.OnCompletionListener;
 import android.media.MediaPlayer.OnErrorListener;
+import android.media.PlayerBase;
 import android.media.SoundPool;
 import android.os.Environment;
 import android.os.Handler;
@@ -34,6 +35,7 @@ import android.util.Log;
 import android.util.PrintWriterPrinter;
 
 import com.android.internal.util.XmlUtils;
+import com.android.server.utils.EventLogger;
 
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -42,13 +44,18 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * A helper class for managing sound effects loading / unloading
  * used by AudioService. As its methods are called on the message handler thread
  * of AudioService, the actual work is offloaded to a dedicated thread.
  * This helps keeping AudioService responsive.
+ *
  * @hide
  */
 class SoundEffectsHelper {
@@ -70,7 +77,8 @@ class SoundEffectsHelper {
         void run(boolean success);
     }
 
-    private final AudioEventLogger mSfxLogger = new AudioEventLogger(
+    private final EventLogger
+            mSfxLogger = new EventLogger(
             AudioManager.NUM_SOUND_EFFECTS + 10, "Sound Effects Loading");
 
     private final Context mContext;
@@ -86,21 +94,31 @@ class SoundEffectsHelper {
         final String mFileName;
         int mSampleId;
         boolean mLoaded;  // for effects in SoundPool
+
         Resource(String fileName) {
             mFileName = fileName;
             mSampleId = EFFECT_NOT_IN_SOUND_POOL;
         }
+
+        void unload() {
+            mSampleId = EFFECT_NOT_IN_SOUND_POOL;
+            mLoaded = false;
+        }
     }
+
     // All the fields below are accessed by the worker thread exclusively
     private final List<Resource> mResources = new ArrayList<Resource>();
     private final int[] mEffects = new int[AudioManager.NUM_SOUND_EFFECTS]; // indexes in mResources
     private SoundPool mSoundPool;
     private SoundPoolLoader mSoundPoolLoader;
+    /** callback to provide handle to the player of the sound effects */
+    private final Consumer<PlayerBase> mPlayerAvailableCb;
 
-    SoundEffectsHelper(Context context) {
+    SoundEffectsHelper(Context context, Consumer<PlayerBase> playerAvailableCb) {
         mContext = context;
         mSfxAttenuationDb = mContext.getResources().getInteger(
                 com.android.internal.R.integer.config_soundEffectVolumeDb);
+        mPlayerAvailableCb = playerAvailableCb;
         startWorker();
     }
 
@@ -109,9 +127,9 @@ class SoundEffectsHelper {
     }
 
     /**
-     *  Unloads samples from the sound pool.
-     *  This method can be called to free some memory when
-     *  sound effects are disabled.
+     * Unloads samples from the sound pool.
+     * This method can be called to free some memory when
+     * sound effects are disabled.
      */
     /*package*/ void unloadSoundEffects() {
         sendMsg(MSG_UNLOAD_EFFECTS, 0, 0, null, 0);
@@ -151,7 +169,7 @@ class SoundEffectsHelper {
     }
 
     private void logEvent(String msg) {
-        mSfxLogger.log(new AudioEventLogger.StringEvent(msg));
+        mSfxLogger.enqueue(new EventLogger.StringEvent(msg));
     }
 
     // All the methods below run on the worker thread
@@ -176,7 +194,8 @@ class SoundEffectsHelper {
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build())
                 .build();
-        loadTouchSoundAssets();
+        mPlayerAvailableCb.accept(mSoundPool);
+        loadSoundAssets();
 
         mSoundPoolLoader = new SoundPoolLoader();
         mSoundPoolLoader.addHandler(new OnEffectsLoadCompleteHandler() {
@@ -230,6 +249,7 @@ class SoundEffectsHelper {
         for (Resource res : mResources) {
             if (res.mSampleId != EFFECT_NOT_IN_SOUND_POOL) {
                 mSoundPool.unload(res.mSampleId);
+                res.unload();
             }
         }
         mSoundPool.release();
@@ -311,15 +331,22 @@ class SoundEffectsHelper {
         return filePath;
     }
 
-    private void loadTouchSoundAssetDefaults() {
+    private void loadSoundAssetDefaults() {
         int defaultResourceIdx = mResources.size();
         mResources.add(new Resource("Effect_Tick.ogg"));
-        for (int i = 0; i < mEffects.length; i++) {
-            mEffects[i] = defaultResourceIdx;
-        }
+        Arrays.fill(mEffects, defaultResourceIdx);
     }
 
-    private void loadTouchSoundAssets() {
+    /**
+     * Loads the sound assets information from audio_assets.xml
+     * The expected format of audio_assets.xml is:
+     * <ul>
+     *  <li> all {@code <asset>s} listed directly in {@code <audio_assets>} </li>
+     *  <li> for backwards compatibility: exactly one {@code <group>} with name
+     *  {@link #GROUP_TOUCH_SOUNDS} </li>
+     * </ul>
+     */
+    private void loadSoundAssets() {
         XmlResourceParser parser = null;
 
         // only load assets once.
@@ -327,15 +354,14 @@ class SoundEffectsHelper {
             return;
         }
 
-        loadTouchSoundAssetDefaults();
+        loadSoundAssetDefaults();
 
         try {
             parser = mContext.getResources().getXml(com.android.internal.R.xml.audio_assets);
 
             XmlUtils.beginDocument(parser, TAG_AUDIO_ASSETS);
             String version = parser.getAttributeValue(null, ATTR_VERSION);
-            boolean inTouchSoundsGroup = false;
-
+            Map<Integer, Integer> parserCounter = new HashMap<>();
             if (ASSET_FILE_VERSION.equals(version)) {
                 while (true) {
                     XmlUtils.nextElement(parser);
@@ -345,19 +371,10 @@ class SoundEffectsHelper {
                     }
                     if (element.equals(TAG_GROUP)) {
                         String name = parser.getAttributeValue(null, ATTR_GROUP_NAME);
-                        if (GROUP_TOUCH_SOUNDS.equals(name)) {
-                            inTouchSoundsGroup = true;
-                            break;
+                        if (!GROUP_TOUCH_SOUNDS.equals(name)) {
+                            Log.w(TAG, "Unsupported group name: " + name);
                         }
-                    }
-                }
-                while (inTouchSoundsGroup) {
-                    XmlUtils.nextElement(parser);
-                    String element = parser.getName();
-                    if (element == null) {
-                        break;
-                    }
-                    if (element.equals(TAG_ASSET)) {
+                    } else if (element.equals(TAG_ASSET)) {
                         String id = parser.getAttributeValue(null, ATTR_ASSET_ID);
                         String file = parser.getAttributeValue(null, ATTR_ASSET_FILE);
                         int fx;
@@ -366,27 +383,52 @@ class SoundEffectsHelper {
                             Field field = AudioManager.class.getField(id);
                             fx = field.getInt(null);
                         } catch (Exception e) {
-                            Log.w(TAG, "Invalid touch sound ID: " + id);
+                            Log.w(TAG, "Invalid sound ID: " + id);
                             continue;
                         }
-
+                        int currentParserCount = parserCounter.getOrDefault(fx, 0) + 1;
+                        parserCounter.put(fx, currentParserCount);
+                        if (currentParserCount > 1) {
+                            Log.w(TAG, "Duplicate definition for sound ID: " + id);
+                        }
                         mEffects[fx] = findOrAddResourceByFileName(file);
                     } else {
                         break;
+                    }
+                }
+
+                boolean navigationRepeatFxParsed = allNavigationRepeatSoundsParsed(parserCounter);
+                boolean homeSoundParsed = parserCounter.getOrDefault(AudioManager.FX_HOME, 0) > 0;
+                if (navigationRepeatFxParsed || homeSoundParsed) {
+                    AudioManager audioManager = mContext.getSystemService(AudioManager.class);
+                    if (audioManager != null && navigationRepeatFxParsed) {
+                        audioManager.setNavigationRepeatSoundEffectsEnabled(true);
+                    }
+                    if (audioManager != null && homeSoundParsed) {
+                        audioManager.setHomeSoundEffectEnabled(true);
                     }
                 }
             }
         } catch (Resources.NotFoundException e) {
             Log.w(TAG, "audio assets file not found", e);
         } catch (XmlPullParserException e) {
-            Log.w(TAG, "XML parser exception reading touch sound assets", e);
+            Log.w(TAG, "XML parser exception reading sound assets", e);
         } catch (IOException e) {
-            Log.w(TAG, "I/O exception reading touch sound assets", e);
+            Log.w(TAG, "I/O exception reading sound assets", e);
         } finally {
             if (parser != null) {
                 parser.close();
             }
         }
+    }
+
+    private boolean allNavigationRepeatSoundsParsed(Map<Integer, Integer> parserCounter) {
+        int numFastScrollSoundEffectsParsed =
+                parserCounter.getOrDefault(AudioManager.FX_FOCUS_NAVIGATION_REPEAT_1, 0)
+                        + parserCounter.getOrDefault(AudioManager.FX_FOCUS_NAVIGATION_REPEAT_2, 0)
+                        + parserCounter.getOrDefault(AudioManager.FX_FOCUS_NAVIGATION_REPEAT_3, 0)
+                        + parserCounter.getOrDefault(AudioManager.FX_FOCUS_NAVIGATION_REPEAT_4, 0);
+        return numFastScrollSoundEffectsParsed == AudioManager.NUM_NAVIGATION_REPEAT_SOUND_EFFECTS;
     }
 
     private int findOrAddResourceByFileName(String fileName) {

@@ -13,12 +13,21 @@ android_library {
     srcs: ["src/**/*.java"],
     resource_dirs: ["res"],
 
+    static_libs: [
+        "androidx.annotation_annotation",
+    ],
+
     sdk_version: "system_current",
     min_sdk_version: "21",
 
     apex_available: [
 
         "//apex_available:platform",
+        "com.android.adservices",
+        "com.android.cellbroadcast",
+        "com.android.devicelock",
+        "com.android.extservices",
+        "com.android.healthfitness",
         "com.android.permission",
     ],
 }

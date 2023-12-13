@@ -18,7 +18,7 @@
     xmlns:androidprv="http://schemas.android.com/apk/prv/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:sharedUserId="android.uid.system"
-    package="com.android.systemui" >
+    package="com.android.systemui.tests" >
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.ACCESS_VOICE_INTERACTION_SERVICE" />
@@ -46,28 +46,37 @@
     <uses-permission android:name="android.permission.DEVICE_POWER" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.STATUS_BAR" />
-    <uses-permission android:name="android.permission.MANAGE_ACTIVITY_STACKS" />
+    <uses-permission android:name="android.permission.MANAGE_ACTIVITY_TASKS" />
     <uses-permission android:name="android.permission.REAL_GET_TASKS" />
     <uses-permission android:name="android.permission.INTERNAL_SYSTEM_WINDOW" />
     <uses-permission android:name="android.permission.NETWORK_SETTINGS" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.REGISTER_WINDOW_MANAGER_LISTENERS" />
 
-    <application android:debuggable="true" android:largeHeap="true">
+    <application android:debuggable="true" android:largeHeap="true" android:testOnly="true"
+            android:enableOnBackInvokedCallback="true" >
         <uses-library android:name="android.test.runner" />
 
-        <receiver android:name="com.android.systemui.SliceBroadcastRelayHandlerTest$Receiver">
+        <receiver android:name="com.android.systemui.SliceBroadcastRelayHandlerTest$Receiver"
+            android:exported="true">
             <intent-filter>
                 <action android:name="com.android.systemui.action.TEST_ACTION" />
             </intent-filter>
         </receiver>
 
-        <activity android:name="com.android.systemui.bubbles.BubblesTestActivity"
+        <activity android:name="com.android.systemui.wmshell.BubblesTestActivity"
             android:allowEmbedded="true"
             android:documentLaunchMode="always"
             android:excludeFromRecents="true"
             android:exported="false"
             android:resizeableActivity="true" />
+
+        <activity android:name="com.android.systemui.emergency.EmergencyActivityTest"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="com.android.systemui.action.LAUNCH_EMERGENCY"/>
+            </intent-filter>
+        </activity>
 
         <activity
             android:name="com.android.systemui.globalactions.GlobalActionsImeTest$TestActivity"
@@ -79,15 +88,79 @@
                   android:excludeFromRecents="true"
                   />
 
+        <activity android:name="com.android.systemui.settings.brightness.BrightnessDialogTest$TestDialog"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            />
+
+        <activity android:name="com.android.systemui.controls.management.ControlsEditingActivityTest$TestableControlsEditingActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            />
+
+        <activity android:name="com.android.systemui.controls.management.ControlsFavoritingActivityTest$TestableControlsFavoritingActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            />
+
+        <activity android:name="com.android.systemui.controls.management.ControlsProviderSelectorActivityTest$TestableControlsProviderSelectorActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            />
+
+        <activity android:name="com.android.systemui.controls.ui.TestableControlsActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            />
+
+        <activity android:name="com.android.systemui.screenshot.ScrollViewActivity"
+                  android:exported="false" />
+
+        <activity android:name="com.android.systemui.screenshot.RecyclerViewActivity"
+                  android:exported="false" />
+
+        <!-- started from UsbDeviceSettingsManager -->
+        <activity android:name="com.android.systemui.usb.UsbPermissionActivityTest$UsbPermissionActivityTestable"
+                  android:exported="false"
+                  android:theme="@style/Theme.SystemUI.Dialog.Alert"
+                  android:finishOnCloseSystemDialogs="true"
+                  android:excludeFromRecents="true" />
+
+        <activity android:name="com.android.systemui.user.CreateUserActivityTest$CreateUserActivityTestable"
+            android:exported="false"
+            android:theme="@style/Theme.SystemUI.Dialog.Alert"
+            android:finishOnCloseSystemDialogs="true"
+            android:excludeFromRecents="true" />
+
+        <activity android:name="com.android.systemui.sensorprivacy.SensorUseStartedActivityTest$SensorUseStartedActivityTestable"
+                  android:exported="false"
+                  android:theme="@style/Theme.SystemUI.Dialog.Alert"
+                  android:finishOnCloseSystemDialogs="true"
+                  android:excludeFromRecents="true" />
+
+        <activity android:name="com.android.systemui.activity.EmptyTestActivity"
+                  android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <provider
-            android:name="androidx.lifecycle.ProcessLifecycleOwnerInitializer"
+            android:name="androidx.startup.InitializationProvider"
             tools:replace="android:authorities"
-            android:authorities="${applicationId}.lifecycle-tests"
+            android:authorities="${applicationId}.startup-tests"
             android:exported="false"
             android:enabled="false"
             android:multiprocess="true" />
         <provider android:name="com.android.systemui.keyguard.KeyguardSliceProvider"
             android:authorities="com.android.systemui.test.keyguard.disabled"
+            android:enabled="false"
+            tools:replace="android:authorities"
+            tools:node="remove" />
+
+        <provider android:name="com.android.systemui.keyguard.CustomizationProvider"
+            android:authorities="com.android.systemui.test.keyguard.quickaffordance.disabled"
             android:enabled="false"
             tools:replace="android:authorities"
             tools:node="remove" />
@@ -99,6 +172,35 @@
             android:enabled="false"
             tools:replace="android:authorities"
             android:grantUriPermissions="true" />
+
+        <activity
+            android:name="com.android.systemui.screenshot.appclips.AppClipsTrampolineActivityTest$AppClipsTrampolineActivityTestable"
+            android:exported="false"
+            android:permission="com.android.systemui.permission.SELF"
+            android:excludeFromRecents="true" />
+
+        <activity
+            android:name="com.android.systemui.screenshot.appclips.AppClipsActivityTest$AppClipsActivityTestable"
+            android:exported="false"
+            android:permission="com.android.systemui.permission.SELF"
+            android:excludeFromRecents="true" />
+
+        <activity
+            android:name="com.android.systemui.notetask.shortcut.LaunchNoteTaskActivity"
+            android:exported="false"
+            android:permission="com.android.systemui.permission.SELF"
+            android:excludeFromRecents="true" />
+
+        <activity
+            android:name="com.android.systemui.notetask.LaunchNotesRoleSettingsTrampolineActivity"
+            android:exported="false"
+            android:permission="com.android.systemui.permission.SELF"
+            android:excludeFromRecents="true" >
+            <intent-filter>
+                <action android:name="com.android.systemui.action.MANAGE_NOTES_ROLE_FROM_QUICK_AFFORDANCE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
     </application>
 
     <instrumentation android:name="android.testing.TestableInstrumentation"

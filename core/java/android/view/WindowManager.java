@@ -17,6 +17,27 @@
 package android.view;
 
 import static android.content.pm.ActivityInfo.COLOR_MODE_DEFAULT;
+import static android.view.View.STATUS_BAR_DISABLE_BACK;
+import static android.view.View.STATUS_BAR_DISABLE_CLOCK;
+import static android.view.View.STATUS_BAR_DISABLE_EXPAND;
+import static android.view.View.STATUS_BAR_DISABLE_HOME;
+import static android.view.View.STATUS_BAR_DISABLE_NOTIFICATION_ALERTS;
+import static android.view.View.STATUS_BAR_DISABLE_NOTIFICATION_ICONS;
+import static android.view.View.STATUS_BAR_DISABLE_NOTIFICATION_TICKER;
+import static android.view.View.STATUS_BAR_DISABLE_RECENT;
+import static android.view.View.STATUS_BAR_DISABLE_SEARCH;
+import static android.view.View.STATUS_BAR_DISABLE_SYSTEM_INFO;
+import static android.view.View.SYSTEM_UI_FLAG_FULLSCREEN;
+import static android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+import static android.view.View.SYSTEM_UI_FLAG_IMMERSIVE;
+import static android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+import static android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+import static android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+import static android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+import static android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+import static android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+import static android.view.View.SYSTEM_UI_FLAG_LOW_PROFILE;
+import static android.view.View.SYSTEM_UI_FLAG_VISIBLE;
 import static android.view.WindowInsets.Side.BOTTOM;
 import static android.view.WindowInsets.Side.LEFT;
 import static android.view.WindowInsets.Side.RIGHT;
@@ -60,8 +81,11 @@ import static android.view.WindowLayoutParamsProto.X;
 import static android.view.WindowLayoutParamsProto.Y;
 
 import android.Manifest.permission;
+import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
+import android.annotation.IntRange;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
@@ -69,44 +93,56 @@ import android.annotation.TestApi;
 import android.app.KeyguardManager;
 import android.app.Presentation;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.ClipData;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
+import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
+import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.os.SystemProperties;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.proto.ProtoOutputStream;
+import android.view.Gravity.GravityFlags;
 import android.view.View.OnApplyWindowInsetsListener;
 import android.view.WindowInsets.Side;
 import android.view.WindowInsets.Side.InsetsSide;
 import android.view.WindowInsets.Type;
 import android.view.WindowInsets.Type.InsetsType;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.window.TaskFpsCallback;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 
 /**
  * The interface that apps use to talk to the window manager.
- * </p><p>
- * Each window manager instance is bound to a particular {@link Display}.
- * To obtain a {@link WindowManager} for a different display, use
- * {@link Context#createDisplayContext} to obtain a {@link Context} for that
- * display, then use <code>Context.getSystemService(Context.WINDOW_SERVICE)</code>
- * to get the WindowManager.
- * </p><p>
- * The simplest way to show a window on another display is to create a
- * {@link Presentation}.  The presentation will automatically obtain a
- * {@link WindowManager} and {@link Context} for that display.
- * </p>
+ * <p>
+ * Each window manager instance is bound to a {@link Display}. To obtain the
+ * <code>WindowManager</code> associated with a display,
+ * call {@link Context#createWindowContext(Display, int, Bundle)} to get the display's UI context,
+ * then call {@link Context#getSystemService(String)} or {@link Context#getSystemService(Class)} on
+ * the UI context.
+ * <p>
+ * The simplest way to show a window on a particular display is to create a {@link Presentation},
+ * which automatically obtains a <code>WindowManager</code> and context for the display.
  */
 @SystemService(Context.WINDOW_SERVICE)
 public interface WindowManager extends ViewManager {
@@ -131,187 +167,330 @@ public interface WindowManager extends ViewManager {
     /** @hide */
     String INPUT_CONSUMER_RECENTS_ANIMATION = "recents_animation_input_consumer";
 
+    /** @hide */
+    int SHELL_ROOT_LAYER_DIVIDER = 0;
+    /** @hide */
+    int SHELL_ROOT_LAYER_PIP = 1;
+
+    /**
+     * Declares the layer the shell root will belong to. This is for z-ordering.
+     * @hide
+     */
+    @IntDef(prefix = { "SHELL_ROOT_LAYER_" }, value = {
+            SHELL_ROOT_LAYER_DIVIDER,
+            SHELL_ROOT_LAYER_PIP
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface ShellRootLayer {}
+
     /**
      * Not set up for a transition.
      * @hide
      */
-    int TRANSIT_UNSET = -1;
+    int TRANSIT_OLD_UNSET = -1;
 
     /**
      * No animation for transition.
      * @hide
      */
-    int TRANSIT_NONE = 0;
+    int TRANSIT_OLD_NONE = 0;
 
     /**
      * A window in a new activity is being opened on top of an existing one in the same task.
      * @hide
      */
-    int TRANSIT_ACTIVITY_OPEN = 6;
+    int TRANSIT_OLD_ACTIVITY_OPEN = 6;
 
     /**
      * The window in the top-most activity is being closed to reveal the previous activity in the
      * same task.
      * @hide
      */
-    int TRANSIT_ACTIVITY_CLOSE = 7;
+    int TRANSIT_OLD_ACTIVITY_CLOSE = 7;
 
     /**
      * A window in a new task is being opened on top of an existing one in another activity's task.
      * @hide
      */
-    int TRANSIT_TASK_OPEN = 8;
+    int TRANSIT_OLD_TASK_OPEN = 8;
 
     /**
      * A window in the top-most activity is being closed to reveal the previous activity in a
      * different task.
      * @hide
      */
-    int TRANSIT_TASK_CLOSE = 9;
+    int TRANSIT_OLD_TASK_CLOSE = 9;
 
     /**
      * A window in an existing task is being displayed on top of an existing one in another
      * activity's task.
      * @hide
      */
-    int TRANSIT_TASK_TO_FRONT = 10;
+    int TRANSIT_OLD_TASK_TO_FRONT = 10;
 
     /**
      * A window in an existing task is being put below all other tasks.
      * @hide
      */
-    int TRANSIT_TASK_TO_BACK = 11;
+    int TRANSIT_OLD_TASK_TO_BACK = 11;
 
     /**
      * A window in a new activity that doesn't have a wallpaper is being opened on top of one that
      * does, effectively closing the wallpaper.
      * @hide
      */
-    int TRANSIT_WALLPAPER_CLOSE = 12;
+    int TRANSIT_OLD_WALLPAPER_CLOSE = 12;
 
     /**
      * A window in a new activity that does have a wallpaper is being opened on one that didn't,
      * effectively opening the wallpaper.
      * @hide
      */
-    int TRANSIT_WALLPAPER_OPEN = 13;
+    int TRANSIT_OLD_WALLPAPER_OPEN = 13;
 
     /**
      * A window in a new activity is being opened on top of an existing one, and both are on top
      * of the wallpaper.
      * @hide
      */
-    int TRANSIT_WALLPAPER_INTRA_OPEN = 14;
+    int TRANSIT_OLD_WALLPAPER_INTRA_OPEN = 14;
 
     /**
      * The window in the top-most activity is being closed to reveal the previous activity, and
      * both are on top of the wallpaper.
      * @hide
      */
-    int TRANSIT_WALLPAPER_INTRA_CLOSE = 15;
+    int TRANSIT_OLD_WALLPAPER_INTRA_CLOSE = 15;
 
     /**
      * A window in a new task is being opened behind an existing one in another activity's task.
      * The new window will show briefly and then be gone.
      * @hide
      */
-    int TRANSIT_TASK_OPEN_BEHIND = 16;
+    int TRANSIT_OLD_TASK_OPEN_BEHIND = 16;
 
     /**
      * An activity is being relaunched (e.g. due to configuration change).
      * @hide
      */
-    int TRANSIT_ACTIVITY_RELAUNCH = 18;
-
-    /**
-     * A task is being docked from recents.
-     * @hide
-     */
-    int TRANSIT_DOCK_TASK_FROM_RECENTS = 19;
+    int TRANSIT_OLD_ACTIVITY_RELAUNCH = 18;
 
     /**
      * Keyguard is going away.
      * @hide
      */
-    int TRANSIT_KEYGUARD_GOING_AWAY = 20;
+    int TRANSIT_OLD_KEYGUARD_GOING_AWAY = 20;
 
     /**
      * Keyguard is going away with showing an activity behind that requests wallpaper.
      * @hide
      */
-    int TRANSIT_KEYGUARD_GOING_AWAY_ON_WALLPAPER = 21;
+    int TRANSIT_OLD_KEYGUARD_GOING_AWAY_ON_WALLPAPER = 21;
 
     /**
-     * Keyguard is being occluded.
+     * Keyguard is being occluded by non-Dream.
      * @hide
      */
-    int TRANSIT_KEYGUARD_OCCLUDE = 22;
+    int TRANSIT_OLD_KEYGUARD_OCCLUDE = 22;
+
+    /**
+     * Keyguard is being occluded by Dream.
+     * @hide
+     */
+    int TRANSIT_OLD_KEYGUARD_OCCLUDE_BY_DREAM = 33;
 
     /**
      * Keyguard is being unoccluded.
      * @hide
      */
-    int TRANSIT_KEYGUARD_UNOCCLUDE = 23;
+    int TRANSIT_OLD_KEYGUARD_UNOCCLUDE = 23;
 
     /**
      * A translucent activity is being opened.
      * @hide
      */
-    int TRANSIT_TRANSLUCENT_ACTIVITY_OPEN = 24;
+    int TRANSIT_OLD_TRANSLUCENT_ACTIVITY_OPEN = 24;
 
     /**
      * A translucent activity is being closed.
      * @hide
      */
-    int TRANSIT_TRANSLUCENT_ACTIVITY_CLOSE = 25;
+    int TRANSIT_OLD_TRANSLUCENT_ACTIVITY_CLOSE = 25;
 
     /**
      * A crashing activity is being closed.
      * @hide
      */
-    int TRANSIT_CRASHING_ACTIVITY_CLOSE = 26;
+    int TRANSIT_OLD_CRASHING_ACTIVITY_CLOSE = 26;
 
     /**
      * A task is changing windowing modes
      * @hide
      */
-    int TRANSIT_TASK_CHANGE_WINDOWING_MODE = 27;
+    int TRANSIT_OLD_TASK_CHANGE_WINDOWING_MODE = 27;
 
     /**
-     * A display which can only contain one task is being shown because the first activity is
-     * started or it's being turned on.
+     * A window in a new task fragment is being opened.
      * @hide
      */
-    int TRANSIT_SHOW_SINGLE_TASK_DISPLAY = 28;
+    int TRANSIT_OLD_TASK_FRAGMENT_OPEN = 28;
+
+    /**
+     * A window in the top-most activity of task fragment is being closed to reveal the activity
+     * below.
+     * @hide
+     */
+    int TRANSIT_OLD_TASK_FRAGMENT_CLOSE = 29;
+
+    /**
+     * A window of task fragment is changing bounds.
+     * @hide
+     */
+    int TRANSIT_OLD_TASK_FRAGMENT_CHANGE = 30;
+
+    /**
+     * A dream activity is being opened.
+     * @hide
+     */
+    int TRANSIT_OLD_DREAM_ACTIVITY_OPEN = 31;
+
+    /**
+     * A dream activity is being closed.
+     * @hide
+     */
+    int TRANSIT_OLD_DREAM_ACTIVITY_CLOSE = 32;
+
+    /**
+     * @hide
+     */
+    @IntDef(prefix = { "TRANSIT_OLD_" }, value = {
+            TRANSIT_OLD_UNSET,
+            TRANSIT_OLD_NONE,
+            TRANSIT_OLD_ACTIVITY_OPEN,
+            TRANSIT_OLD_ACTIVITY_CLOSE,
+            TRANSIT_OLD_TASK_OPEN,
+            TRANSIT_OLD_TASK_CLOSE,
+            TRANSIT_OLD_TASK_TO_FRONT,
+            TRANSIT_OLD_TASK_TO_BACK,
+            TRANSIT_OLD_WALLPAPER_CLOSE,
+            TRANSIT_OLD_WALLPAPER_OPEN,
+            TRANSIT_OLD_WALLPAPER_INTRA_OPEN,
+            TRANSIT_OLD_WALLPAPER_INTRA_CLOSE,
+            TRANSIT_OLD_TASK_OPEN_BEHIND,
+            TRANSIT_OLD_ACTIVITY_RELAUNCH,
+            TRANSIT_OLD_KEYGUARD_GOING_AWAY,
+            TRANSIT_OLD_KEYGUARD_GOING_AWAY_ON_WALLPAPER,
+            TRANSIT_OLD_KEYGUARD_OCCLUDE,
+            TRANSIT_OLD_KEYGUARD_UNOCCLUDE,
+            TRANSIT_OLD_TRANSLUCENT_ACTIVITY_OPEN,
+            TRANSIT_OLD_TRANSLUCENT_ACTIVITY_CLOSE,
+            TRANSIT_OLD_CRASHING_ACTIVITY_CLOSE,
+            TRANSIT_OLD_TASK_CHANGE_WINDOWING_MODE,
+            TRANSIT_OLD_TASK_FRAGMENT_OPEN,
+            TRANSIT_OLD_TASK_FRAGMENT_CLOSE,
+            TRANSIT_OLD_TASK_FRAGMENT_CHANGE,
+            TRANSIT_OLD_DREAM_ACTIVITY_OPEN,
+            TRANSIT_OLD_DREAM_ACTIVITY_CLOSE
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface TransitionOldType {}
+
+    /** @hide */
+    int TRANSIT_NONE = 0;
+    /**
+     * A window that didn't exist before has been created and made visible.
+     * @hide
+     */
+    int TRANSIT_OPEN = 1;
+    /**
+     * A window that was visible no-longer exists (was finished or destroyed).
+     * @hide
+     */
+    int TRANSIT_CLOSE = 2;
+    /**
+     * A window that already existed but was not visible is made visible.
+     * @hide
+     */
+    int TRANSIT_TO_FRONT = 3;
+    /**
+     * A window that was visible is made invisible but still exists.
+     * @hide
+     */
+    int TRANSIT_TO_BACK = 4;
+    /** @hide */
+    int TRANSIT_RELAUNCH = 5;
+    /**
+     * A window is visible before and after but changes in some way (eg. it resizes or changes
+     * windowing-mode).
+     * @hide
+     */
+    int TRANSIT_CHANGE = 6;
+    /**
+     * The keyguard was visible and has been dismissed.
+     * @deprecated use {@link #TRANSIT_TO_BACK} + {@link #TRANSIT_FLAG_KEYGUARD_GOING_AWAY} for
+     *             keyguard going away with Shell transition.
+     * @hide
+     */
+    @Deprecated
+    int TRANSIT_KEYGUARD_GOING_AWAY = 7;
+    /**
+     * A window is appearing above a locked keyguard.
+     * @deprecated use {@link #TRANSIT_TO_FRONT} + {@link #TRANSIT_FLAG_KEYGUARD_OCCLUDING} for
+     *             keyguard occluding with Shell transition.
+     * @hide
+     */
+    int TRANSIT_KEYGUARD_OCCLUDE = 8;
+    /**
+     * A window is made invisible revealing a locked keyguard.
+     * @deprecated use {@link #TRANSIT_TO_BACK} + {@link #TRANSIT_FLAG_KEYGUARD_UNOCCLUDING} for
+     *             keyguard occluding with Shell transition.
+     * @hide
+     */
+    int TRANSIT_KEYGUARD_UNOCCLUDE = 9;
+    /**
+     * A window is starting to enter PiP.
+     * @hide
+     */
+    int TRANSIT_PIP = 10;
+    /**
+     * The screen is turning on.
+     * @hide
+     */
+    int TRANSIT_WAKE = 11;
+    /**
+     * The screen is turning off. This is used as a message to stop all animations.
+     * @hide
+     */
+    int TRANSIT_SLEEP = 12;
+    /**
+     * The first slot for custom transition types. Callers (like Shell) can make use of custom
+     * transition types for dealing with special cases. These types are effectively ignored by
+     * Core and will just be passed along as part of TransitionInfo objects. An example is
+     * split-screen using a custom type for it's snap-to-dismiss action. By using a custom type,
+     * Shell can properly dispatch the results of that transition to the split-screen
+     * implementation.
+     * @hide
+     */
+    int TRANSIT_FIRST_CUSTOM = 1000;
 
     /**
      * @hide
      */
     @IntDef(prefix = { "TRANSIT_" }, value = {
-            TRANSIT_UNSET,
             TRANSIT_NONE,
-            TRANSIT_ACTIVITY_OPEN,
-            TRANSIT_ACTIVITY_CLOSE,
-            TRANSIT_TASK_OPEN,
-            TRANSIT_TASK_CLOSE,
-            TRANSIT_TASK_TO_FRONT,
-            TRANSIT_TASK_TO_BACK,
-            TRANSIT_WALLPAPER_CLOSE,
-            TRANSIT_WALLPAPER_OPEN,
-            TRANSIT_WALLPAPER_INTRA_OPEN,
-            TRANSIT_WALLPAPER_INTRA_CLOSE,
-            TRANSIT_TASK_OPEN_BEHIND,
-            TRANSIT_ACTIVITY_RELAUNCH,
-            TRANSIT_DOCK_TASK_FROM_RECENTS,
+            TRANSIT_OPEN,
+            TRANSIT_CLOSE,
+            TRANSIT_TO_FRONT,
+            TRANSIT_TO_BACK,
+            TRANSIT_RELAUNCH,
+            TRANSIT_CHANGE,
             TRANSIT_KEYGUARD_GOING_AWAY,
-            TRANSIT_KEYGUARD_GOING_AWAY_ON_WALLPAPER,
             TRANSIT_KEYGUARD_OCCLUDE,
             TRANSIT_KEYGUARD_UNOCCLUDE,
-            TRANSIT_TRANSLUCENT_ACTIVITY_OPEN,
-            TRANSIT_TRANSLUCENT_ACTIVITY_CLOSE,
-            TRANSIT_CRASHING_ACTIVITY_CLOSE,
-            TRANSIT_TASK_CHANGE_WINDOWING_MODE,
-            TRANSIT_SHOW_SINGLE_TASK_DISPLAY
+            TRANSIT_PIP,
+            TRANSIT_WAKE,
+            TRANSIT_SLEEP,
+            TRANSIT_FIRST_CUSTOM
     })
     @Retention(RetentionPolicy.SOURCE)
     @interface TransitionType {}
@@ -320,25 +499,90 @@ public interface WindowManager extends ViewManager {
      * Transition flag: Keyguard is going away, but keeping the notification shade open
      * @hide
      */
-    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_TO_SHADE = 0x1;
+    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_TO_SHADE = (1 << 0); // 0x1
 
     /**
      * Transition flag: Keyguard is going away, but doesn't want an animation for it
      * @hide
      */
-    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_NO_ANIMATION = 0x2;
+    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_NO_ANIMATION = (1 << 1); // 0x2
 
     /**
      * Transition flag: Keyguard is going away while it was showing the system wallpaper.
      * @hide
      */
-    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_WITH_WALLPAPER = 0x4;
+    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_WITH_WALLPAPER = (1 << 2); // 0x4
 
     /**
      * Transition flag: Keyguard is going away with subtle animation.
      * @hide
      */
-    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_SUBTLE_ANIMATION = 0x8;
+    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_SUBTLE_ANIMATION = (1 << 3); // 0x8
+
+    /**
+     * Transition flag: App is crashed.
+     * @hide
+     */
+    int TRANSIT_FLAG_APP_CRASHED = (1 << 4); // 0x10
+
+    /**
+     * Transition flag: A window in a new task is being opened behind an existing one in another
+     * activity's task.
+     * @hide
+     */
+    int TRANSIT_FLAG_OPEN_BEHIND = (1 << 5); // 0x20
+
+    /**
+     * Transition flag: The keyguard is locked throughout the whole transition.
+     * @hide
+     */
+    int TRANSIT_FLAG_KEYGUARD_LOCKED = (1 << 6); // 0x40
+
+    /**
+     * Transition flag: Indicates that this transition is for recents animation.
+     * TODO(b/188669821): Remove once special-case logic moves to shell.
+     * @hide
+     */
+    int TRANSIT_FLAG_IS_RECENTS = (1 << 7); // 0x80
+
+    /**
+     * Transition flag: Indicates that keyguard should go away with this transition.
+     * @hide
+     */
+    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY = (1 << 8); // 0x100
+
+    /**
+     * Transition flag: Keyguard is going away to the launcher, and it needs us to clear the task
+     * snapshot of the launcher because it has changed something in the Launcher window.
+     * @hide
+     */
+    int TRANSIT_FLAG_KEYGUARD_GOING_AWAY_TO_LAUNCHER_CLEAR_SNAPSHOT = (1 << 9); // 0x200
+
+    /**
+     * Transition flag: The transition is prepared when nothing is visible on screen, e.g. screen
+     * is off. The animation handlers can decide whether to skip animations.
+     * @hide
+     */
+    int TRANSIT_FLAG_INVISIBLE = (1 << 10); // 0x400
+
+    /**
+     * Transition flag: Indicates that keyguard will be showing (locked) with this transition,
+     * which is the opposite of {@link #TRANSIT_FLAG_KEYGUARD_GOING_AWAY}.
+     * @hide
+     */
+    int TRANSIT_FLAG_KEYGUARD_APPEARING = (1 << 11); // 0x800
+
+    /**
+     * Transition flag: Indicates that keyguard is becoming hidden by an app
+     * @hide
+     */
+    int TRANSIT_FLAG_KEYGUARD_OCCLUDING = (1 << 12); // 0x1000
+
+    /**
+     * Transition flag: Indicates that keyguard is being revealed after an app was occluding it.
+     * @hide
+     */
+    int TRANSIT_FLAG_KEYGUARD_UNOCCLUDING = (1 << 13); // 0x2000
 
     /**
      * @hide
@@ -347,9 +591,34 @@ public interface WindowManager extends ViewManager {
             TRANSIT_FLAG_KEYGUARD_GOING_AWAY_TO_SHADE,
             TRANSIT_FLAG_KEYGUARD_GOING_AWAY_NO_ANIMATION,
             TRANSIT_FLAG_KEYGUARD_GOING_AWAY_WITH_WALLPAPER,
+            TRANSIT_FLAG_KEYGUARD_GOING_AWAY_SUBTLE_ANIMATION,
+            TRANSIT_FLAG_APP_CRASHED,
+            TRANSIT_FLAG_OPEN_BEHIND,
+            TRANSIT_FLAG_KEYGUARD_LOCKED,
+            TRANSIT_FLAG_IS_RECENTS,
+            TRANSIT_FLAG_KEYGUARD_GOING_AWAY,
+            TRANSIT_FLAG_KEYGUARD_GOING_AWAY_TO_LAUNCHER_CLEAR_SNAPSHOT,
+            TRANSIT_FLAG_INVISIBLE,
+            TRANSIT_FLAG_KEYGUARD_APPEARING,
+            TRANSIT_FLAG_KEYGUARD_OCCLUDING,
+            TRANSIT_FLAG_KEYGUARD_UNOCCLUDING
     })
     @Retention(RetentionPolicy.SOURCE)
     @interface TransitionFlags {}
+
+    /**
+     * Transit flags used to signal keyguard visibility is changing for animations.
+     *
+     * <p>These roughly correspond to CLOSE, OPEN, TO_BACK, and TO_FRONT on a hypothetical Keyguard
+     * container. Since Keyguard isn't a container we can't include it in changes and need to send
+     * this information in its own channel.
+     * @hide
+     */
+    int KEYGUARD_VISIBILITY_TRANSIT_FLAGS =
+            (TRANSIT_FLAG_KEYGUARD_GOING_AWAY
+            | TRANSIT_FLAG_KEYGUARD_APPEARING
+            | TRANSIT_FLAG_KEYGUARD_OCCLUDING
+            | TRANSIT_FLAG_KEYGUARD_UNOCCLUDING);
 
     /**
      * Remove content mode: Indicates remove content mode is currently not defined.
@@ -380,6 +649,40 @@ public interface WindowManager extends ViewManager {
             REMOVE_CONTENT_MODE_DESTROY,
     })
     @interface RemoveContentMode {}
+
+    /**
+     * Display IME Policy: The IME should appear on the local display.
+     * @hide
+     */
+    @TestApi
+    int DISPLAY_IME_POLICY_LOCAL = 0;
+
+    /**
+     * Display IME Policy: The IME should appear on the fallback display.
+     * @hide
+     */
+    @TestApi
+    int DISPLAY_IME_POLICY_FALLBACK_DISPLAY = 1;
+
+    /**
+     * Display IME Policy: The IME should be hidden.
+     *
+     * Setting this policy will prevent the IME from making a connection. This
+     * will prevent any IME from receiving metadata about input.
+     * @hide
+     */
+    @TestApi
+    int DISPLAY_IME_POLICY_HIDE = 2;
+
+    /**
+     * @hide
+     */
+    @IntDef({
+            DISPLAY_IME_POLICY_LOCAL,
+            DISPLAY_IME_POLICY_FALLBACK_DISPLAY,
+            DISPLAY_IME_POLICY_HIDE,
+    })
+    @interface DisplayImePolicy {}
 
     /**
      * Exception that is thrown when trying to add view whose
@@ -451,6 +754,10 @@ public interface WindowManager extends ViewManager {
      * For example, for activities in multi-window mode, the metrics returned are based on the
      * current bounds that the user has selected for the {@link android.app.Activity Activity}'s
      * task.
+     * <p>
+     * In most scenarios, {@link #getCurrentWindowMetrics()} rather than
+     * {@link #getMaximumWindowMetrics()} is the correct API to use, since it ensures values reflect
+     * window size when the app is not fullscreen.
      *
      * @see #getMaximumWindowMetrics()
      * @see WindowMetrics
@@ -462,23 +769,47 @@ public interface WindowManager extends ViewManager {
     /**
      * Returns the largest {@link WindowMetrics} an app may expect in the current system state.
      * <p>
-     * The metrics describe the size of the largest potential area the window might occupy with
-     * {@link LayoutParams#MATCH_PARENT MATCH_PARENT} width and height, and the {@link WindowInsets}
-     * such a window would have.
-     * <p>
      * The value of this is based on the largest <b>potential</b> windowing state of the system.
      *
      * For example, for activities in multi-window mode, the metrics returned are based on the
      * what the bounds would be if the user expanded the {@link android.app.Activity Activity}'s
      * task to cover the entire screen.
-     *
+     * <p>
+     * The metrics describe the size of the largest potential area the window might occupy with
+     * {@link LayoutParams#MATCH_PARENT MATCH_PARENT} width and height, and the {@link WindowInsets}
+     * such a window would have.
+     * <p>
      * Note that this might still be smaller than the size of the physical display if certain areas
      * of the display are not available to windows created in this {@link Context}.
      *
-     * @see #getMaximumWindowMetrics()
+     * For example, given that there's a device which have a multi-task mode to limit activities
+     * to a half screen. In this case, {@link #getMaximumWindowMetrics()} reports the bounds of
+     * the half screen which the activity is located.
+     * <p>
+     * <b>Generally {@link #getCurrentWindowMetrics()} is the correct API to use</b> for choosing
+     * UI layouts. {@link #getMaximumWindowMetrics()} are only appropriate when the application
+     * needs to know the largest possible size it can occupy if the user expands/maximizes it on the
+     * screen.
+     *
+     * @see #getCurrentWindowMetrics()
      * @see WindowMetrics
+     * @see Display#getRealSize(Point)
      */
     default @NonNull WindowMetrics getMaximumWindowMetrics() {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Returns a set of {@link WindowMetrics} for the given display. Each WindowMetrics instance
+     * is the maximum WindowMetrics for a device state. This is not guaranteed to include all
+     * possible device states.
+     *
+     * This API can only be used by Launcher.
+     *
+     * @param displayId the id of the logical display
+     * @hide
+     */
+    default @NonNull Set<WindowMetrics> getPossibleMaximumWindowMetrics(int displayId) {
         throw new UnsupportedOperationException();
     }
 
@@ -497,22 +828,25 @@ public interface WindowManager extends ViewManager {
     }
 
     /**
-     * Message for taking fullscreen screenshot
+     * Invoke screenshot flow to capture a full-screen image.
      * @hide
      */
     int TAKE_SCREENSHOT_FULLSCREEN = 1;
 
     /**
-     * Message for taking screenshot of selected region.
-     * @hide
-     */
-    int TAKE_SCREENSHOT_SELECTED_REGION = 2;
-
-    /**
-     * Message for handling a screenshot flow with an image provided by the caller.
+     * Invoke screenshot flow with an image provided by the caller.
      * @hide
      */
     int TAKE_SCREENSHOT_PROVIDED_IMAGE = 3;
+
+    /**
+     * Enum listing the types of screenshot requests available.
+     *
+     * @hide
+     */
+    @IntDef({TAKE_SCREENSHOT_FULLSCREEN,
+            TAKE_SCREENSHOT_PROVIDED_IMAGE})
+    @interface ScreenshotType {}
 
     /**
      * Enum listing the possible sources from which a screenshot was originated. Used for logging.
@@ -524,7 +858,8 @@ public interface WindowManager extends ViewManager {
             ScreenshotSource.SCREENSHOT_KEY_OTHER,
             ScreenshotSource.SCREENSHOT_OVERVIEW,
             ScreenshotSource.SCREENSHOT_ACCESSIBILITY_ACTIONS,
-            ScreenshotSource.SCREENSHOT_OTHER})
+            ScreenshotSource.SCREENSHOT_OTHER,
+            ScreenshotSource.SCREENSHOT_VENDOR_GESTURE})
     @interface ScreenshotSource {
         int SCREENSHOT_GLOBAL_ACTIONS = 0;
         int SCREENSHOT_KEY_CHORD = 1;
@@ -532,7 +867,525 @@ public interface WindowManager extends ViewManager {
         int SCREENSHOT_OVERVIEW = 3;
         int SCREENSHOT_ACCESSIBILITY_ACTIONS = 4;
         int SCREENSHOT_OTHER = 5;
+        int SCREENSHOT_VENDOR_GESTURE = 6;
     }
+
+    /**
+     * If the display {@link Configuration#smallestScreenWidthDp} is greater or equal to this value,
+     * we will treat it as a large screen device, which will have some multi window features enabled
+     * by default.
+     * @hide
+     */
+    @TestApi
+    int LARGE_SCREEN_SMALLEST_SCREEN_WIDTH_DP = 600;
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app can be opted-in or opted-out from the
+     * compatibility treatment that avoids {@link android.app.Activity#setRequestedOrientation
+     * Activity#setRequestedOrientation()} loops. Loops can be triggered by the OEM-configured
+     * ignore requested orientation display setting (on Android 12 (API level 31) and higher) or by
+     * the landscape natural orientation of the device.
+     *
+     * <p>The treatment is disabled by default but device manufacturers can enable the treatment
+     * using their discretion to improve display compatibility.
+     *
+     * <p>With this property set to {@code true}, the system could ignore
+     * {@link android.app.Activity#setRequestedOrientation Activity#setRequestedOrientation()} call
+     * from an app if one of the following conditions are true:
+     * <ul>
+     *     <li>Activity is relaunching due to the previous
+     *     {@link android.app.Activity#setRequestedOrientation Activity#setRequestedOrientation()}
+     *     call.
+     *     <li>Camera compatibility force rotation treatment is active for the package.
+     * </ul>
+     *
+     * <p>Setting this property to {@code false} informs the system that the app must be
+     * opted-out from the compatibility treatment even if the device manufacturer has opted the app
+     * into the treatment.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_IGNORE_REQUESTED_ORIENTATION"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_COMPAT_IGNORE_REQUESTED_ORIENTATION =
+            "android.window.PROPERTY_COMPAT_IGNORE_REQUESTED_ORIENTATION";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app can be opted-out from the compatibility
+     * treatment that avoids {@link android.app.Activity#setRequestedOrientation
+     * Activity#setRequestedOrientation()} loops. Loops can be triggered by the OEM-configured
+     * ignore requested orientation display setting (on Android 12 (API level 31) and higher) or by
+     * the landscape natural orientation of the device.
+     *
+     * <p>The system could ignore {@link android.app.Activity#setRequestedOrientation
+     * Activity#setRequestedOrientation()} call from an app if both of the following conditions are
+     * true:
+     * <ul>
+     *     <li>Activity has requested orientation more than two times within one-second timer
+     *     <li>Activity is not letterboxed for fixed orientation
+     * </ul>
+     *
+     * <p>Setting this property to {@code false} informs the system that the app must be
+     * opted-out from the compatibility treatment even if the device manufacturer has opted the app
+     * into the treatment.
+     *
+     * <p>Not setting this property at all, or setting this property to {@code true} has no effect.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name=
+     *       "android.window.PROPERTY_COMPAT_ALLOW_IGNORING_ORIENTATION_REQUEST_WHEN_LOOP_DETECTED"
+     *     android:value="false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     *
+     * @hide
+     */
+    // TODO(b/274924641): Make this public API.
+    String PROPERTY_COMPAT_ALLOW_IGNORING_ORIENTATION_REQUEST_WHEN_LOOP_DETECTED =
+            "android.window.PROPERTY_COMPAT_ALLOW_IGNORING_ORIENTATION_REQUEST_WHEN_LOOP_DETECTED";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that it needs to be opted-out from the compatibility
+     * treatment that sandboxes the {@link android.view.View View} API.
+     *
+     * <p>The treatment can be enabled by device manufacturers for applications which misuse
+     * {@link android.view.View View} APIs by expecting that
+     * {@link android.view.View#getLocationOnScreen View#getLocationOnScreen()} and
+     * {@link android.view.View#getWindowVisibleDisplayFrame View#getWindowVisibleDisplayFrame()}
+     * return coordinates as if an activity is positioned in the top-left corner of the screen, with
+     * left coordinate equal to 0. This may not be the case for applications in multi-window and
+     * letterbox modes.
+     *
+     * <p>Setting this property to {@code false} informs the system that the application must be
+     * opted-out from the "Sandbox View API to Activity bounds" treatment even if the device
+     * manufacturer has opted the app into the treatment.
+     *
+     * <p>Not setting this property at all, or setting this property to {@code true} has no effect.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ALLOW_SANDBOXING_VIEW_BOUNDS_APIS"
+     *     android:value="false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_COMPAT_ALLOW_SANDBOXING_VIEW_BOUNDS_APIS =
+            "android.window.PROPERTY_COMPAT_ALLOW_SANDBOXING_VIEW_BOUNDS_APIS";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the application can be opted-in or opted-out from the
+     * compatibility treatment that enables sending a fake focus event for unfocused resumed
+     * split-screen activities. This is needed because some game engines wait to get focus before
+     * drawing the content of the app which isn't guaranteed by default in multi-window mode.
+     *
+     * <p>Device manufacturers can enable this treatment using their discretion on a per-device
+     * basis to improve display compatibility. The treatment also needs to be specifically enabled
+     * on a per-app basis afterwards. This can either be done by device manufacturers or developers.
+     *
+     * <p>With this property set to {@code true}, the system will apply the treatment only if the
+     * device manufacturer had previously enabled it on the device. A fake focus event will be sent
+     * to the app after it is resumed only if the app is in split-screen.
+     *
+     * <p>Setting this property to {@code false} informs the system that the activity must be
+     * opted-out from the compatibility treatment even if the device manufacturer has opted the app
+     * into the treatment.
+     *
+     * <p>If the property remains unset the system will apply the treatment only if it had
+     * previously been enabled both at the device and app level by the device manufacturer.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ENABLE_FAKE_FOCUS"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_COMPAT_ENABLE_FAKE_FOCUS = "android.window.PROPERTY_COMPAT_ENABLE_FAKE_FOCUS";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app should be excluded from the camera compatibility
+     * force rotation treatment.
+     *
+     * <p>The camera compatibility treatment aligns orientations of portrait app window and natural
+     * orientation of the device and set opposite to natural orientation for a landscape app
+     * window. Mismatch between them can lead to camera issues like sideways or stretched
+     * viewfinder since this is one of the strongest assumptions that apps make when they implement
+     * camera previews. Since app and natural display orientations aren't guaranteed to match, the
+     * rotation can cause letterboxing. The forced rotation is triggered as soon as app opens to
+     * camera and is removed once camera is closed.
+     *
+     * <p>The camera compatibility can be enabled by device manufacturers on displays that have the
+     * ignore requested orientation display setting enabled (enables compatibility mode for fixed
+     * orientation on Android 12 (API level 31) or higher; see
+     * <a href="https://developer.android.com/guide/practices/enhanced-letterboxing">Enhanced
+     * letterboxing</a> for more details).
+     *
+     * <p>With this property set to {@code true} or unset, the system may apply the force rotation
+     * treatment to fixed orientation activities. Device manufacturers can exclude packages from the
+     * treatment using their discretion to improve display compatibility.
+     *
+     * <p>With this property set to {@code false}, the system will not apply the force rotation
+     * treatment.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_CAMERA_COMPAT_ALLOW_FORCE_ROTATION"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_CAMERA_COMPAT_ALLOW_FORCE_ROTATION =
+            "android.window.PROPERTY_CAMERA_COMPAT_ALLOW_FORCE_ROTATION";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app should be excluded from the activity "refresh"
+     * after the camera compatibility force rotation treatment.
+     *
+     * <p>The camera compatibility treatment aligns orientations of portrait app window and natural
+     * orientation of the device and set opposite to natural orientation for a landscape app
+     * window. Mismatch between them can lead to camera issues like sideways or stretched
+     * viewfinder since this is one of the strongest assumptions that apps make when they implement
+     * camera previews. Since app and natural display orientations aren't guaranteed to match, the
+     * rotation can cause letterboxing. The forced rotation is triggered as soon as app opens to
+     * camera and is removed once camera is closed.
+     *
+     * <p>Force rotation is followed by the "Refresh" of the activity by going through "resumed ->
+     * ... -> stopped -> ... -> resumed" cycle (by default) or "resumed -> paused -> resumed" cycle
+     * (if overridden, see {@link #PROPERTY_CAMERA_COMPAT_ENABLE_REFRESH_VIA_PAUSE} for context).
+     * This allows to clear cached values in apps (e.g. display or camera rotation) that influence
+     * camera preview and can lead to sideways or stretching issues persisting even after force
+     * rotation.
+     *
+     * <p>The camera compatibility can be enabled by device manufacturers on displays that have the
+     * ignore requested orientation display setting enabled (enables compatibility mode for fixed
+     * orientation on Android 12 (API level 31) or higher; see
+     * <a href="https://developer.android.com/guide/practices/enhanced-letterboxing">Enhanced
+     * letterboxing</a> for more details).
+     *
+     * <p>With this property set to {@code true} or unset, the system may "refresh" activity after
+     * the force rotation treatment. Device manufacturers can exclude packages from the "refresh"
+     * using their discretion to improve display compatibility.
+     *
+     * <p>With this property set to {@code false}, the system will not "refresh" activity after the
+     * force rotation treatment.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_CAMERA_COMPAT_ALLOW_REFRESH"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_CAMERA_COMPAT_ALLOW_REFRESH =
+            "android.window.PROPERTY_CAMERA_COMPAT_ALLOW_REFRESH";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the activity should be or shouldn't be "refreshed" after
+     * the camera compatibility force rotation treatment using "paused -> resumed" cycle rather than
+     * "stopped -> resumed".
+     *
+     * <p>The camera compatibility treatment aligns orientations of portrait app window and natural
+     * orientation of the device and set opposite to natural orientation for a landscape app
+     * window. Mismatch between them can lead to camera issues like sideways or stretched
+     * viewfinder since this is one of the strongest assumptions that apps make when they implement
+     * camera previews. Since app and natural display orientations aren't guaranteed to match, the
+     * rotation can cause letterboxing. The forced rotation is triggered as soon as app opens to
+     * camera and is removed once camera is closed.
+     *
+     * <p>Force rotation is followed by the "Refresh" of the activity by going through "resumed ->
+     * ... -> stopped -> ... -> resumed" cycle (by default) or "resumed -> paused -> resumed" cycle
+     * (if overridden by device manufacturers or using this property). This allows to clear cached
+     * values in apps (e.g., display or camera rotation) that influence camera preview and can lead
+     * to sideways or stretching issues persisting even after force rotation.
+     *
+     * <p>The camera compatibility can be enabled by device manufacturers on displays that have the
+     * ignore requested orientation display setting enabled (enables compatibility mode for fixed
+     * orientation on Android 12 (API level 31) or higher; see
+     * <a href="https://developer.android.com/guide/practices/enhanced-letterboxing">Enhanced
+     * letterboxing</a> for more details).
+     *
+     * <p>Device manufacturers can override packages to "refresh" via "resumed -> paused -> resumed"
+     * cycle using their discretion to improve display compatibility.
+     *
+     * <p>With this property set to {@code true}, the system will "refresh" activity after the
+     * force rotation treatment using "resumed -> paused -> resumed" cycle.
+     *
+     * <p>With this property set to {@code false}, the system will not "refresh" activity after the
+     * force rotation treatment using "resumed -> paused -> resumed" cycle even if the device
+     * manufacturer adds the corresponding override.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_CAMERA_COMPAT_ENABLE_REFRESH_VIA_PAUSE"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_CAMERA_COMPAT_ENABLE_REFRESH_VIA_PAUSE =
+            "android.window.PROPERTY_CAMERA_COMPAT_ENABLE_REFRESH_VIA_PAUSE";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app should be excluded from the compatibility
+     * override for orientation set by the device manufacturer. When the orientation override is
+     * applied it can:
+     * <ul>
+     *   <li>Replace the specific orientation requested by the app with another selected by the
+             device manufacturer; for example, replace undefined requested by the app with portrait.
+     *   <li>Always use an orientation selected by the device manufacturer.
+     *   <li>Do one of the above but only when camera connection is open.
+     * </ul>
+     *
+     * <p>This property is different from {@link #PROPERTY_COMPAT_IGNORE_REQUESTED_ORIENTATION}
+     * (which is used to avoid orientation loops caused by the incorrect use of {@link
+     * android.app.Activity#setRequestedOrientation Activity#setRequestedOrientation()}) because
+     * this property overrides the app to an orientation selected by the device manufacturer rather
+     * than ignoring one of orientation requests coming from the app while respecting the previous
+     * one.
+     *
+     * <p>With this property set to {@code true} or unset, device manufacturers can override
+     * orientation for the app using their discretion to improve display compatibility.
+     *
+     * <p>With this property set to {@code false}, device manufactured per-app override for
+     * orientation won't be applied.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE =
+            "android.window.PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app should be opted-out from the compatibility
+     * override that fixes display orientation to landscape natural orientation when an activity is
+     * fullscreen.
+     *
+     * <p>When this compat override is enabled and while display is fixed to the landscape natural
+     * orientation, the orientation requested by the activity will be still respected by bounds
+     * resolution logic. For instance, if an activity requests portrait orientation, then activity
+     * will appear in the letterbox mode for fixed orientation with the display rotated to the
+     * lanscape natural orientation.
+     *
+     * <p>The treatment is disabled by default but device manufacturers can enable the treatment
+     * using their discretion to improve display compatibility on displays that have the ignore
+     * orientation request display setting enabled by OEMs on the device (enables compatibility mode
+     * for fixed orientation on Android 12 (API level 31) or higher; see
+     * <a href="https://developer.android.com/guide/practices/enhanced-letterboxing">Enhanced
+     * letterboxing</a> for more details).
+     *
+     * <p>With this property set to {@code true} or unset, the system wiil use landscape display
+     * orientation when the following conditions are met:
+     * <ul>
+     *     <li>Natural orientation of the display is landscape
+     *     <li>ignore requested orientation display setting is enabled
+     *     <li>Activity is fullscreen.
+     *     <li>Device manufacturer enabled the treatment.
+     * </ul>
+     *
+     * <p>With this property set to {@code false}, device manufactured per-app override for
+     * display orientation won't be applied.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ALLOW_DISPLAY_ORIENTATION_OVERRIDE"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_COMPAT_ALLOW_DISPLAY_ORIENTATION_OVERRIDE =
+            "android.window.PROPERTY_COMPAT_ALLOW_DISPLAY_ORIENTATION_OVERRIDE";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app should be opted-out from the compatibility
+     * override that changes the min aspect ratio.
+     *
+     * <p>When this compat override is enabled the min aspect ratio given in the app's manifest can
+     * be overridden by the device manufacturer using their discretion to improve display
+     * compatibility unless the app's manifest value is higher. This treatment will also apply if
+     * no min aspect ratio value is provided in the manifest. These treatments can apply only in
+     * specific cases (e.g. device is in portrait) or each time the app is displayed on screen.
+     *
+     * <p>Setting this property to {@code false} informs the system that the app must be
+     * opted-out from the compatibility treatment even if the device manufacturer has opted the app
+     * into the treatment.
+     *
+     * <p>Not setting this property at all, or setting this property to {@code true} has no effect.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ALLOW_MIN_ASPECT_RATIO_OVERRIDE"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     * @hide
+     */
+    // TODO(b/279428317): Make this public API.
+    String PROPERTY_COMPAT_ALLOW_MIN_ASPECT_RATIO_OVERRIDE =
+            "android.window.PROPERTY_COMPAT_ALLOW_MIN_ASPECT_RATIO_OVERRIDE";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * for an app to inform the system that the app should be opted-out from the compatibility
+     * overrides that change the resizability of the app.
+     *
+     * <p>When these compat overrides are enabled they force the packages they are applied to to be
+     * resizable/unresizable. If the app is forced to be resizable this won't change whether the app
+     * can be put into multi-windowing mode, but allow the app to resize without going into size
+     * compatibility mode when the window container resizes, such as display size change or screen
+     * rotation.
+     *
+     * <p>Setting this property to {@code false} informs the system that the app must be
+     * opted-out from the compatibility treatment even if the device manufacturer has opted the app
+     * into the treatment.
+     *
+     * <p>Not setting this property at all, or setting this property to {@code true} has no effect.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ALLOW_RESIZEABLE_ACTIVITY_OVERRIDES"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     * @hide
+     */
+    // TODO(b/280052089): Make this public API.
+    String PROPERTY_COMPAT_ALLOW_RESIZEABLE_ACTIVITY_OVERRIDES =
+            "android.window.PROPERTY_COMPAT_ALLOW_RESIZEABLE_ACTIVITY_OVERRIDES";
+
+    /**
+     * Application level
+     * {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * tag that (when set to false) informs the system the app has opted out of the
+     * user-facing aspect ratio compatibility override.
+     *
+     * <p>The compatibility override enables device users to set the app's aspect
+     * ratio or force the app to fill the display regardless of the aspect
+     * ratio or orientation specified in the app manifest.
+     *
+     * <p>The aspect ratio compatibility override is exposed to users in device
+     * settings. A menu in device settings lists all apps that have not opted out of
+     * the compatibility override. Users select apps from the menu and set the
+     * app aspect ratio on a per-app basis. Typically, the menu is available
+     * only on large screen devices.
+     *
+     * <p>When users apply the aspect ratio override, the minimum aspect ratio
+     * specified in the app manifest is overridden. If users choose a
+     * full-screen aspect ratio, the orientation of the activity is forced to
+     * {@link android.content.pm.ActivityInfo#SCREEN_ORIENTATION_USER};
+     * see {@link #PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_FULLSCREEN_OVERRIDE} to
+     * disable the full-screen option only.
+     *
+     * <p>The user override is intended to improve the app experience on devices
+     * that have the ignore orientation request display setting enabled by OEMs
+     * (enables compatibility mode for fixed orientation on Android 12 (API
+     * level 31) or higher; see
+     * <a href="https://developer.android.com/guide/topics/large-screens/large-screen-compatibility-mode">
+     * Large screen compatibility mode</a>
+     * for more details).
+     *
+     * <p>To opt out of the user aspect ratio compatibility override, add this property
+     * to your app manifest and set the value to {@code false}. Your app will be excluded
+     * from the list of apps in device settings, and users will not be able to override
+     * the app's aspect ratio.
+     *
+     * <p>Not setting this property at all, or setting this property to {@code true} has no effect.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE"
+     *     android:value="false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     * @hide
+     */
+    // TODO(b/294227289): Make this public API
+    String PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE =
+            "android.window.PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE";
+
+    /**
+     * Application level
+     * {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * tag that (when set to false) informs the system the app has opted out of the
+     * full-screen option of the user aspect ratio compatibility override settings. (For
+     * background information about the user aspect ratio compatibility override, see
+     * {@link #PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE}.)
+     *
+     * <p>When users apply the full-screen compatibility override, the orientation
+     * of the activity is forced to {@link android.content.pm.ActivityInfo#SCREEN_ORIENTATION_USER}.
+     *
+     * <p>The user override is intended to improve the app experience on devices
+     * that have the ignore orientation request display setting enabled by OEMs
+     * (enables compatibility mode for fixed orientation on Android 12 (API
+     * level 31) or higher; see
+     * <a href="https://developer.android.com/guide/topics/large-screens/large-screen-compatibility-mode">
+     * Large screen compatibility mode</a>
+     * for more details).
+     *
+     * <p>To opt out of the full-screen option of the user aspect ratio compatibility
+     * override, add this property to your app manifest and set the value to {@code false}.
+     * Your app will have full-screen option removed from the list of user aspect ratio
+     * override options in device settings, and users will not be able to apply
+     * full-screen override to your app.
+     *
+     * <p><b>Note:</b> If {@link #PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE} is
+     * {@code false}, this property has no effect.
+     *
+     * <p>Not setting this property at all, or setting this property to {@code true} has no effect.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_FULLSCREEN_OVERRIDE"
+     *     android:value="false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     * @hide
+     */
+    // TODO(b/294227289): Make this public API
+    String PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_FULLSCREEN_OVERRIDE =
+            "android.window.PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_FULLSCREEN_OVERRIDE";
 
     /**
      * @hide
@@ -540,13 +1393,106 @@ public interface WindowManager extends ViewManager {
     public static final String PARCEL_KEY_SHORTCUTS_ARRAY = "shortcuts_array";
 
     /**
-     * Request for keyboard shortcuts to be retrieved asynchronously.
+     * Whether the device supports the WindowManager Extensions.
+     * OEMs can enable this by having their device config to inherit window_extensions.mk, such as:
+     * <pre>
+     * $(call inherit-product, $(SRC_TARGET_DIR)/product/window_extensions.mk)
+     * </pre>
+     * @hide
+     */
+    boolean WINDOW_EXTENSIONS_ENABLED =
+            SystemProperties.getBoolean("persist.wm.extensions.enabled", false);
+
+    /**
+     * @see #WINDOW_EXTENSIONS_ENABLED
+     * @hide
+     */
+    @TestApi
+    static boolean hasWindowExtensionsEnabled() {
+        return WINDOW_EXTENSIONS_ENABLED;
+    }
+
+    /**
+     * Application-level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * tag that specifies whether OEMs are permitted to provide activity embedding split-rule
+     * configurations on behalf of the app.
+     *
+     * <p>If {@code true}, the system is permitted to override the app's windowing behavior and
+     * implement activity embedding split rules, such as displaying activities side by side. A
+     * system override informs the app that the activity embedding APIs are disabled so the app
+     * doesn't provide its own activity embedding rules, which would conflict with the system's
+     * rules.
+     *
+     * <p>If {@code false}, the system is not permitted to override the windowing behavior of the
+     * app. Set the property to {@code false} if the app provides its own activity embedding split
+     * rules, or if you want to prevent the system override for any other reason.
+     *
+     * <p>The default value is {@code false}.
+     *
+     * <p class="note"><b>Note:</b> Refusal to permit the system override is not enforceable. OEMs
+     * can override the app's activity embedding implementation whether or not this property is
+     * specified and set to {@code false}. The property is, in effect, a hint to OEMs.
+     *
+     * <p>OEMs can implement activity embedding on any API level. The best practice for apps is to
+     * always explicitly set this property in the app manifest file regardless of targeted API level
+     * rather than rely on the default value.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE =
+            "android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE";
+
+    /**
+     * Application level {@link android.content.pm.PackageManager.Property PackageManager.Property}
+     * that an app can specify to inform the system that the app is activity embedding split feature
+     * enabled.
+     *
+     * <p>With this property, the system could provide custom behaviors for the apps that are
+     * activity embedding split feature enabled. For example, the fixed-portrait orientation
+     * requests of the activities could be ignored by the system in order to provide seamless
+     * activity embedding split experiences while holding large screen devices in landscape
+     * orientation.
+     *
+     * <p><b>Syntax:</b>
+     * <pre>
+     * &lt;application&gt;
+     *   &lt;property
+     *     android:name="android.window.PROPERTY_ACTIVITY_EMBEDDING_SPLITS_ENABLED"
+     *     android:value="true|false"/&gt;
+     * &lt;/application&gt;
+     * </pre>
+     */
+    String PROPERTY_ACTIVITY_EMBEDDING_SPLITS_ENABLED =
+            "android.window.PROPERTY_ACTIVITY_EMBEDDING_SPLITS_ENABLED";
+
+    /**
+     * Request for app's keyboard shortcuts to be retrieved asynchronously.
      *
      * @param receiver The callback to be triggered when the result is ready.
+     * @param deviceId The deviceId of KeyEvent by which this request is triggered, or -1 if it's
+     *                 not triggered by a KeyEvent.
      *
      * @hide
      */
     public void requestAppKeyboardShortcuts(final KeyboardShortcutsReceiver receiver, int deviceId);
+
+    /**
+     * Request for ime's keyboard shortcuts to be retrieved asynchronously.
+     *
+     * @param receiver The callback to be triggered when the result is ready.
+     * @param deviceId The deviceId of KeyEvent by which this request is triggered, or -1 if it's
+     *                 not triggered by a KeyEvent.
+     *
+     * @hide
+     */
+    default void requestImeKeyboardShortcuts(KeyboardShortcutsReceiver receiver, int deviceId) {};
 
     /**
      * Return the touch region for the current IME window, or an empty region if there is none.
@@ -605,27 +1551,195 @@ public interface WindowManager extends ViewManager {
     }
 
     /**
-     * Sets that the display should show IME.
+     * Sets the policy for how the display should show IME.
      *
      * @param displayId Display ID.
-     * @param shouldShow Indicates that the display should show IME.
+     * @param imePolicy Indicates the policy for how the display should show IME.
      * @hide
      */
     @TestApi
-    default void setShouldShowIme(int displayId, boolean shouldShow) {
+    default void setDisplayImePolicy(int displayId, @DisplayImePolicy int imePolicy) {
     }
 
     /**
-     * Indicates that the display should show IME.
+     * Indicates the policy for how the display should show IME.
      *
      * @param displayId The id of the display.
-     * @return {@code true} if the display should show IME when an input field becomes
-     * focused on it.
+     * @return The policy for how the display should show IME.
      * @hide
      */
     @TestApi
-    default boolean shouldShowIme(int displayId) {
+    default @DisplayImePolicy int getDisplayImePolicy(int displayId) {
+        return DISPLAY_IME_POLICY_FALLBACK_DISPLAY;
+    }
+
+    /**
+     * Returns {@code true} if the key will be handled globally and not forwarded to all apps.
+     *
+     * @param keyCode the key code to check
+     * @return {@code true} if the key will be handled globally.
+     * @hide
+     */
+    @TestApi
+    default boolean isGlobalKey(int keyCode) {
         return false;
+    }
+
+    /**
+     * <p>
+     * Returns whether cross-window blur is currently enabled. This affects both window blur behind
+     * (see {@link LayoutParams#setBlurBehindRadius}) and window background blur (see
+     * {@link Window#setBackgroundBlurRadius}).
+     * </p><p>
+     * Cross-window blur might not be supported by some devices due to GPU limitations. It can also
+     * be disabled at runtime, e.g. during battery saving mode, when multimedia tunneling is used or
+     * when minimal post processing is requested. In such situations, no blur will be computed or
+     * drawn, so the blur target area will not be blurred. To handle this, the app might want to
+     * change its theme to one that does not use blurs. To listen for cross-window blur
+     * enabled/disabled events, use {@link #addCrossWindowBlurEnabledListener}.
+     * </p>
+     *
+     * @see #addCrossWindowBlurEnabledListener
+     * @see LayoutParams#setBlurBehindRadius
+     * @see Window#setBackgroundBlurRadius
+     */
+    default boolean isCrossWindowBlurEnabled() {
+        return false;
+    }
+
+    /**
+     * <p>
+     * Adds a listener, which will be called when cross-window blurs are enabled/disabled at
+     * runtime. This affects both window blur behind (see {@link LayoutParams#setBlurBehindRadius})
+     * and window background blur (see {@link Window#setBackgroundBlurRadius}).
+     * </p><p>
+     * Cross-window blur might not be supported by some devices due to GPU limitations. It can also
+     * be disabled at runtime, e.g. during battery saving mode, when multimedia tunneling is used or
+     * when minimal post processing is requested. In such situations, no blur will be computed or
+     * drawn, so the blur target area will not be blurred. To handle this, the app might want to
+     * change its theme to one that does not use blurs.
+     * </p><p>
+     * The listener will be called on the main thread.
+     * </p><p>
+     * If the listener is added successfully, it will be called immediately with the current
+     * cross-window blur enabled state.
+     * </p>
+     *
+     * @param listener the listener to be added. It will be called back with a boolean parameter,
+     *                 which is true if cross-window blur is enabled and false if it is disabled
+     *
+     * @see #removeCrossWindowBlurEnabledListener
+     * @see #isCrossWindowBlurEnabled
+     * @see LayoutParams#setBlurBehindRadius
+     * @see Window#setBackgroundBlurRadius
+     */
+    default void addCrossWindowBlurEnabledListener(@NonNull Consumer<Boolean> listener) {
+    }
+
+    /**
+     * <p>
+     * Adds a listener, which will be called when cross-window blurs are enabled/disabled at
+     * runtime. This affects both window blur behind (see {@link LayoutParams#setBlurBehindRadius})
+     * and window background blur (see {@link Window#setBackgroundBlurRadius}).
+     * </p><p>
+     * Cross-window blur might not be supported by some devices due to GPU limitations. It can also
+     * be disabled at runtime, e.g. during battery saving mode, when multimedia tunneling is used or
+     * when minimal post processing is requested. In such situations, no blur will be computed or
+     * drawn, so the blur target area will not be blurred. To handle this, the app might want to
+     * change its theme to one that does not use blurs.
+     * </p><p>
+     * If the listener is added successfully, it will be called immediately with the current
+     * cross-window blur enabled state.
+     * </p>
+     *
+     * @param executor {@link Executor} to handle the listener callback
+     * @param listener the listener to be added. It will be called back with a boolean parameter,
+     *                 which is true if cross-window blur is enabled and false if it is disabled
+     *
+     * @see #removeCrossWindowBlurEnabledListener
+     * @see #isCrossWindowBlurEnabled
+     * @see LayoutParams#setBlurBehindRadius
+     * @see Window#setBackgroundBlurRadius
+     */
+    default void addCrossWindowBlurEnabledListener(@NonNull @CallbackExecutor Executor executor,
+            @NonNull Consumer<Boolean> listener) {
+    }
+
+    /**
+     * Removes a listener, previously added with {@link #addCrossWindowBlurEnabledListener}
+     *
+     * @param listener the listener to be removed
+     *
+     * @see #addCrossWindowBlurEnabledListener
+     */
+    default void removeCrossWindowBlurEnabledListener(@NonNull Consumer<Boolean> listener) {
+    }
+
+    /**
+     * Adds a listener to start monitoring the proposed rotation of the current associated context.
+     * It reports the current recommendation for the rotation that takes various factors (e.g.
+     * sensor, context, device state, etc) into account. The proposed rotation might not be applied
+     * by the system automatically due to the application's active preference to lock the
+     * orientation (e.g. with {@link android.app.Activity#setRequestedOrientation(int)}). This
+     * listener gives application an opportunity to selectively react to device orientation changes.
+     * The newly added listener will be called with current proposed rotation. Note that the context
+     * of this window manager instance must be a {@link android.annotation.UiContext}.
+     *
+     * @param executor The executor on which callback method will be invoked.
+     * @param listener Called when the proposed rotation for the context is being delivered.
+     *                 The reported rotation can be {@link Surface#ROTATION_0},
+     *                 {@link Surface#ROTATION_90}, {@link Surface#ROTATION_180} and
+     *                 {@link Surface#ROTATION_270}.
+     * @throws UnsupportedOperationException if this method is called on an instance that is not
+     *         associated with a {@link android.annotation.UiContext}.
+     */
+    default void addProposedRotationListener(@NonNull @CallbackExecutor Executor executor,
+            @NonNull IntConsumer listener) {
+    }
+
+    /**
+     * Removes a listener, previously added with {@link #addProposedRotationListener}. It is
+     * recommended to call when the associated context no longer has visible components. No-op if
+     * the provided listener is not registered.
+     *
+     * @param listener The listener to be removed.
+     */
+    default void removeProposedRotationListener(@NonNull IntConsumer listener) {
+    }
+
+    /**
+     * @hide
+     */
+    static String transitTypeToString(@TransitionType int type) {
+        switch (type) {
+            case TRANSIT_NONE: return "NONE";
+            case TRANSIT_OPEN: return "OPEN";
+            case TRANSIT_CLOSE: return "CLOSE";
+            case TRANSIT_TO_FRONT: return "TO_FRONT";
+            case TRANSIT_TO_BACK: return "TO_BACK";
+            case TRANSIT_RELAUNCH: return "RELAUNCH";
+            case TRANSIT_CHANGE: return "CHANGE";
+            case TRANSIT_KEYGUARD_GOING_AWAY: return "KEYGUARD_GOING_AWAY";
+            case TRANSIT_KEYGUARD_OCCLUDE: return "KEYGUARD_OCCLUDE";
+            case TRANSIT_KEYGUARD_UNOCCLUDE: return "KEYGUARD_UNOCCLUDE";
+            case TRANSIT_PIP: return "PIP";
+            case TRANSIT_WAKE: return "WAKE";
+            case TRANSIT_SLEEP: return "SLEEP";
+            case TRANSIT_FIRST_CUSTOM: return "FIRST_CUSTOM";
+            default:
+                if (type > TRANSIT_FIRST_CUSTOM) {
+                    return "FIRST_CUSTOM+" + (type - TRANSIT_FIRST_CUSTOM);
+                }
+                return "UNKNOWN(" + type + ")";
+        }
+    }
+
+    /**
+     * Ensure scales are between 0 and 20.
+     * @hide
+     */
+    static float fixScale(float scale) {
+        return Math.max(Math.min(scale, 20), 0);
     }
 
     public static class LayoutParams extends ViewGroup.LayoutParams implements Parcelable {
@@ -1018,10 +2132,8 @@ public interface WindowManager extends ViewManager {
          * Window type: panel that slides out from over the status bar
          * In multiuser systems shows on all users' windows.
          *
-         * @deprecated This became API by accident and was never intended to be used for
-         * applications.
+         * @removed
          */
-        @Deprecated
         public static final int TYPE_STATUS_BAR_PANEL   = FIRST_SYSTEM_WINDOW+14;
 
         /**
@@ -1218,14 +2330,6 @@ public interface WindowManager extends ViewManager {
         public static final int TYPE_STATUS_BAR_ADDITIONAL = FIRST_SYSTEM_WINDOW + 41;
 
         /**
-         * Similar to TYPE_APPLICATION_OVERLAY, but trusted to overlay other windows since it is
-         * is coming from the system.
-         * @hide
-         */
-        // TODO(b/155781676): Remove and replace call points with trustedOverlay when that is ready.
-        public static final int TYPE_TRUSTED_APPLICATION_OVERLAY = FIRST_SYSTEM_WINDOW + 42;
-
-        /**
          * End of types of system windows.
          */
         public static final int LAST_SYSTEM_WINDOW      = 2999;
@@ -1240,32 +2344,54 @@ public interface WindowManager extends ViewManager {
          * @hide
          */
         @IntDef(prefix = "TYPE_", value = {
-                TYPE_ACCESSIBILITY_OVERLAY,
-                TYPE_APPLICATION,
-                TYPE_APPLICATION_ATTACHED_DIALOG,
-                TYPE_APPLICATION_MEDIA,
-                TYPE_APPLICATION_OVERLAY,
-                TYPE_APPLICATION_PANEL,
-                TYPE_APPLICATION_STARTING,
-                TYPE_APPLICATION_SUB_PANEL,
                 TYPE_BASE_APPLICATION,
+                TYPE_APPLICATION,
+                TYPE_APPLICATION_STARTING,
                 TYPE_DRAWN_APPLICATION,
+                TYPE_APPLICATION_PANEL,
+                TYPE_APPLICATION_MEDIA,
+                TYPE_APPLICATION_SUB_PANEL,
+                TYPE_APPLICATION_ATTACHED_DIALOG,
+                TYPE_APPLICATION_MEDIA_OVERLAY,
+                TYPE_APPLICATION_ABOVE_SUB_PANEL,
+                TYPE_STATUS_BAR,
+                TYPE_SEARCH_BAR,
+                TYPE_PHONE,
+                TYPE_SYSTEM_ALERT,
+                TYPE_KEYGUARD,
+                TYPE_TOAST,
+                TYPE_SYSTEM_OVERLAY,
+                TYPE_PRIORITY_PHONE,
+                TYPE_SYSTEM_DIALOG,
+                TYPE_KEYGUARD_DIALOG,
+                TYPE_SYSTEM_ERROR,
                 TYPE_INPUT_METHOD,
                 TYPE_INPUT_METHOD_DIALOG,
-                TYPE_KEYGUARD,
-                TYPE_KEYGUARD_DIALOG,
-                TYPE_PHONE,
-                TYPE_PRIORITY_PHONE,
-                TYPE_PRIVATE_PRESENTATION,
-                TYPE_SEARCH_BAR,
-                TYPE_STATUS_BAR,
-                TYPE_STATUS_BAR_PANEL,
-                TYPE_SYSTEM_ALERT,
-                TYPE_SYSTEM_DIALOG,
-                TYPE_SYSTEM_ERROR,
-                TYPE_SYSTEM_OVERLAY,
-                TYPE_TOAST,
                 TYPE_WALLPAPER,
+                TYPE_STATUS_BAR_PANEL,
+                TYPE_SECURE_SYSTEM_OVERLAY,
+                TYPE_DRAG,
+                TYPE_STATUS_BAR_SUB_PANEL,
+                TYPE_POINTER,
+                TYPE_NAVIGATION_BAR,
+                TYPE_VOLUME_OVERLAY,
+                TYPE_BOOT_PROGRESS,
+                TYPE_INPUT_CONSUMER,
+                TYPE_NAVIGATION_BAR_PANEL,
+                TYPE_DISPLAY_OVERLAY,
+                TYPE_MAGNIFICATION_OVERLAY,
+                TYPE_PRIVATE_PRESENTATION,
+                TYPE_VOICE_INTERACTION,
+                TYPE_ACCESSIBILITY_OVERLAY,
+                TYPE_VOICE_INTERACTION_STARTING,
+                TYPE_DOCK_DIVIDER,
+                TYPE_QS_DIALOG,
+                TYPE_SCREENSHOT,
+                TYPE_PRESENTATION,
+                TYPE_APPLICATION_OVERLAY,
+                TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY,
+                TYPE_NOTIFICATION_SHADE,
+                TYPE_STATUS_BAR_ADDITIONAL
         })
         @Retention(RetentionPolicy.SOURCE)
         public @interface WindowType {}
@@ -1319,9 +2445,7 @@ public interface WindowManager extends ViewManager {
          *  Use {@link #dimAmount} to control the amount of dim. */
         public static final int FLAG_DIM_BEHIND        = 0x00000002;
 
-        /** Window flag: blur everything behind this window.
-         * @deprecated Blurring is no longer supported. */
-        @Deprecated
+        /** Window flag: enable blur behind for this window. */
         public static final int FLAG_BLUR_BEHIND        = 0x00000004;
 
         /** Window flag: this window won't ever get key input focus, so the
@@ -1339,7 +2463,63 @@ public interface WindowManager extends ViewManager {
          * can use {@link #FLAG_ALT_FOCUSABLE_IM} to modify this behavior. */
         public static final int FLAG_NOT_FOCUSABLE      = 0x00000008;
 
-        /** Window flag: this window can never receive touch events. */
+        /**
+         * Window flag: this window can never receive touch events.
+         *
+         * <p>The intention of this flag is to leave the touch to be handled by some window below
+         * this window (in Z order).
+         *
+         * <p>Starting from Android {@link Build.VERSION_CODES#S}, for security reasons, touch
+         * events that pass through windows containing this flag (ie. are within the bounds of the
+         * window) will only be delivered to the touch-consuming window if one (or more) of the
+         * items below are true:
+         * <ol>
+         *   <li><b>Same UID</b>: This window belongs to the same UID that owns the touch-consuming
+         *   window.
+         *   <li><b>Trusted windows</b>: This window is trusted. Trusted windows include (but are
+         *   not limited to) accessibility windows ({@link #TYPE_ACCESSIBILITY_OVERLAY}), the IME
+         *   ({@link #TYPE_INPUT_METHOD}) and assistant windows (TYPE_VOICE_INTERACTION). Windows of
+         *   type {@link #TYPE_APPLICATION_OVERLAY} are <b>not</b> trusted, see below.
+         *   <li><b>Invisible windows</b>: This window is {@link View#GONE} or
+         *   {@link View#INVISIBLE}.
+         *   <li><b>Fully transparent windows</b>: This window has {@link LayoutParams#alpha} equal
+         *   to 0.
+         *   <li><b>One SAW window with enough transparency</b>: This window is of type {@link
+         *   #TYPE_APPLICATION_OVERLAY}, has {@link LayoutParams#alpha} below or equal to the
+         *   <a href="#MaximumOpacity">maximum obscuring opacity</a> (see below) and it's the
+         *   <b>only</b> window of type {@link #TYPE_APPLICATION_OVERLAY} from this UID in the touch
+         *   path.
+         *   <li><b>Multiple SAW windows with enough transparency</b>: The multiple overlapping
+         *   {@link #TYPE_APPLICATION_OVERLAY} windows in the
+         *   touch path from this UID have a <b>combined obscuring opacity</b> below or equal to
+         *   the <a href="#MaximumOpacity">maximum obscuring opacity</a>. See section
+         *   <a href="#ObscuringOpacity">Combined obscuring opacity</a> below on how to compute this
+         *   value.
+         * </ol>
+         * <p>If none of these cases hold, the touch will not be delivered and a message will be
+         * logged to logcat.</p>
+         *
+         * <a name="MaximumOpacity"></a>
+         * <h3>Maximum obscuring opacity</h3>
+         * <p>This value is <b>0.8</b>. Apps that want to gather this value from the system rather
+         * than hard-coding it might want to use {@link
+         * android.hardware.input.InputManager#getMaximumObscuringOpacityForTouch()}.</p>
+         *
+         * <a name="ObscuringOpacity"></a>
+         * <h3>Combined obscuring opacity</h3>
+         *
+         * <p>The <b>combined obscuring opacity</b> of a set of windows is obtained by combining the
+         * opacity values of all windows in the set using the associative and commutative operation
+         * defined as:
+         * <pre>
+         * opacity({A,B}) = 1 - (1 - opacity(A))*(1 - opacity(B))
+         * </pre>
+         * <p>where {@code opacity(X)} is the {@link LayoutParams#alpha} of window X. So, for a set
+         * of windows {@code {W1, .., Wn}}, the combined obscuring opacity will be:
+         * <pre>
+         * opacity({W1, .., Wn}) = 1 - (1 - opacity(W1)) * ... * (1 - opacity(Wn))
+         * </pre>
+         */
         public static final int FLAG_NOT_TOUCHABLE      = 0x00000010;
 
         /** Window flag: even when this window is focusable (its
@@ -1515,6 +2695,13 @@ public interface WindowManager extends ViewManager {
          * {@link android.R.style#Theme_Holo_Wallpaper_NoTitleBar},
          * {@link android.R.style#Theme_DeviceDefault_Wallpaper}, and
          * {@link android.R.style#Theme_DeviceDefault_Wallpaper_NoTitleBar}.</p>
+         *
+         * <p> When this flag is set, all touch events sent to this window is also sent to the
+         * wallpaper, which is used to interact with live wallpapers. Check
+         * {@link LayoutParams#areWallpaperTouchEventsEnabled()}, which is set to {@code true}
+         * by default. When showing sensitive information on the window, if you want to disable
+         * sending the touch events to the wallpaper, use
+         * {@link LayoutParams#setWallpaperTouchEventsEnabled(boolean)}.</p>
          */
         public static final int FLAG_SHOW_WALLPAPER = 0x00100000;
 
@@ -1703,6 +2890,7 @@ public interface WindowManager extends ViewManager {
          * {@hide}
          */
         @UnsupportedAppUsage
+        @TestApi
         public static final int FLAG_SLIPPERY = 0x20000000;
 
         /**
@@ -1724,6 +2912,46 @@ public interface WindowManager extends ViewManager {
          * {@link Window#getStatusBarColor()} and {@link Window#getNavigationBarColor()}.
          */
         public static final int FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS = 0x80000000;
+
+        /**
+         * @hide
+         */
+        @IntDef(flag = true, prefix = "FLAG_", value = {
+                FLAG_ALLOW_LOCK_WHILE_SCREEN_ON,
+                FLAG_DIM_BEHIND,
+                FLAG_BLUR_BEHIND,
+                FLAG_NOT_FOCUSABLE,
+                FLAG_NOT_TOUCHABLE,
+                FLAG_NOT_TOUCH_MODAL,
+                FLAG_TOUCHABLE_WHEN_WAKING,
+                FLAG_KEEP_SCREEN_ON,
+                FLAG_LAYOUT_IN_SCREEN,
+                FLAG_LAYOUT_NO_LIMITS,
+                FLAG_FULLSCREEN,
+                FLAG_FORCE_NOT_FULLSCREEN,
+                FLAG_DITHER,
+                FLAG_SECURE,
+                FLAG_SCALED,
+                FLAG_IGNORE_CHEEK_PRESSES,
+                FLAG_LAYOUT_INSET_DECOR,
+                FLAG_ALT_FOCUSABLE_IM,
+                FLAG_WATCH_OUTSIDE_TOUCH,
+                FLAG_SHOW_WHEN_LOCKED,
+                FLAG_SHOW_WALLPAPER,
+                FLAG_TURN_SCREEN_ON,
+                FLAG_DISMISS_KEYGUARD,
+                FLAG_SPLIT_TOUCH,
+                FLAG_HARDWARE_ACCELERATED,
+                FLAG_LAYOUT_IN_OVERSCAN,
+                FLAG_TRANSLUCENT_STATUS,
+                FLAG_TRANSLUCENT_NAVIGATION,
+                FLAG_LOCAL_FOCUS_MODE,
+                FLAG_SLIPPERY,
+                FLAG_LAYOUT_ATTACHED_IN_DECOR,
+                FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,
+        })
+        @Retention(RetentionPolicy.SOURCE)
+        public @interface Flags {}
 
         /**
          * Various behavioral options/flags.  Default is none.
@@ -1820,27 +3048,8 @@ public interface WindowManager extends ViewManager {
             @ViewDebug.FlagToString(mask = FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS, equals = FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,
                     name = "DRAWS_SYSTEM_BAR_BACKGROUNDS")
         }, formatToHexString = true)
+        @Flags
         public int flags;
-
-        /**
-         * If the window has requested hardware acceleration, but this is not
-         * allowed in the process it is in, then still render it as if it is
-         * hardware accelerated.  This is used for the starting preview windows
-         * in the system process, which don't need to have the overhead of
-         * hardware acceleration (they are just a static rendering), but should
-         * be rendered as such to match the actual window of the app even if it
-         * is hardware accelerated.
-         * Even if the window isn't hardware accelerated, still do its rendering
-         * as if it was.
-         * Like {@link #FLAG_HARDWARE_ACCELERATED} except for trusted system windows
-         * that need hardware acceleration (e.g. LockScreen), where hardware acceleration
-         * is generally disabled. This flag must be specified in addition to
-         * {@link #FLAG_HARDWARE_ACCELERATED} to enable hardware acceleration for system
-         * windows.
-         *
-         * @hide
-         */
-        public static final int PRIVATE_FLAG_FAKE_HARDWARE_ACCELERATED = 0x00000001;
 
         /**
          * In the system process, we globally do not use hardware acceleration
@@ -1851,7 +3060,7 @@ public interface WindowManager extends ViewManager {
          *
          * @hide
          */
-        public static final int PRIVATE_FLAG_FORCE_HARDWARE_ACCELERATED = 0x00000002;
+        public static final int PRIVATE_FLAG_FORCE_HARDWARE_ACCELERATED = 1 << 1;
 
         /**
          * By default, wallpapers are sent new offsets when the wallpaper is scrolled. Wallpapers
@@ -1862,7 +3071,16 @@ public interface WindowManager extends ViewManager {
          *
          * @hide
          */
-        public static final int PRIVATE_FLAG_WANTS_OFFSET_NOTIFICATIONS = 0x00000004;
+        public static final int PRIVATE_FLAG_WANTS_OFFSET_NOTIFICATIONS = 1 << 2;
+
+        /**
+         * When set {@link LayoutParams#TYPE_APPLICATION_OVERLAY} windows will stay visible, even if
+         * {@link LayoutParams#SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS} is set for another
+         * visible window.
+         * @hide
+         */
+        @RequiresPermission(permission.SYSTEM_APPLICATION_OVERLAY)
+        public static final int PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY = 1 << 3;
 
         /** In a multiuser system if this flag is set and the owner is a system process then this
          * window will appear on all user screens. This overrides the default behavior of window
@@ -1872,54 +3090,63 @@ public interface WindowManager extends ViewManager {
          * {@hide} */
         @SystemApi
         @RequiresPermission(permission.INTERNAL_SYSTEM_WINDOW)
-        public static final int SYSTEM_FLAG_SHOW_FOR_ALL_USERS = 0x00000010;
+        public static final int SYSTEM_FLAG_SHOW_FOR_ALL_USERS = 1 << 4;
+
+        /**
+         * Flag to allow this window to have unrestricted gesture exclusion.
+         *
+         * @see View#setSystemGestureExclusionRects(List)
+         * @hide
+         */
+        public static final int PRIVATE_FLAG_UNRESTRICTED_GESTURE_EXCLUSION = 1 << 5;
 
         /**
          * Never animate position changes of the window.
          *
+         * @see android.R.attr#Window_windowNoMoveAnimation
          * {@hide}
          */
         @UnsupportedAppUsage
-        @TestApi
-        public static final int PRIVATE_FLAG_NO_MOVE_ANIMATION = 0x00000040;
+        public static final int PRIVATE_FLAG_NO_MOVE_ANIMATION = 1 << 6;
 
         /** Window flag: special flag to limit the size of the window to be
          * original size ([320x480] x density). Used to create window for applications
          * running under compatibility mode.
          *
          * {@hide} */
-        public static final int PRIVATE_FLAG_COMPATIBLE_WINDOW = 0x00000080;
+        public static final int PRIVATE_FLAG_COMPATIBLE_WINDOW = 1 << 7;
 
         /** Window flag: a special option intended for system dialogs.  When
          * this flag is set, the window will demand focus unconditionally when
          * it is created.
          * {@hide} */
-        public static final int PRIVATE_FLAG_SYSTEM_ERROR = 0x00000100;
+        public static final int PRIVATE_FLAG_SYSTEM_ERROR = 1 << 8;
+
+        /**
+         * Flag to indicate that the view hierarchy of the window can only be measured when
+         * necessary. If a window size can be known by the LayoutParams, we can use the size to
+         * relayout window, and we don't have to measure the view hierarchy before laying out the
+         * views. This reduces the chances to perform measure.
+         * {@hide}
+         */
+        public static final int PRIVATE_FLAG_OPTIMIZE_MEASURE = 1 << 9;
 
         /**
          * Flag that prevents the wallpaper behind the current window from receiving touch events.
          *
          * {@hide}
          */
-        public static final int PRIVATE_FLAG_DISABLE_WALLPAPER_TOUCH_EVENTS = 0x00000800;
+        public static final int PRIVATE_FLAG_DISABLE_WALLPAPER_TOUCH_EVENTS = 1 << 10;
 
         /**
-         * Flag to force the status bar window to be visible all the time. If the bar is hidden when
-         * this flag is set it will be shown again.
-         * This can only be set by {@link LayoutParams#TYPE_STATUS_BAR}.
+         * Flag to indicate that the window frame should be the requested frame adding the display
+         * cutout frame. This will only be applied if a specific size smaller than the parent frame
+         * is given, and the window is covering the display cutout. The extended frame will not be
+         * larger than the parent frame.
          *
          * {@hide}
          */
-        public static final int PRIVATE_FLAG_FORCE_SHOW_STATUS_BAR = 0x00001000;
-
-        /**
-         * Flag indicating that the x, y, width, and height members should be
-         * ignored (and thus their previous value preserved). For example
-         * because they are being managed externally through repositionChild.
-         *
-         * {@hide}
-         */
-        public static final int PRIVATE_FLAG_PRESERVE_GEOMETRY = 0x00002000;
+        public static final int PRIVATE_FLAG_LAYOUT_SIZE_EXTENDED_BY_CUTOUT = 1 << 12;
 
         /**
          * Flag that will make window ignore app visibility and instead depend purely on the decor
@@ -1927,39 +3154,38 @@ public interface WindowManager extends ViewManager {
          * drawing after it launches an app.
          * @hide
          */
-        public static final int PRIVATE_FLAG_FORCE_DECOR_VIEW_VISIBILITY = 0x00004000;
-
-        /**
-         * Flag to indicate that this window is not expected to be replaced across
-         * configuration change triggered activity relaunches. In general the WindowManager
-         * expects Windows to be replaced after relaunch, and thus it will preserve their surfaces
-         * until the replacement is ready to show in order to prevent visual glitch. However
-         * some windows, such as PopupWindows expect to be cleared across configuration change,
-         * and thus should hint to the WindowManager that it should not wait for a replacement.
-         * @hide
-         */
-        public static final int PRIVATE_FLAG_WILL_NOT_REPLACE_ON_RELAUNCH = 0x00008000;
+        public static final int PRIVATE_FLAG_FORCE_DECOR_VIEW_VISIBILITY = 1 << 13;
 
         /**
          * Flag to indicate that this child window should always be laid-out in the parent
          * frame regardless of the current windowing mode configuration.
          * @hide
          */
-        public static final int PRIVATE_FLAG_LAYOUT_CHILD_WINDOW_IN_PARENT_FRAME = 0x00010000;
+        public static final int PRIVATE_FLAG_LAYOUT_CHILD_WINDOW_IN_PARENT_FRAME = 1 << 14;
 
         /**
          * Flag to indicate that this window is always drawing the status bar background, no matter
          * what the other flags are.
          * @hide
          */
-        public static final int PRIVATE_FLAG_FORCE_DRAW_BAR_BACKGROUNDS = 0x00020000;
+        public static final int PRIVATE_FLAG_FORCE_DRAW_BAR_BACKGROUNDS = 1 << 15;
 
         /**
          * Flag to indicate that this window needs Sustained Performance Mode if
          * the device supports it.
          * @hide
          */
-        public static final int PRIVATE_FLAG_SUSTAINED_PERFORMANCE_MODE = 0x00040000;
+        public static final int PRIVATE_FLAG_SUSTAINED_PERFORMANCE_MODE = 1 << 16;
+
+        /**
+         * Flag to indicate that this window is a immersive mode confirmation window. The window
+         * should be ignored when calculating insets control. This is used for prompt window
+         * triggered by insets visibility changes. If it can take over the insets control, the
+         * visibility will change unexpectedly and the window may dismiss itself. Power button panic
+         * handling will be disabled when this window exists.
+         * @hide
+         */
+        public static final int PRIVATE_FLAG_IMMERSIVE_CONFIRMATION_WINDOW = 1 << 17;
 
         /**
          * Flag to indicate that any window added by an application process that is of type
@@ -1970,7 +3196,7 @@ public interface WindowManager extends ViewManager {
          */
         @SystemApi
         @RequiresPermission(permission.HIDE_NON_SYSTEM_OVERLAY_WINDOWS)
-        public static final int SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS = 0x00080000;
+        public static final int SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS = 1 << 19;
 
         /**
          * Indicates that this window is the rounded corners overlay present on some
@@ -1978,66 +3204,91 @@ public interface WindowManager extends ViewManager {
          * screen magnification, and mirroring.
          * @hide
          */
-        public static final int PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY = 0x00100000;
+        public static final int PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY = 1 << 20;
 
         /**
-         * Flag to indicate that this window should be considered a screen decoration similar to the
-         * nav bar and status bar. This will cause this window to affect the window insets reported
-         * to other windows when it is visible.
+         * Flag to indicate that this window will be excluded while computing the magnifiable region
+         * on the un-scaled screen coordinate, which could avoid the cutout on the magnification
+         * border. It should be used for unmagnifiable overlays.
+         *
+         * </p><p>
+         * Note unlike {@link #PRIVATE_FLAG_NOT_MAGNIFIABLE}, this flag doesn't affect the ability
+         * of magnification. If you want to the window to be unmagnifiable and doesn't lead to the
+         * cutout, you need to combine both of them.
+         * </p><p>
          * @hide
          */
-        @RequiresPermission(permission.STATUS_BAR_SERVICE)
-        public static final int PRIVATE_FLAG_IS_SCREEN_DECOR = 0x00400000;
+        public static final int PRIVATE_FLAG_EXCLUDE_FROM_SCREEN_MAGNIFICATION = 1 << 21;
 
         /**
-         * Flag to indicate that the status bar window is in a state such that it forces showing
-         * the navigation bar unless the navigation bar window is explicitly set to
-         * {@link View#GONE}.
-         * It only takes effects if this is set by {@link LayoutParams#TYPE_STATUS_BAR}.
+         * Flag to prevent the window from being magnified by the accessibility magnifier.
+         *
+         * TODO(b/190623172): This is a temporary solution and need to find out another way instead.
          * @hide
          */
-        public static final int PRIVATE_FLAG_STATUS_FORCE_SHOW_NAVIGATION = 0x00800000;
+        public static final int PRIVATE_FLAG_NOT_MAGNIFIABLE = 1 << 22;
 
         /**
          * Flag to indicate that the window is color space agnostic, and the color can be
          * interpreted to any color space.
          * @hide
          */
-        public static final int PRIVATE_FLAG_COLOR_SPACE_AGNOSTIC = 0x01000000;
+        public static final int PRIVATE_FLAG_COLOR_SPACE_AGNOSTIC = 1 << 24;
 
         /**
          * Flag to request creation of a BLAST (Buffer as LayerState) Layer.
          * If not specified the client will receive a BufferQueue layer.
          * @hide
          */
-        public static final int PRIVATE_FLAG_USE_BLAST = 0x02000000;
+        public static final int PRIVATE_FLAG_USE_BLAST = 1 << 25;
 
         /**
          * Flag to indicate that the window is controlling the appearance of system bars. So we
          * don't need to adjust it by reading its system UI flags for compatibility.
          * @hide
          */
-        public static final int PRIVATE_FLAG_APPEARANCE_CONTROLLED = 0x04000000;
+        public static final int PRIVATE_FLAG_APPEARANCE_CONTROLLED = 1 << 26;
 
         /**
          * Flag to indicate that the window is controlling the behavior of system bars. So we don't
          * need to adjust it by reading its window flags or system UI flags for compatibility.
          * @hide
          */
-        public static final int PRIVATE_FLAG_BEHAVIOR_CONTROLLED = 0x08000000;
+        public static final int PRIVATE_FLAG_BEHAVIOR_CONTROLLED = 1 << 27;
 
         /**
          * Flag to indicate that the window is controlling how it fits window insets on its own.
          * So we don't need to adjust its attributes for fitting window insets.
          * @hide
          */
-        public static final int PRIVATE_FLAG_FIT_INSETS_CONTROLLED = 0x10000000;
+        public static final int PRIVATE_FLAG_FIT_INSETS_CONTROLLED = 1 << 28;
+
+        /**
+         * Flag to indicate that the window is a trusted overlay.
+         * @hide
+         */
+        public static final int PRIVATE_FLAG_TRUSTED_OVERLAY = 1 << 29;
 
         /**
          * Flag to indicate that the parent frame of a window should be inset by IME.
          * @hide
          */
-        public static final int PRIVATE_FLAG_INSET_PARENT_FRAME_BY_IME = 0x40000000;
+        public static final int PRIVATE_FLAG_INSET_PARENT_FRAME_BY_IME = 1 << 30;
+
+        /**
+         * Flag to indicate that we want to intercept and handle global drag and drop for all users.
+         * This flag allows a window to considered for drag events even if not visible, and will
+         * receive drags for all active users in the system.
+         *
+         * Additional data is provided to windows with this flag, including the {@link ClipData}
+         * including all items with the {@link DragEvent#ACTION_DRAG_STARTED} event, and the
+         * actual drag surface with the {@link DragEvent#ACTION_DROP} event. If the window consumes,
+         * the drop, then the cleanup of the drag surface (provided as a part of
+         * {@link DragEvent#ACTION_DROP}) will be relinquished to the window.
+         * @hide
+         */
+        @RequiresPermission(permission.MANAGE_ACTIVITY_TASKS)
+        public static final int PRIVATE_FLAG_INTERCEPT_GLOBAL_DRAG_AND_DROP = 1 << 31;
 
         /**
          * An internal annotation for flags that can be specified to {@link #softInputMode}.
@@ -2053,15 +3304,46 @@ public interface WindowManager extends ViewManager {
         public @interface SystemFlags {}
 
         /**
+         * @hide
+         */
+        @IntDef(flag = true, prefix="PRIVATE_FLAG_", value = {
+                PRIVATE_FLAG_FORCE_HARDWARE_ACCELERATED,
+                PRIVATE_FLAG_WANTS_OFFSET_NOTIFICATIONS,
+                SYSTEM_FLAG_SHOW_FOR_ALL_USERS,
+                PRIVATE_FLAG_UNRESTRICTED_GESTURE_EXCLUSION,
+                PRIVATE_FLAG_NO_MOVE_ANIMATION,
+                PRIVATE_FLAG_COMPATIBLE_WINDOW,
+                PRIVATE_FLAG_SYSTEM_ERROR,
+                PRIVATE_FLAG_OPTIMIZE_MEASURE,
+                PRIVATE_FLAG_DISABLE_WALLPAPER_TOUCH_EVENTS,
+                PRIVATE_FLAG_LAYOUT_SIZE_EXTENDED_BY_CUTOUT,
+                PRIVATE_FLAG_FORCE_DECOR_VIEW_VISIBILITY,
+                PRIVATE_FLAG_LAYOUT_CHILD_WINDOW_IN_PARENT_FRAME,
+                PRIVATE_FLAG_FORCE_DRAW_BAR_BACKGROUNDS,
+                PRIVATE_FLAG_SUSTAINED_PERFORMANCE_MODE,
+                PRIVATE_FLAG_IMMERSIVE_CONFIRMATION_WINDOW,
+                SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS,
+                PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY,
+                PRIVATE_FLAG_EXCLUDE_FROM_SCREEN_MAGNIFICATION,
+                PRIVATE_FLAG_NOT_MAGNIFIABLE,
+                PRIVATE_FLAG_COLOR_SPACE_AGNOSTIC,
+                PRIVATE_FLAG_USE_BLAST,
+                PRIVATE_FLAG_APPEARANCE_CONTROLLED,
+                PRIVATE_FLAG_BEHAVIOR_CONTROLLED,
+                PRIVATE_FLAG_FIT_INSETS_CONTROLLED,
+                PRIVATE_FLAG_TRUSTED_OVERLAY,
+                PRIVATE_FLAG_INSET_PARENT_FRAME_BY_IME,
+                PRIVATE_FLAG_INTERCEPT_GLOBAL_DRAG_AND_DROP,
+                PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY,
+        })
+        public @interface PrivateFlags {}
+
+        /**
          * Control flags that are private to the platform.
          * @hide
          */
         @UnsupportedAppUsage
         @ViewDebug.ExportedProperty(flagMapping = {
-                @ViewDebug.FlagToString(
-                        mask = PRIVATE_FLAG_FAKE_HARDWARE_ACCELERATED,
-                        equals = PRIVATE_FLAG_FAKE_HARDWARE_ACCELERATED,
-                        name = "FAKE_HARDWARE_ACCELERATED"),
                 @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_FORCE_HARDWARE_ACCELERATED,
                         equals = PRIVATE_FLAG_FORCE_HARDWARE_ACCELERATED,
@@ -2075,6 +3357,10 @@ public interface WindowManager extends ViewManager {
                         equals = SYSTEM_FLAG_SHOW_FOR_ALL_USERS,
                         name = "SHOW_FOR_ALL_USERS"),
                 @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_UNRESTRICTED_GESTURE_EXCLUSION,
+                        equals = PRIVATE_FLAG_UNRESTRICTED_GESTURE_EXCLUSION,
+                        name = "UNRESTRICTED_GESTURE_EXCLUSION"),
+                @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_NO_MOVE_ANIMATION,
                         equals = PRIVATE_FLAG_NO_MOVE_ANIMATION,
                         name = "NO_MOVE_ANIMATION"),
@@ -2087,25 +3373,21 @@ public interface WindowManager extends ViewManager {
                         equals = PRIVATE_FLAG_SYSTEM_ERROR,
                         name = "SYSTEM_ERROR"),
                 @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_OPTIMIZE_MEASURE,
+                        equals = PRIVATE_FLAG_OPTIMIZE_MEASURE,
+                        name = "OPTIMIZE_MEASURE"),
+                @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_DISABLE_WALLPAPER_TOUCH_EVENTS,
                         equals = PRIVATE_FLAG_DISABLE_WALLPAPER_TOUCH_EVENTS,
                         name = "DISABLE_WALLPAPER_TOUCH_EVENTS"),
                 @ViewDebug.FlagToString(
-                        mask = PRIVATE_FLAG_FORCE_SHOW_STATUS_BAR,
-                        equals = PRIVATE_FLAG_FORCE_SHOW_STATUS_BAR,
-                        name = "FORCE_STATUS_BAR_VISIBLE"),
-                @ViewDebug.FlagToString(
-                        mask = PRIVATE_FLAG_PRESERVE_GEOMETRY,
-                        equals = PRIVATE_FLAG_PRESERVE_GEOMETRY,
-                        name = "PRESERVE_GEOMETRY"),
+                        mask = PRIVATE_FLAG_LAYOUT_SIZE_EXTENDED_BY_CUTOUT,
+                        equals = PRIVATE_FLAG_LAYOUT_SIZE_EXTENDED_BY_CUTOUT,
+                        name = "LAYOUT_SIZE_EXTENDED_BY_CUTOUT"),
                 @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_FORCE_DECOR_VIEW_VISIBILITY,
                         equals = PRIVATE_FLAG_FORCE_DECOR_VIEW_VISIBILITY,
                         name = "FORCE_DECOR_VIEW_VISIBILITY"),
-                @ViewDebug.FlagToString(
-                        mask = PRIVATE_FLAG_WILL_NOT_REPLACE_ON_RELAUNCH,
-                        equals = PRIVATE_FLAG_WILL_NOT_REPLACE_ON_RELAUNCH,
-                        name = "WILL_NOT_REPLACE_ON_RELAUNCH"),
                 @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_LAYOUT_CHILD_WINDOW_IN_PARENT_FRAME,
                         equals = PRIVATE_FLAG_LAYOUT_CHILD_WINDOW_IN_PARENT_FRAME,
@@ -2119,6 +3401,10 @@ public interface WindowManager extends ViewManager {
                         equals = PRIVATE_FLAG_SUSTAINED_PERFORMANCE_MODE,
                         name = "SUSTAINED_PERFORMANCE_MODE"),
                 @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_IMMERSIVE_CONFIRMATION_WINDOW,
+                        equals = PRIVATE_FLAG_IMMERSIVE_CONFIRMATION_WINDOW,
+                        name = "IMMERSIVE_CONFIRMATION_WINDOW"),
+                @ViewDebug.FlagToString(
                         mask = SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS,
                         equals = SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS,
                         name = "HIDE_NON_SYSTEM_OVERLAY_WINDOWS"),
@@ -2127,17 +3413,21 @@ public interface WindowManager extends ViewManager {
                         equals = PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY,
                         name = "IS_ROUNDED_CORNERS_OVERLAY"),
                 @ViewDebug.FlagToString(
-                        mask = PRIVATE_FLAG_IS_SCREEN_DECOR,
-                        equals = PRIVATE_FLAG_IS_SCREEN_DECOR,
-                        name = "IS_SCREEN_DECOR"),
+                        mask = PRIVATE_FLAG_EXCLUDE_FROM_SCREEN_MAGNIFICATION,
+                        equals = PRIVATE_FLAG_EXCLUDE_FROM_SCREEN_MAGNIFICATION,
+                        name = "EXCLUDE_FROM_SCREEN_MAGNIFICATION"),
                 @ViewDebug.FlagToString(
-                        mask = PRIVATE_FLAG_STATUS_FORCE_SHOW_NAVIGATION,
-                        equals = PRIVATE_FLAG_STATUS_FORCE_SHOW_NAVIGATION,
-                        name = "STATUS_FORCE_SHOW_NAVIGATION"),
+                        mask = PRIVATE_FLAG_NOT_MAGNIFIABLE,
+                        equals = PRIVATE_FLAG_NOT_MAGNIFIABLE,
+                        name = "NOT_MAGNIFIABLE"),
                 @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_COLOR_SPACE_AGNOSTIC,
                         equals = PRIVATE_FLAG_COLOR_SPACE_AGNOSTIC,
                         name = "COLOR_SPACE_AGNOSTIC"),
+                @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_USE_BLAST,
+                        equals = PRIVATE_FLAG_USE_BLAST,
+                        name = "USE_BLAST"),
                 @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_APPEARANCE_CONTROLLED,
                         equals = PRIVATE_FLAG_APPEARANCE_CONTROLLED,
@@ -2149,8 +3439,25 @@ public interface WindowManager extends ViewManager {
                 @ViewDebug.FlagToString(
                         mask = PRIVATE_FLAG_FIT_INSETS_CONTROLLED,
                         equals = PRIVATE_FLAG_FIT_INSETS_CONTROLLED,
-                        name = "FIT_INSETS_CONTROLLED")
+                        name = "FIT_INSETS_CONTROLLED"),
+                @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_TRUSTED_OVERLAY,
+                        equals = PRIVATE_FLAG_TRUSTED_OVERLAY,
+                        name = "TRUSTED_OVERLAY"),
+                @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_INSET_PARENT_FRAME_BY_IME,
+                        equals = PRIVATE_FLAG_INSET_PARENT_FRAME_BY_IME,
+                        name = "INSET_PARENT_FRAME_BY_IME"),
+                @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_INTERCEPT_GLOBAL_DRAG_AND_DROP,
+                        equals = PRIVATE_FLAG_INTERCEPT_GLOBAL_DRAG_AND_DROP,
+                        name = "INTERCEPT_GLOBAL_DRAG_AND_DROP"),
+                @ViewDebug.FlagToString(
+                        mask = PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY,
+                        equals = PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY,
+                        name = "PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY")
         })
+        @PrivateFlags
         @TestApi
         public int privateFlags;
 
@@ -2211,7 +3518,7 @@ public interface WindowManager extends ViewManager {
          *
          * <p>Applications that target {@link android.os.Build.VERSION_CODES#P} and later, this flag
          * is ignored unless there is a focused view that returns {@code true} from
-         * {@link View#isInEditMode()} when the window is focused.</p>
+         * {@link View#onCheckIsTextEditor()} when the window is focused.</p>
          */
         public static final int SOFT_INPUT_STATE_VISIBLE = 4;
 
@@ -2221,7 +3528,7 @@ public interface WindowManager extends ViewManager {
          *
          * <p>Applications that target {@link android.os.Build.VERSION_CODES#P} and later, this flag
          * is ignored unless there is a focused view that returns {@code true} from
-         * {@link View#isInEditMode()} when the window is focused.</p>
+         * {@link View#onCheckIsTextEditor()} when the window is focused.</p>
          */
         public static final int SOFT_INPUT_STATE_ALWAYS_VISIBLE = 5;
 
@@ -2338,6 +3645,7 @@ public interface WindowManager extends ViewManager {
          *
          * @see Gravity
          */
+        @GravityFlags
         public int gravity;
 
         /**
@@ -2374,6 +3682,15 @@ public interface WindowManager extends ViewManager {
          * @hide
          */
         public boolean hasManualSurfaceInsets;
+
+        /**
+         * Whether we should use global insets state when report insets to the window. When set to
+         * {@code true}, all the insets will be reported to the window regardless of the z-order.
+         * Otherwise, only the insets above the given window will be reported.
+         *
+         * @hide
+         */
+        public boolean receiveInsetsIgnoringZOrder;
 
         /**
          * Whether the previous surface insets should be used vs. what is currently set. When set
@@ -2494,6 +3811,7 @@ public interface WindowManager extends ViewManager {
          * @see #ROTATION_ANIMATION_ROTATE
          * @see #ROTATION_ANIMATION_CROSSFADE
          * @see #ROTATION_ANIMATION_JUMPCUT
+         * @see #ROTATION_ANIMATION_SEAMLESS
          */
         public int rotationAnimation = ROTATION_ANIMATION_ROTATE;
 
@@ -2502,6 +3820,18 @@ public interface WindowManager extends ViewManager {
          * you.
          */
         public IBinder token = null;
+
+        /**
+         * The token of {@link android.window.WindowContext}. It is usually a
+         * {@link android.app.WindowTokenClient} and is used for associating the params with an
+         * existing node in the WindowManager hierarchy and getting the corresponding
+         * {@link Configuration} and {@link android.content.res.Resources} values with updates
+         * propagated from the server side.
+         *
+         * @hide
+         */
+        @Nullable
+        public IBinder mWindowContextToken = null;
 
         /**
          * Name of the package owning this window.
@@ -2521,16 +3851,29 @@ public interface WindowManager extends ViewManager {
 
         /**
          * The preferred refresh rate for the window.
-         *
-         * This must be one of the supported refresh rates obtained for the display(s) the window
-         * is on. The selected refresh rate will be applied to the display's default mode.
-         *
+         * <p>
+         * Before API 34, this must be one of the supported refresh rates obtained
+         * for the display(s) the window is on. The selected refresh rate will be
+         * applied to the display's default mode.
+         * <p>
+         * Starting API 34, this value is not limited to the supported refresh rates
+         * obtained from the display(s) for the window: it can be any refresh rate
+         * the window intends to run at. Any refresh rate can be provided as the
+         * preferred window refresh rate. The OS will select the refresh rate that
+         * best matches the {@link #preferredRefreshRate}.
+         * <p>
+         * Setting this value is the equivalent of calling {@link Surface#setFrameRate} with (
+         *     preferred_frame_rate,
+         *     {@link Surface#FRAME_RATE_COMPATIBILITY_DEFAULT},
+         *     {@link Surface#CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS}).
+         * This should be used in favor of {@link LayoutParams#preferredDisplayModeId} for
+         * applications that want to specify the refresh rate, but do not want to specify a
+         * preference for any other displayMode properties (e.g., resolution).
+         * <p>
          * This value is ignored if {@link #preferredDisplayModeId} is set.
          *
          * @see Display#getSupportedRefreshRates()
-         * @deprecated use {@link #preferredDisplayModeId} instead
          */
-        @Deprecated
         public float preferredRefreshRate;
 
         /**
@@ -2545,6 +3888,72 @@ public interface WindowManager extends ViewManager {
         public int preferredDisplayModeId;
 
         /**
+         * The min display refresh rate while the window is in focus.
+         *
+         * This value is ignored if {@link #preferredDisplayModeId} is set.
+         * @hide
+         */
+        @TestApi
+        public float preferredMinDisplayRefreshRate;
+
+        /**
+         * The max display refresh rate while the window is in focus.
+         *
+         * This value is ignored if {@link #preferredDisplayModeId} is set.
+         * @hide
+         */
+        @TestApi
+        public float preferredMaxDisplayRefreshRate;
+
+        /** Indicates whether this window wants the HDR conversion is disabled. */
+        public static final int DISPLAY_FLAG_DISABLE_HDR_CONVERSION =  1 << 0;
+
+        /**
+         * Flags that can be used to set display properties.
+         *
+         * @hide
+         */
+        @IntDef(flag = true, prefix = "DISPLAY_FLAG_", value = {
+                DISPLAY_FLAG_DISABLE_HDR_CONVERSION,
+        })
+        public @interface DisplayFlags {}
+
+        @DisplayFlags
+        private int mDisplayFlags;
+
+        /**
+         * An internal annotation for flags that can be specified to {@link #systemUiVisibility}
+         * and {@link #subtreeSystemUiVisibility}.
+         *
+         * @hide
+         */
+        @Retention(RetentionPolicy.SOURCE)
+        @IntDef(flag = true, prefix = { "" }, value = {
+            SYSTEM_UI_FLAG_VISIBLE,
+            SYSTEM_UI_FLAG_LOW_PROFILE,
+            SYSTEM_UI_FLAG_HIDE_NAVIGATION,
+            SYSTEM_UI_FLAG_FULLSCREEN,
+            SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR,
+            SYSTEM_UI_FLAG_LAYOUT_STABLE,
+            SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION,
+            SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN,
+            SYSTEM_UI_FLAG_IMMERSIVE,
+            SYSTEM_UI_FLAG_IMMERSIVE_STICKY,
+            SYSTEM_UI_FLAG_LIGHT_STATUS_BAR,
+            STATUS_BAR_DISABLE_EXPAND,
+            STATUS_BAR_DISABLE_NOTIFICATION_ICONS,
+            STATUS_BAR_DISABLE_NOTIFICATION_ALERTS,
+            STATUS_BAR_DISABLE_NOTIFICATION_TICKER,
+            STATUS_BAR_DISABLE_SYSTEM_INFO,
+            STATUS_BAR_DISABLE_HOME,
+            STATUS_BAR_DISABLE_BACK,
+            STATUS_BAR_DISABLE_CLOCK,
+            STATUS_BAR_DISABLE_RECENT,
+            STATUS_BAR_DISABLE_SEARCH,
+        })
+        public @interface SystemUiVisibilityFlags {}
+
+        /**
          * Control the visibility of the status bar.
          *
          * @see View#STATUS_BAR_VISIBLE
@@ -2553,6 +3962,7 @@ public interface WindowManager extends ViewManager {
          * @deprecated SystemUiVisibility flags are deprecated. Use {@link WindowInsetsController}
          * instead.
          */
+        @SystemUiVisibilityFlags
         @Deprecated
         public int systemUiVisibility;
 
@@ -2561,6 +3971,7 @@ public interface WindowManager extends ViewManager {
          * The ui visibility as requested by the views in this hierarchy.
          * the combined value should be systemUiVisibility | subtreeSystemUiVisibility.
          */
+        @SystemUiVisibilityFlags
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int subtreeSystemUiVisibility;
 
@@ -2574,11 +3985,9 @@ public interface WindowManager extends ViewManager {
         @UnsupportedAppUsage
         public boolean hasSystemUiListeners;
 
-
         /** @hide */
         @Retention(RetentionPolicy.SOURCE)
         @IntDef(
-                flag = true,
                 value = {LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT,
                         LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES,
                         LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER,
@@ -2604,7 +4013,8 @@ public interface WindowManager extends ViewManager {
 
         /**
          * The window is allowed to extend into the {@link DisplayCutout} area, only if the
-         * {@link DisplayCutout} is fully contained within a system bar. Otherwise, the window is
+         * {@link DisplayCutout} is fully contained within a system bar or the {@link DisplayCutout}
+         * is not deeper than 16 dp, but this depends on the OEM choice. Otherwise, the window is
          * laid out such that it does not overlap with the {@link DisplayCutout} area.
          *
          * <p>
@@ -2619,6 +4029,13 @@ public interface WindowManager extends ViewManager {
          * The usual precautions for not overlapping with the status and navigation bar are
          * sufficient for ensuring that no important content overlaps with the DisplayCutout.
          *
+         * <p>
+         * Note: OEMs can have an option to allow the window to always extend into the
+         * {@link DisplayCutout} area, no matter the cutout flag set, when the {@link DisplayCutout}
+         * is on the different side from system bars, only if the {@link DisplayCutout} overlaps at
+         * most 16dp with the windows.
+         * In such case, OEMs must provide an opt-in/out affordance for users.
+         *
          * @see DisplayCutout
          * @see WindowInsets
          * @see #layoutInDisplayCutoutMode
@@ -2631,8 +4048,16 @@ public interface WindowManager extends ViewManager {
          * The window is always allowed to extend into the {@link DisplayCutout} areas on the short
          * edges of the screen.
          *
+         * <p>
          * The window will never extend into a {@link DisplayCutout} area on the long edges of the
-         * screen.
+         * screen, unless the {@link DisplayCutout} is not deeper than 16 dp, but this depends on
+         * the OEM choice.
+         *
+         * <p>
+         * Note: OEMs can have an option to allow the window to extend into the
+         * {@link DisplayCutout} area on the long edge side, only if the cutout overlaps at most
+         * 16dp with the windows. In such case, OEMs must provide an opt-in/out affordance for
+         * users.
          *
          * <p>
          * The window must make sure that no important content overlaps with the
@@ -2666,6 +4091,11 @@ public interface WindowManager extends ViewManager {
          * height="720"
          * alt="Screenshot of an activity on a display with a cutout on the long edge in portrait,
          *         letterbox is applied."/>
+         *
+         * <p>
+         * Note: Android might not allow the content view to overlap the system bars in view level.
+         * To override this behavior and allow content to be able to extend into the cutout area,
+         * call {@link Window#setDecorFitsSystemWindows(boolean)} with {@code false}.
          *
          * @see DisplayCutout
          * @see WindowInsets#getDisplayCutout()
@@ -2702,6 +4132,11 @@ public interface WindowManager extends ViewManager {
          * In this mode, the window extends under cutouts on the all edges of the display in both
          * portrait and landscape, regardless of whether the window is hiding the system bars.
          *
+         * <p>
+         * Note: Android might not allow the content view to overlap the system bars in view level.
+         * To override this behavior and allow content to be able to extend into the cutout area,
+         * call {@link Window#setDecorFitsSystemWindows(boolean)} with {@code false}.
+         *
          * @see DisplayCutout
          * @see WindowInsets#getDisplayCutout()
          * @see #layoutInDisplayCutoutMode
@@ -2711,21 +4146,12 @@ public interface WindowManager extends ViewManager {
         public static final int LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS = 3;
 
         /**
-         * When this window has focus, disable touch pad pointer gesture processing.
-         * The window will receive raw position updates from the touch pad instead
-         * of pointer movements and synthetic touch events.
-         *
-         * @hide
-         */
-        public static final int INPUT_FEATURE_DISABLE_POINTER_GESTURES = 0x00000001;
-
-        /**
          * Does not construct an input channel for this window.  The channel will therefore
          * be incapable of receiving input.
          *
          * @hide
          */
-        public static final int INPUT_FEATURE_NO_INPUT_CHANNEL = 0x00000002;
+        public static final int INPUT_FEATURE_NO_INPUT_CHANNEL = 1 << 0;
 
         /**
          * When this window has focus, does not call user activity for all input events so
@@ -2738,16 +4164,45 @@ public interface WindowManager extends ViewManager {
          * @hide
          */
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-        public static final int INPUT_FEATURE_DISABLE_USER_ACTIVITY = 0x00000004;
+        public static final int INPUT_FEATURE_DISABLE_USER_ACTIVITY = 1 << 1;
 
         /**
-         * Control special features of the input subsystem.
+         * An input spy window. This window will receive all pointer events within its touchable
+         * area, but will not stop events from being sent to other windows below it in z-order.
+         * An input event will be dispatched to all spy windows above the top non-spy window at the
+         * event's coordinates.
          *
-         * @see #INPUT_FEATURE_DISABLE_POINTER_GESTURES
-         * @see #INPUT_FEATURE_NO_INPUT_CHANNEL
-         * @see #INPUT_FEATURE_DISABLE_USER_ACTIVITY
          * @hide
          */
+        @RequiresPermission(permission.MONITOR_INPUT)
+        public static final int INPUT_FEATURE_SPY = 1 << 2;
+
+        /**
+         * An internal annotation for flags that can be specified to {@link #inputFeatures}.
+         *
+         * NOTE: These are not the same as {@link android.os.InputConfig} flags.
+         *
+         * @hide
+         */
+        @Retention(RetentionPolicy.SOURCE)
+        @IntDef(flag = true, prefix = {"INPUT_FEATURE_"}, value = {
+                INPUT_FEATURE_NO_INPUT_CHANNEL,
+                INPUT_FEATURE_DISABLE_USER_ACTIVITY,
+                INPUT_FEATURE_SPY,
+        })
+        public @interface InputFeatureFlags {
+        }
+
+        /**
+         * Control a set of features of the input subsystem that are exposed to the app process.
+         *
+         * WARNING: Do NOT use {@link android.os.InputConfig} flags! This must be set to flag values
+         * included in {@link InputFeatureFlags}.
+         *
+         * @hide
+         * @see InputFeatureFlags
+         */
+        @InputFeatureFlags
         @UnsupportedAppUsage
         public int inputFeatures;
 
@@ -2827,6 +4282,18 @@ public interface WindowManager extends ViewManager {
         public boolean preferMinimalPostProcessing = false;
 
         /**
+         * Specifies the amount of blur to be used to blur everything behind the window.
+         * The effect is similar to the dimAmount, but instead of dimming, the content behind
+         * will be blurred.
+         *
+         * The blur behind radius range starts at 0, which means no blur, and increases until 150
+         * for the densest blur.
+         *
+         * @see #setBlurBehindRadius
+         */
+        private int mBlurBehindRadius = 0;
+
+        /**
          * The color mode requested by this window. The target display may
          * not be able to honor the request. When the color mode is not set
          * to {@link ActivityInfo#COLOR_MODE_DEFAULT}, it might override the
@@ -2904,22 +4371,50 @@ public interface WindowManager extends ViewManager {
         private boolean mFitInsetsIgnoringVisibility = false;
 
         /**
-         * {@link InsetsState.InternalInsetsType}s to be applied to the window
-         * If {@link #type} has the predefined insets (like {@link #TYPE_STATUS_BAR} or
-         * {@link #TYPE_NAVIGATION_BAR}), this field will be ignored.
+         * If set, the specified insets types will be provided by the window and the insets frame
+         * will be calculated based on the provider's parameters. The insets types and the array
+         * should not be modified after the window is added. If multiple layout parameters are
+         * provided for different rotations in {@link LayoutParams#paramsForRotation}, the types in
+         * the providedInsets array should be the same in all rotations, including the base one.
+         * All other params can be adjusted at runtime.
+         * See {@link InsetsFrameProvider}.
          *
-         * <p>Note: provide only one inset corresponding to the window type (like
-         * {@link InsetsState.InternalInsetsType#ITYPE_STATUS_BAR} or
-         * {@link InsetsState.InternalInsetsType#ITYPE_NAVIGATION_BAR})</p>
          * @hide
          */
-        public @InsetsState.InternalInsetsType int[] providesInsetsTypes;
+        public InsetsFrameProvider[] providedInsets;
+
+        /**
+         * Specifies which {@link InsetsType}s should be forcibly shown. The types shown by this
+         * method won't affect the app's layout. This field only takes effects if the caller has
+         * {@link android.Manifest.permission#STATUS_BAR_SERVICE} or the caller has the same uid as
+         * the recents component.
+         *
+         * @hide
+         */
+        public @InsetsType int forciblyShownTypes;
+
+        /**
+         * {@link LayoutParams} to be applied to the window when layout with a assigned rotation.
+         * This will make layout during rotation change smoothly.
+         *
+         * @hide
+         */
+        public LayoutParams[] paramsForRotation;
+
+        /**
+         * Specifies whether to send touch events to wallpaper, if the window shows wallpaper in the
+         * background. By default, this is set to {@code true} i.e. if any window shows wallpaper
+         * in the background, the wallpaper will receive touch events, unless specified otherwise.
+         *
+         * @see android.view.WindowManager.LayoutParams#FLAG_SHOW_WALLPAPER
+         */
+        private boolean mWallpaperTouchEventsEnabled = true;
 
         /**
          * Specifies types of insets that this window should avoid overlapping during layout.
          *
-         * @param types which types of insets that this window should avoid. The initial value of
-         *              this object includes all system bars.
+         * @param types which {@link WindowInsets.Type}s of insets that this window should avoid.
+         *              The initial value of this object includes all system bars.
          */
         public void setFitInsetsTypes(@InsetsType int types) {
             mFitInsetsTypes = types;
@@ -2948,7 +4443,102 @@ public interface WindowManager extends ViewManager {
         }
 
         /**
-         * @return the insets types that this window is avoiding overlapping.
+         * Specifies that the window should be considered a trusted system overlay. Trusted system
+         * overlays are ignored when considering whether windows are obscured during input
+         * dispatch. Requires the {@link android.Manifest.permission#INTERNAL_SYSTEM_WINDOW}
+         * permission.
+         *
+         * {@see android.view.MotionEvent#FLAG_WINDOW_IS_OBSCURED}
+         * {@see android.view.MotionEvent#FLAG_WINDOW_IS_PARTIALLY_OBSCURED}
+         * @hide
+         */
+        public void setTrustedOverlay() {
+            privateFlags |= PRIVATE_FLAG_TRUSTED_OVERLAY;
+        }
+
+        /**
+         * When set on {@link LayoutParams#TYPE_APPLICATION_OVERLAY} windows they stay visible,
+         * even if {@link LayoutParams#SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS} is set for
+         * another visible window.
+         * @hide
+         */
+        @SystemApi
+        @RequiresPermission(permission.SYSTEM_APPLICATION_OVERLAY)
+        public void setSystemApplicationOverlay(boolean isSystemApplicationOverlay) {
+            if (isSystemApplicationOverlay) {
+                privateFlags |= PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY;
+            } else {
+                privateFlags &= ~PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY;
+            }
+        }
+
+        /**
+         * Returns if this window is marked as being a system application overlay.
+         * @see LayoutParams#setSystemApplicationOverlay(boolean)
+         *
+         * <p>Note: the owner of the window must hold
+         * {@link android.Manifest.permission#SYSTEM_APPLICATION_OVERLAY} for this to have any
+         * effect.
+         * @hide
+         */
+        @SystemApi
+        public boolean isSystemApplicationOverlay() {
+            return (privateFlags & PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY)
+                    == PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY;
+        }
+
+        /**
+         * Set whether sending touch events to the system wallpaper (which can be provided by a
+         * third-party application) should be enabled for windows that show wallpaper in
+         * background. By default, this is set to {@code true}.
+         * Check {@link android.view.WindowManager.LayoutParams#FLAG_SHOW_WALLPAPER} for more
+         * information on showing system wallpaper behind the window.
+         *
+         * @param enable whether to enable sending touch events to the system wallpaper.
+         */
+        public void setWallpaperTouchEventsEnabled(boolean enable) {
+            mWallpaperTouchEventsEnabled = enable;
+        }
+
+        /**
+         * Returns whether sending touch events to the system wallpaper (which can be provided by a
+         * third-party application) is enabled for windows that show wallpaper in background.
+         * Check {@link android.view.WindowManager.LayoutParams#FLAG_SHOW_WALLPAPER} for more
+         * information on showing system wallpaper behind the window.
+         *
+         * @return whether sending touch events to the system wallpaper is enabled.
+         */
+        public boolean areWallpaperTouchEventsEnabled() {
+            return mWallpaperTouchEventsEnabled;
+        }
+
+        /**
+         * Set whether animations can be played for position changes on this window. If disabled,
+         * the window will move to its new position instantly without animating.
+         *
+         * @attr ref android.R.attr#Window_windowNoMoveAnimation
+         */
+        public void setCanPlayMoveAnimation(boolean enable) {
+            if (enable) {
+                privateFlags &= ~PRIVATE_FLAG_NO_MOVE_ANIMATION;
+            } else {
+                privateFlags |= PRIVATE_FLAG_NO_MOVE_ANIMATION;
+            }
+        }
+
+        /**
+         * @return whether playing an animation during a position change is allowed on this window.
+         * This does not guarantee that an animation will be played in all such situations. For
+         * example, drag-resizing may move the window but not play an animation.
+         *
+         * @attr ref android.R.attr#Window_windowNoMoveAnimation
+         */
+        public boolean canPlayMoveAnimation() {
+            return (privateFlags & PRIVATE_FLAG_NO_MOVE_ANIMATION) == 0;
+        }
+
+        /**
+         * @return the {@link WindowInsets.Type}s that this window is avoiding overlapping.
          */
         public @InsetsType int getFitInsetsTypes() {
             return mFitInsetsTypes;
@@ -2967,6 +4557,30 @@ public interface WindowManager extends ViewManager {
          */
         public boolean isFitInsetsIgnoringVisibility() {
             return mFitInsetsIgnoringVisibility;
+        }
+
+        private void checkNonRecursiveParams() {
+            if (paramsForRotation == null) {
+                return;
+            }
+            for (int i = paramsForRotation.length - 1; i >= 0; i--) {
+                if (paramsForRotation[i].paramsForRotation != null) {
+                    throw new IllegalArgumentException(
+                            "Params cannot contain params recursively.");
+                }
+            }
+        }
+
+        /**
+         * @see #paramsForRotation
+         * @hide
+         */
+        public LayoutParams forRotation(int rotation) {
+            if (paramsForRotation == null || paramsForRotation.length <= rotation
+                    || paramsForRotation[rotation] == null) {
+                return this;
+            }
+            return paramsForRotation[rotation];
         }
 
         public LayoutParams() {
@@ -3048,6 +4662,24 @@ public interface WindowManager extends ViewManager {
             preservePreviousSurfaceInsets = preservePrevious;
         }
 
+        /** Returns whether the HDR conversion is enabled for the window */
+        public boolean isHdrConversionEnabled() {
+            return ((mDisplayFlags & DISPLAY_FLAG_DISABLE_HDR_CONVERSION) == 0);
+        }
+
+        /**
+         * Enables/disables the HDR conversion for the window.
+         *
+         * By default, the HDR conversion is enabled for the window.
+         */
+        public void setHdrConversionEnabled(boolean enabled) {
+            if (!enabled) {
+                mDisplayFlags |= DISPLAY_FLAG_DISABLE_HDR_CONVERSION;
+            } else {
+                mDisplayFlags &= ~DISPLAY_FLAG_DISABLE_HDR_CONVERSION;
+            }
+        }
+
         /**
          * <p>Set the color mode of the window. Setting the color mode might
          * override the window's pixel {@link WindowManager.LayoutParams#format format}.</p>
@@ -3073,6 +4705,51 @@ public interface WindowManager extends ViewManager {
             return mColorMode;
         }
 
+        /**
+         * <p>
+         * Blurs the screen behind the window. The effect is similar to that of {@link #dimAmount},
+         * but instead of dimmed, the content behind the window will be blurred (or combined with
+         * the dim amount, if such is specified).
+         * </p><p>
+         * The density of the blur is set by the blur radius. The radius defines the size
+         * of the neighbouring area, from which pixels will be averaged to form the final
+         * color for each pixel. The operation approximates a Gaussian blur.
+         * A radius of 0 means no blur. The higher the radius, the denser the blur.
+         * </p><p>
+         * Note the difference with {@link android.view.Window#setBackgroundBlurRadius},
+         * which blurs only within the bounds of the window. Blur behind blurs the whole screen
+         * behind the window.
+         * </p><p>
+         * Requires {@link #FLAG_BLUR_BEHIND} to be set.
+         * </p><p>
+         * Cross-window blur might not be supported by some devices due to GPU limitations. It can
+         * also be disabled at runtime, e.g. during battery saving mode, when multimedia tunneling
+         * is used or when minimal post processing is requested. In such situations, no blur will
+         * be computed or drawn, resulting in there being no depth separation between the window
+         * and the content behind it. To avoid this, the app might want to use more
+         * {@link #dimAmount} on its window. To listen for cross-window blur enabled/disabled
+         * events, use {@link #addCrossWindowBlurEnabledListener}.
+         * </p>
+         * @param blurBehindRadius The blur radius to use for blur behind in pixels
+         *
+         * @see #FLAG_BLUR_BEHIND
+         * @see #getBlurBehindRadius
+         * @see WindowManager#addCrossWindowBlurEnabledListener
+         * @see Window#setBackgroundBlurRadius
+         */
+        public void setBlurBehindRadius(@IntRange(from = 0) int blurBehindRadius) {
+            mBlurBehindRadius = blurBehindRadius;
+        }
+
+        /**
+         * Returns the blur behind radius of the window.
+         *
+         * @see #setBlurBehindRadius
+         */
+        public int getBlurBehindRadius() {
+            return mBlurBehindRadius;
+        }
+
         /** @hide */
         @SystemApi
         public final void setUserActivityTimeout(long timeout) {
@@ -3083,6 +4760,37 @@ public interface WindowManager extends ViewManager {
         @SystemApi
         public final long getUserActivityTimeout() {
             return userActivityTimeout;
+        }
+
+        /**
+         * Sets the {@link android.app.WindowContext} token.
+         *
+         * @see #getWindowContextToken()
+         *
+         * @hide
+         */
+        @TestApi
+        public final void setWindowContextToken(@NonNull IBinder token) {
+            mWindowContextToken = token;
+        }
+
+        /**
+         * Gets the {@link android.app.WindowContext} token.
+         *
+         * The token is usually a {@link android.app.WindowTokenClient} and is used for associating
+         * the params with an existing node in the WindowManager hierarchy and getting the
+         * corresponding {@link Configuration} and {@link android.content.res.Resources} values with
+         * updates propagated from the server side.
+         *
+         * @see android.app.WindowTokenClient
+         * @see Context#createWindowContext(Display, int, Bundle)
+         *
+         * @hide
+         */
+        @TestApi
+        @Nullable
+        public final IBinder getWindowContextToken() {
+            return mWindowContextToken;
         }
 
         public int describeContents() {
@@ -3110,22 +4818,26 @@ public interface WindowManager extends ViewManager {
             out.writeFloat(buttonBrightness);
             out.writeInt(rotationAnimation);
             out.writeStrongBinder(token);
+            out.writeStrongBinder(mWindowContextToken);
             out.writeString(packageName);
             TextUtils.writeToParcel(mTitle, out, parcelableFlags);
             out.writeInt(screenOrientation);
             out.writeFloat(preferredRefreshRate);
             out.writeInt(preferredDisplayModeId);
+            out.writeFloat(preferredMinDisplayRefreshRate);
+            out.writeFloat(preferredMaxDisplayRefreshRate);
             out.writeInt(systemUiVisibility);
             out.writeInt(subtreeSystemUiVisibility);
-            out.writeInt(hasSystemUiListeners ? 1 : 0);
+            out.writeBoolean(hasSystemUiListeners);
             out.writeInt(inputFeatures);
             out.writeLong(userActivityTimeout);
             out.writeInt(surfaceInsets.left);
             out.writeInt(surfaceInsets.top);
             out.writeInt(surfaceInsets.right);
             out.writeInt(surfaceInsets.bottom);
-            out.writeInt(hasManualSurfaceInsets ? 1 : 0);
-            out.writeInt(preservePreviousSurfaceInsets ? 1 : 0);
+            out.writeBoolean(hasManualSurfaceInsets);
+            out.writeBoolean(receiveInsetsIgnoringZOrder);
+            out.writeBoolean(preservePreviousSurfaceInsets);
             out.writeLong(accessibilityIdOfAnchor);
             TextUtils.writeToParcel(accessibilityTitle, out, parcelableFlags);
             out.writeInt(mColorMode);
@@ -3136,12 +4848,13 @@ public interface WindowManager extends ViewManager {
             out.writeInt(mFitInsetsSides);
             out.writeBoolean(mFitInsetsIgnoringVisibility);
             out.writeBoolean(preferMinimalPostProcessing);
-            if (providesInsetsTypes != null) {
-                out.writeInt(providesInsetsTypes.length);
-                out.writeIntArray(providesInsetsTypes);
-            } else {
-                out.writeInt(0);
-            }
+            out.writeInt(mBlurBehindRadius);
+            out.writeBoolean(mWallpaperTouchEventsEnabled);
+            out.writeTypedArray(providedInsets, 0 /* parcelableFlags */);
+            out.writeInt(forciblyShownTypes);
+            checkNonRecursiveParams();
+            out.writeTypedArray(paramsForRotation, 0 /* parcelableFlags */);
+            out.writeInt(mDisplayFlags);
         }
 
         public static final @android.annotation.NonNull Parcelable.Creator<LayoutParams> CREATOR
@@ -3177,22 +4890,26 @@ public interface WindowManager extends ViewManager {
             buttonBrightness = in.readFloat();
             rotationAnimation = in.readInt();
             token = in.readStrongBinder();
+            mWindowContextToken = in.readStrongBinder();
             packageName = in.readString();
             mTitle = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(in);
             screenOrientation = in.readInt();
             preferredRefreshRate = in.readFloat();
             preferredDisplayModeId = in.readInt();
+            preferredMinDisplayRefreshRate = in.readFloat();
+            preferredMaxDisplayRefreshRate = in.readFloat();
             systemUiVisibility = in.readInt();
             subtreeSystemUiVisibility = in.readInt();
-            hasSystemUiListeners = in.readInt() != 0;
+            hasSystemUiListeners = in.readBoolean();
             inputFeatures = in.readInt();
             userActivityTimeout = in.readLong();
             surfaceInsets.left = in.readInt();
             surfaceInsets.top = in.readInt();
             surfaceInsets.right = in.readInt();
             surfaceInsets.bottom = in.readInt();
-            hasManualSurfaceInsets = in.readInt() != 0;
-            preservePreviousSurfaceInsets = in.readInt() != 0;
+            hasManualSurfaceInsets = in.readBoolean();
+            receiveInsetsIgnoringZOrder = in.readBoolean();
+            preservePreviousSurfaceInsets = in.readBoolean();
             accessibilityIdOfAnchor = in.readLong();
             accessibilityTitle = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(in);
             mColorMode = in.readInt();
@@ -3203,11 +4920,12 @@ public interface WindowManager extends ViewManager {
             mFitInsetsSides = in.readInt();
             mFitInsetsIgnoringVisibility = in.readBoolean();
             preferMinimalPostProcessing = in.readBoolean();
-            int insetsTypesLength = in.readInt();
-            if (insetsTypesLength > 0) {
-                providesInsetsTypes = new int[insetsTypesLength];
-                in.readIntArray(providesInsetsTypes);
-            }
+            mBlurBehindRadius = in.readInt();
+            mWallpaperTouchEventsEnabled = in.readBoolean();
+            providedInsets = in.createTypedArray(InsetsFrameProvider.CREATOR);
+            forciblyShownTypes = in.readInt();
+            paramsForRotation = in.createTypedArray(LayoutParams.CREATOR);
+            mDisplayFlags = in.readInt();
         }
 
         @SuppressWarnings({"PointlessBitwiseExpression"})
@@ -3243,6 +4961,8 @@ public interface WindowManager extends ViewManager {
         /** {@hide} */
         public static final int PREFERRED_REFRESH_RATE_CHANGED = 1 << 21;
         /** {@hide} */
+        public static final int DISPLAY_FLAGS_CHANGED = 1 << 22;
+        /** {@hide} */
         public static final int PREFERRED_DISPLAY_MODE_ID = 1 << 23;
         /** {@hide} */
         public static final int ACCESSIBILITY_ANCHOR_CHANGED = 1 << 24;
@@ -3255,6 +4975,12 @@ public interface WindowManager extends ViewManager {
         public static final int INSET_FLAGS_CHANGED = 1 << 27;
         /** {@hide} */
         public static final int MINIMAL_POST_PROCESSING_PREFERENCE_CHANGED = 1 << 28;
+        /** {@hide} */
+        public static final int BLUR_BEHIND_RADIUS_CHANGED = 1 << 29;
+        /** {@hide} */
+        public static final int PREFERRED_MIN_DISPLAY_REFRESH_RATE = 1 << 30;
+        /** {@hide} */
+        public static final int PREFERRED_MAX_DISPLAY_REFRESH_RATE = 1 << 31;
 
         // internal buffer to backup/restore parameters under compatibility mode.
         private int[] mCompatibilityParamsBackup = null;
@@ -3335,6 +5061,11 @@ public interface WindowManager extends ViewManager {
                 // already have one.
                 token = o.token;
             }
+            if (mWindowContextToken == null) {
+                // NOTE: token only copied if the recipient doesn't
+                // already have one.
+                mWindowContextToken = o.mWindowContextToken;
+            }
             if (packageName == null) {
                 // NOTE: packageName only copied if the recipient doesn't
                 // already have one.
@@ -3381,6 +5112,21 @@ public interface WindowManager extends ViewManager {
                 changes |= PREFERRED_DISPLAY_MODE_ID;
             }
 
+            if (preferredMinDisplayRefreshRate != o.preferredMinDisplayRefreshRate) {
+                preferredMinDisplayRefreshRate = o.preferredMinDisplayRefreshRate;
+                changes |= PREFERRED_MIN_DISPLAY_REFRESH_RATE;
+            }
+
+            if (preferredMaxDisplayRefreshRate != o.preferredMaxDisplayRefreshRate) {
+                preferredMaxDisplayRefreshRate = o.preferredMaxDisplayRefreshRate;
+                changes |= PREFERRED_MAX_DISPLAY_REFRESH_RATE;
+            }
+
+            if (mDisplayFlags != o.mDisplayFlags) {
+                mDisplayFlags = o.mDisplayFlags;
+                changes |= DISPLAY_FLAGS_CHANGED;
+            }
+
             if (systemUiVisibility != o.systemUiVisibility
                     || subtreeSystemUiVisibility != o.subtreeSystemUiVisibility) {
                 systemUiVisibility = o.systemUiVisibility;
@@ -3413,6 +5159,11 @@ public interface WindowManager extends ViewManager {
                 changes |= SURFACE_INSETS_CHANGED;
             }
 
+            if (receiveInsetsIgnoringZOrder != o.receiveInsetsIgnoringZOrder) {
+                receiveInsetsIgnoringZOrder = o.receiveInsetsIgnoringZOrder;
+                changes |= SURFACE_INSETS_CHANGED;
+            }
+
             if (preservePreviousSurfaceInsets != o.preservePreviousSurfaceInsets) {
                 preservePreviousSurfaceInsets = o.preservePreviousSurfaceInsets;
                 changes |= SURFACE_INSETS_CHANGED;
@@ -3438,6 +5189,11 @@ public interface WindowManager extends ViewManager {
             if (preferMinimalPostProcessing != o.preferMinimalPostProcessing) {
                 preferMinimalPostProcessing = o.preferMinimalPostProcessing;
                 changes |= MINIMAL_POST_PROCESSING_PREFERENCE_CHANGED;
+            }
+
+            if (mBlurBehindRadius != o.mBlurBehindRadius) {
+                mBlurBehindRadius = o.mBlurBehindRadius;
+                changes |= BLUR_BEHIND_RADIUS_CHANGED;
             }
 
             // This can't change, it's only set at window creation time.
@@ -3468,12 +5224,55 @@ public interface WindowManager extends ViewManager {
                 changes |= LAYOUT_CHANGED;
             }
 
-            if (!Arrays.equals(providesInsetsTypes, o.providesInsetsTypes)) {
-                providesInsetsTypes = o.providesInsetsTypes;
+            if (!Arrays.equals(providedInsets, o.providedInsets)) {
+                providedInsets = o.providedInsets;
+                changes |= LAYOUT_CHANGED;
+            }
+
+            if (forciblyShownTypes != o.forciblyShownTypes) {
+                forciblyShownTypes = o.forciblyShownTypes;
+                changes |= PRIVATE_FLAGS_CHANGED;
+            }
+
+            if (paramsForRotation != o.paramsForRotation) {
+                if ((changes & LAYOUT_CHANGED) == 0) {
+                    if (paramsForRotation != null && o.paramsForRotation != null
+                            && paramsForRotation.length == o.paramsForRotation.length) {
+                        for (int i = paramsForRotation.length - 1; i >= 0; i--) {
+                            if (hasLayoutDiff(paramsForRotation[i], o.paramsForRotation[i])) {
+                                changes |= LAYOUT_CHANGED;
+                                break;
+                            }
+                        }
+                    } else {
+                        changes |= LAYOUT_CHANGED;
+                    }
+                }
+                paramsForRotation = o.paramsForRotation;
+                checkNonRecursiveParams();
+            }
+
+            if (mWallpaperTouchEventsEnabled != o.mWallpaperTouchEventsEnabled) {
+                mWallpaperTouchEventsEnabled = o.mWallpaperTouchEventsEnabled;
                 changes |= LAYOUT_CHANGED;
             }
 
             return changes;
+        }
+
+        /**
+         * Returns {@code true} if the 2 params may have difference results of
+         * {@link WindowLayout#computeFrames}.
+         */
+        private static boolean hasLayoutDiff(LayoutParams a, LayoutParams b) {
+            return a.width != b.width || a.height != b.height || a.x != b.x || a.y != b.y
+                    || a.horizontalMargin != b.horizontalMargin
+                    || a.verticalMargin != b.verticalMargin
+                    || a.layoutInDisplayCutoutMode != b.layoutInDisplayCutoutMode
+                    || a.gravity != b.gravity || !Arrays.equals(a.providedInsets, b.providedInsets)
+                    || a.mFitInsetsTypes != b.mFitInsetsTypes
+                    || a.mFitInsetsSides != b.mFitInsetsSides
+                    || a.mFitInsetsIgnoringVisibility != b.mFitInsetsIgnoringVisibility;
         }
 
         @Override
@@ -3575,12 +5374,24 @@ public interface WindowManager extends ViewManager {
                 sb.append(" preferredDisplayMode=");
                 sb.append(preferredDisplayModeId);
             }
+            if (preferredMinDisplayRefreshRate != 0) {
+                sb.append(" preferredMinDisplayRefreshRate=");
+                sb.append(preferredMinDisplayRefreshRate);
+            }
+            if (preferredMaxDisplayRefreshRate != 0) {
+                sb.append(" preferredMaxDisplayRefreshRate=");
+                sb.append(preferredMaxDisplayRefreshRate);
+            }
+            if (mDisplayFlags != 0) {
+                sb.append(" displayFlags=0x");
+                sb.append(Integer.toHexString(mDisplayFlags));
+            }
             if (hasSystemUiListeners) {
                 sb.append(" sysuil=");
                 sb.append(hasSystemUiListeners);
             }
             if (inputFeatures != 0) {
-                sb.append(" if=").append(inputFeatureToString(inputFeatures));
+                sb.append(" if=").append(inputFeaturesToString(inputFeatures));
             }
             if (userActivityTimeout >= 0) {
                 sb.append(" userActivityTimeout=").append(userActivityTimeout);
@@ -3596,12 +5407,19 @@ public interface WindowManager extends ViewManager {
                     sb.append(" (!preservePreviousSurfaceInsets)");
                 }
             }
+            if (receiveInsetsIgnoringZOrder) {
+                sb.append(" receive insets ignoring z-order");
+            }
             if (mColorMode != COLOR_MODE_DEFAULT) {
                 sb.append(" colorMode=").append(ActivityInfo.colorModeToString(mColorMode));
             }
             if (preferMinimalPostProcessing) {
                 sb.append(" preferMinimalPostProcessing=");
                 sb.append(preferMinimalPostProcessing);
+            }
+            if (mBlurBehindRadius != 0) {
+                sb.append(" blurBehindRadius=");
+                sb.append(mBlurBehindRadius);
             }
             sb.append(System.lineSeparator());
             sb.append(prefix).append("  fl=").append(
@@ -3645,12 +5463,27 @@ public interface WindowManager extends ViewManager {
                 sb.append(System.lineSeparator());
                 sb.append(prefix).append("  fitIgnoreVis");
             }
-            if (providesInsetsTypes != null) {
+            if (providedInsets != null) {
                 sb.append(System.lineSeparator());
-                sb.append(prefix).append("  insetsTypes=");
-                for (int i = 0; i < providesInsetsTypes.length; ++i) {
-                    if (i > 0) sb.append(' ');
-                    sb.append(InsetsState.typeToString(providesInsetsTypes[i]));
+                sb.append(prefix).append("  providedInsets:");
+                for (int i = 0; i < providedInsets.length; ++i) {
+                    sb.append(System.lineSeparator());
+                    sb.append(prefix).append("    ").append(providedInsets[i]);
+                }
+            }
+            if (forciblyShownTypes != 0) {
+                sb.append(System.lineSeparator());
+                sb.append(prefix).append("  forciblyShownTypes=").append(
+                        WindowInsets.Type.toString(forciblyShownTypes));
+            }
+            if (paramsForRotation != null && paramsForRotation.length != 0) {
+                sb.append(System.lineSeparator());
+                sb.append(prefix).append("  paramsForRotation:");
+                for (int i = 0; i < paramsForRotation.length; ++i) {
+                    // Additional prefix needed for the beginning of the params of the new rotation.
+                    sb.append(System.lineSeparator()).append(prefix).append("    ");
+                    sb.append(Surface.rotationToString(i)).append("=");
+                    sb.append(paramsForRotation[i].toString(prefix + "    "));
                 }
             }
 
@@ -3855,17 +5688,116 @@ public interface WindowManager extends ViewManager {
             }
         }
 
-        private static String inputFeatureToString(int inputFeature) {
-            switch (inputFeature) {
-                case INPUT_FEATURE_DISABLE_POINTER_GESTURES:
-                    return "DISABLE_POINTER_GESTURES";
-                case INPUT_FEATURE_NO_INPUT_CHANNEL:
-                    return "NO_INPUT_CHANNEL";
-                case INPUT_FEATURE_DISABLE_USER_ACTIVITY:
-                    return "DISABLE_USER_ACTIVITY";
-                default:
-                    return Integer.toString(inputFeature);
+        private static String inputFeaturesToString(int inputFeatures) {
+            final List<String> features = new ArrayList<>();
+            if ((inputFeatures & INPUT_FEATURE_NO_INPUT_CHANNEL) != 0) {
+                inputFeatures &= ~INPUT_FEATURE_NO_INPUT_CHANNEL;
+                features.add("INPUT_FEATURE_NO_INPUT_CHANNEL");
             }
+            if ((inputFeatures & INPUT_FEATURE_DISABLE_USER_ACTIVITY) != 0) {
+                inputFeatures &= ~INPUT_FEATURE_DISABLE_USER_ACTIVITY;
+                features.add("INPUT_FEATURE_DISABLE_USER_ACTIVITY");
+            }
+            if ((inputFeatures & INPUT_FEATURE_SPY) != 0) {
+                inputFeatures &= ~INPUT_FEATURE_SPY;
+                features.add("INPUT_FEATURE_SPY");
+            }
+            if (inputFeatures != 0) {
+                features.add(Integer.toHexString(inputFeatures));
+            }
+            return String.join(" | ", features);
         }
+
+        /**
+         * True if the window should consume all pointer events itself, regardless of whether they
+         * are inside of the window. If the window is modal, its touchable region will expand to the
+         * size of its task.
+         * @hide
+         */
+        public boolean isModal() {
+            return (flags & (FLAG_NOT_TOUCH_MODAL | FLAG_NOT_FOCUSABLE)) == 0;
+        }
+    }
+
+    /**
+     * Holds the WM lock for the specified amount of milliseconds.
+     * Intended for use by the tests that need to imitate lock contention.
+     * The token should be obtained by
+     * {@link android.content.pm.PackageManager#getHoldLockToken()}.
+     * @hide
+     */
+    @TestApi
+    default void holdLock(IBinder token, int durationMs) {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Used for testing to check if the system supports TaskSnapshot mechanism.
+     * @hide
+     */
+    @TestApi
+    default boolean isTaskSnapshotSupported() {
+        return false;
+    }
+
+    /**
+     * Registers the frame rate per second count callback for one given task ID.
+     * Each callback can only register for receiving FPS callback for one task id until unregister
+     * is called. If there's no task associated with the given task id,
+     * {@link IllegalArgumentException} will be thrown. Registered callbacks should always be
+     * unregistered via {@link #unregisterTaskFpsCallback(TaskFpsCallback)}
+     * even when the task id has been destroyed.
+     *
+     * @param taskId task id of the task.
+     * @param executor Executor to execute the callback.
+     * @param callback callback to be registered.
+     *
+     * @hide
+     */
+    @SystemApi
+    default void registerTaskFpsCallback(@IntRange(from = 0) int taskId,
+            @NonNull Executor executor,
+            @NonNull TaskFpsCallback callback) {}
+
+    /**
+     * Unregisters the frame rate per second count callback which was registered with
+     * {@link #registerTaskFpsCallback(Executor, int, TaskFpsCallback)}.
+     *
+     * @param callback callback to be unregistered.
+     *
+     * @hide
+     */
+    @SystemApi
+    default void unregisterTaskFpsCallback(@NonNull TaskFpsCallback callback) {}
+
+    /**
+     * Take a snapshot using the same path that's used for Recents. This is used for Testing only.
+     *
+     * @param taskId to take the snapshot of
+     *
+     * @return a bitmap of the screenshot or {@code null} if it was unable to screenshot. The
+     * screenshot can fail if the taskId is invalid or if there's no SurfaceControl associated with
+     * that task.
+     *
+     * @hide
+     */
+    @TestApi
+    @Nullable
+    default Bitmap snapshotTaskForRecents(@IntRange(from = 0) int taskId) {
+        return null;
+    }
+
+    /**
+     * Invoked when a screenshot is taken of the default display to notify registered listeners.
+     *
+     * Should be invoked only by SysUI.
+     *
+     * @param displayId id of the display screenshot.
+     * @return List of ComponentNames corresponding to the activities that were notified.
+     * @hide
+     */
+    @SystemApi
+    default @NonNull List<ComponentName> notifyScreenshotListeners(int displayId) {
+        throw new UnsupportedOperationException();
     }
 }

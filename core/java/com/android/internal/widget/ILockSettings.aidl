@@ -17,6 +17,8 @@
 package com.android.internal.widget;
 
 import android.app.PendingIntent;
+import android.app.RemoteLockscreenValidationResult;
+import android.app.RemoteLockscreenValidationSession;
 import android.app.trust.IStrongAuthTracker;
 import android.os.Bundle;
 import android.security.keystore.recovery.WrappedApplicationKey;
@@ -24,6 +26,8 @@ import android.security.keystore.recovery.KeyChainSnapshot;
 import android.security.keystore.recovery.KeyChainProtectionParams;
 import android.security.keystore.recovery.RecoveryCertPath;
 import com.android.internal.widget.ICheckCredentialProgressCallback;
+import com.android.internal.widget.IWeakEscrowTokenActivatedListener;
+import com.android.internal.widget.IWeakEscrowTokenRemovedListener;
 import com.android.internal.widget.LockscreenCredential;
 import com.android.internal.widget.VerifyCredentialResponse;
 
@@ -47,10 +51,13 @@ interface ILockSettings {
     void resetKeyStore(int userId);
     VerifyCredentialResponse checkCredential(in LockscreenCredential credential, int userId,
             in ICheckCredentialProgressCallback progressCallback);
-    VerifyCredentialResponse verifyCredential(in LockscreenCredential credential, long challenge, int userId);
-    VerifyCredentialResponse verifyTiedProfileChallenge(in LockscreenCredential credential, long challenge, int userId);
-    boolean checkVoldPassword(int userId);
+    VerifyCredentialResponse verifyCredential(in LockscreenCredential credential, int userId, int flags);
+    VerifyCredentialResponse verifyTiedProfileChallenge(in LockscreenCredential credential, int userId, int flags);
+    VerifyCredentialResponse verifyGatekeeperPasswordHandle(long gatekeeperPasswordHandle, long challenge, int userId);
+    void removeGatekeeperPasswordHandle(long gatekeeperPasswordHandle);
     int getCredentialType(int userId);
+    int getPinLength(int userId);
+    boolean refreshStoredPinLength(int userId);
     byte[] getHashFactor(in LockscreenCredential currentCredential, int userId);
     void setSeparateProfileChallengeEnabled(int userId, boolean enabled, in LockscreenCredential managedUserPassword);
     boolean getSeparateProfileChallengeEnabled(int userId);
@@ -90,7 +97,15 @@ interface ILockSettings {
             in byte[] recoveryKeyBlob,
             in List<WrappedApplicationKey> applicationKeys);
     void closeSession(in String sessionId);
+    RemoteLockscreenValidationSession startRemoteLockscreenValidation();
+    RemoteLockscreenValidationResult validateRemoteLockscreen(in byte[] encryptedCredential);
     boolean hasSecureLockScreen();
     boolean tryUnlockWithCachedUnifiedChallenge(int userId);
     void removeCachedUnifiedChallenge(int userId);
+    boolean registerWeakEscrowTokenRemovedListener(in IWeakEscrowTokenRemovedListener listener);
+    boolean unregisterWeakEscrowTokenRemovedListener(in IWeakEscrowTokenRemovedListener listener);
+    long addWeakEscrowToken(in byte[] token, int userId, in IWeakEscrowTokenActivatedListener callback);
+    boolean removeWeakEscrowToken(long handle, int userId);
+    boolean isWeakEscrowTokenActive(long handle, int userId);
+    boolean isWeakEscrowTokenValid(long handle, in byte[] token, int userId);
 }

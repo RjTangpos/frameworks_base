@@ -87,7 +87,7 @@ abstract class KeyStoreCryptoOperationUtils {
         // specific sensor (the one that hasn't changed), and 2) currently the only
         // signal to developers is the UserNotAuthenticatedException, which doesn't
         // indicate a specific sensor.
-        boolean canUnlockViaBiometrics = true;
+        boolean canUnlockViaBiometrics = biometricSids.length > 0;
         for (long sid : biometricSids) {
             if (!keySids.contains(sid)) {
                 canUnlockViaBiometrics = false;
@@ -211,7 +211,7 @@ abstract class KeyStoreCryptoOperationUtils {
         } else {
             // Keystore won't give us an operation challenge if the operation doesn't
             // need user authorization. So we make our own.
-            return Math.randomLongInternal();
+            return getRng().nextLong();
         }
     }
 }

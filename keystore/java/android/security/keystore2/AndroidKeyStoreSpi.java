@@ -16,8 +16,11 @@
 
 package android.security.keystore2;
 
+import static android.security.keystore2.AndroidKeyStoreCipherSpiBase.DEFAULT_MGF1_DIGEST;
+
 import android.annotation.NonNull;
 import android.hardware.biometrics.BiometricManager;
+import android.hardware.security.keymint.EcCurve;
 import android.hardware.security.keymint.HardwareAuthenticatorType;
 import android.hardware.security.keymint.KeyParameter;
 import android.hardware.security.keymint.SecurityLevel;
@@ -30,7 +33,6 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyPermanentlyInvalidatedException;
 import android.security.keystore.KeyProperties;
 import android.security.keystore.KeyProtection;
-import android.security.keystore.KeymasterUtils;
 import android.security.keystore.SecureKeyImportUnavailableException;
 import android.security.keystore.WrappedKeyEntry;
 import android.system.keystore2.AuthenticatorSpec;
@@ -41,6 +43,8 @@ import android.system.keystore2.KeyEntryResponse;
 import android.system.keystore2.KeyMetadata;
 import android.system.keystore2.ResponseCode;
 import android.util.Log;
+
+import com.android.internal.annotations.VisibleForTesting;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -63,16 +67,23 @@ import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.interfaces.ECKey;
+import java.security.interfaces.ECPrivateKey;
+import java.security.interfaces.EdECKey;
+import java.security.interfaces.EdECPrivateKey;
+import java.security.interfaces.XECKey;
+import java.security.interfaces.XECPrivateKey;
+import java.security.spec.AlgorithmParameterSpec;
+import java.security.spec.ECParameterSpec;
+import java.security.spec.NamedParameterSpec;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Date;
 import java.util.Enumeration;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Set;
+import java.util.NoSuchElementException;
 
 import javax.crypto.SecretKey;
 
@@ -510,6 +521,28 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
                         KeymasterDefs.KM_TAG_PADDING,
                         padding
                 ));
+                if (padding == KeymasterDefs.KM_PAD_RSA_OAEP) {
+                    if (spec.isDigestsSpecified()) {
+                        boolean hasDefaultMgf1DigestBeenAdded = false;
+                        for (String digest : spec.getDigests()) {
+                            importArgs.add(KeyStore2ParameterUtils.makeEnum(
+                                    KeymasterDefs.KM_TAG_RSA_OAEP_MGF_DIGEST,
+                                    KeyProperties.Digest.toKeymaster(digest)
+                            ));
+                            hasDefaultMgf1DigestBeenAdded |= digest.equals(DEFAULT_MGF1_DIGEST);
+                        }
+                        /* Because of default MGF1 digest is SHA-1. It has to be added in Key
+                         * characteristics. Otherwise, crypto operations will fail with Incompatible
+                         * MGF1 digest.
+                         */
+                        if (!hasDefaultMgf1DigestBeenAdded) {
+                            importArgs.add(KeyStore2ParameterUtils.makeEnum(
+                                    KeymasterDefs.KM_TAG_RSA_OAEP_MGF_DIGEST,
+                                    KeyProperties.Digest.toKeymaster(DEFAULT_MGF1_DIGEST)
+                            ));
+                        }
+                    }
+                }
             }
             for (String padding : spec.getSignaturePaddings()) {
                 importArgs.add(KeyStore2ParameterUtils.makeEnum(
@@ -541,6 +574,14 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
                         spec.getMaxUsageCount()
                 ));
             }
+            if (KeymasterDefs.KM_ALGORITHM_EC
+                    == KeyProperties.KeyAlgorithm.toKeymasterAsymmetricKeyAlgorithm(
+                            key.getAlgorithm())) {
+                importArgs.add(KeyStore2ParameterUtils.makeEnum(
+                        KeymasterDefs.KM_TAG_EC_CURVE,
+                        getKeymasterEcCurve(key)
+                ));
+            }
         } catch (IllegalArgumentException | IllegalStateException e) {
             throw new KeyStoreException(e);
         }
@@ -566,6 +607,31 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         }
     }
 
+    private int getKeymasterEcCurve(PrivateKey key) {
+        if (key instanceof ECKey) {
+            ECParameterSpec param = ((ECPrivateKey) key).getParams();
+            int kmECCurve = KeymasterUtils.getKeymasterEcCurve(KeymasterUtils.getCurveName(param));
+            if (kmECCurve >= 0) {
+                return kmECCurve;
+            }
+        } else if (key instanceof XECKey) {
+            AlgorithmParameterSpec param = ((XECPrivateKey) key).getParams();
+            if (param.equals(NamedParameterSpec.X25519)) {
+                return EcCurve.CURVE_25519;
+            }
+        } else if (key.getAlgorithm().equals("XDH")) {
+            // TODO com.android.org.conscrypt.OpenSSLX25519PrivateKey does not implement XECKey,
+            //  this case is not required once it implements XECKey interface(b/214203951).
+            return EcCurve.CURVE_25519;
+        } else if (key instanceof EdECKey) {
+            AlgorithmParameterSpec param = ((EdECPrivateKey) key).getParams();
+            if (param.equals(NamedParameterSpec.ED25519)) {
+                return EcCurve.CURVE_25519;
+            }
+        }
+        throw new IllegalArgumentException("Unexpected Key " + key.getClass().getName());
+    }
+
     private static void assertCanReplace(String alias, @Domain int targetDomain,
             int targetNamespace, KeyDescriptor descriptor)
             throws KeyStoreException {
@@ -578,7 +644,7 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         //
         // Note: mNamespace == KeyProperties.NAMESPACE_APPLICATION implies that the target domain
         // is Domain.APP and Domain.SELINUX is the target domain otherwise.
-        if (alias != descriptor.alias
+        if (!alias.equals(descriptor.alias)
                 || descriptor.domain != targetDomain
                 || (descriptor.domain == Domain.SELINUX && descriptor.nspace != targetNamespace)) {
             throw new KeyStoreException("Can only replace keys with same alias: " + alias
@@ -600,8 +666,6 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         }
         KeyProtection params = (KeyProtection) param;
 
-        @SecurityLevel int securityLevel = params.isStrongBoxBacked() ? SecurityLevel.STRONGBOX :
-                SecurityLevel.TRUSTED_ENVIRONMENT;
         @Domain int targetDomain = (getTargetDomain());
 
         if (key instanceof AndroidKeyStoreSecretKey) {
@@ -784,6 +848,12 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
                         params.getMaxUsageCount()
                 ));
             }
+
+            if (params.isRollbackResistant()) {
+                importArgs.add(KeyStore2ParameterUtils.makeBool(
+                        KeymasterDefs.KM_TAG_ROLLBACK_RESISTANT
+                ));
+            }
         } catch (IllegalArgumentException | IllegalStateException e) {
             throw new KeyStoreException(e);
         }
@@ -792,6 +862,9 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         if (params.isCriticalToDeviceEncryption()) {
             flags |= IKeystoreSecurityLevel.KEY_FLAG_AUTH_BOUND_WITHOUT_CRYPTOGRAPHIC_LSKF_BINDING;
         }
+
+        @SecurityLevel int securityLevel = params.isStrongBoxBacked() ? SecurityLevel.STRONGBOX :
+                SecurityLevel.TRUSTED_ENVIRONMENT;
 
         try {
             KeyStoreSecurityLevel securityLevelInterface = mKeyStore.getSecurityLevel(
@@ -974,27 +1047,22 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         }
     }
 
-    private Set<String> getUniqueAliases() {
-
+    private KeyDescriptor[] getAliasesBatch(String startPastAlias) {
         try {
-            final KeyDescriptor[] keys = mKeyStore.list(
+            return mKeyStore.listBatch(
                     getTargetDomain(),
-                    mNamespace
+                    mNamespace,
+                    startPastAlias
             );
-            final Set<String> aliases = new HashSet<>(keys.length);
-            for (KeyDescriptor d : keys) {
-                aliases.add(d.alias);
-            }
-            return aliases;
         } catch (android.security.KeyStoreException e) {
             Log.e(TAG, "Failed to list keystore entries.", e);
-            return null;
+            return new KeyDescriptor[0];
         }
     }
 
     @Override
     public Enumeration<String> engineAliases() {
-        return Collections.enumeration(getUniqueAliases());
+        return new KeyEntriesEnumerator();
     }
 
     @Override
@@ -1005,12 +1073,18 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
 
         return getKeyMetadata(alias) != null;
     }
-
     @Override
     public int engineSize() {
-        return getUniqueAliases().size();
+        try {
+            return mKeyStore.getNumberOfEntries(
+                    getTargetDomain(),
+                    mNamespace
+            );
+        } catch (android.security.KeyStoreException e) {
+            Log.e(TAG, "Failed to get the number of keystore entries.", e);
+            return 0;
+        }
     }
-
     @Override
     public boolean engineIsKeyEntry(String alias) {
         return isKeyEntry(alias);
@@ -1100,6 +1174,17 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         return caAlias;
     }
 
+    /**
+     * Used by Tests to initialize with a fake KeyStore2.
+     * @hide
+     * @param keystore
+     */
+    @VisibleForTesting
+    public void initForTesting(KeyStore2 keystore) {
+        mKeyStore = keystore;
+        mNamespace = KeyProperties.NAMESPACE_APPLICATION;
+    }
+
     @Override
     public void engineStore(OutputStream stream, char[] password) throws IOException,
             NoSuchAlgorithmException, CertificateException {
@@ -1170,6 +1255,40 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
             throw new KeyStoreException(
                     "Entry must be a PrivateKeyEntry, SecretKeyEntry, WrappedKeyEntry "
                             + "or TrustedCertificateEntry; was " + entry);
+        }
+    }
+
+    private class KeyEntriesEnumerator implements Enumeration<String> {
+        private KeyDescriptor[] mCurrentBatch;
+        private int mCurrentEntry = 0;
+        private String mLastAlias = null;
+        private KeyEntriesEnumerator() {
+            getAndValidateNextBatch();
+        }
+
+        private void getAndValidateNextBatch() {
+            mCurrentBatch = getAliasesBatch(mLastAlias);
+            mCurrentEntry = 0;
+        }
+
+        public boolean hasMoreElements() {
+            return (mCurrentBatch != null) && (mCurrentBatch.length > 0);
+        }
+
+        public String nextElement() {
+            if ((mCurrentBatch == null) || (mCurrentBatch.length == 0)) {
+                throw new NoSuchElementException("Error while fetching entries.");
+            }
+            final KeyDescriptor currentEntry = mCurrentBatch[mCurrentEntry];
+            mLastAlias = currentEntry.alias;
+
+            mCurrentEntry++;
+            // This was the last entry in the batch.
+            if (mCurrentEntry >= mCurrentBatch.length) {
+                getAndValidateNextBatch();
+            }
+
+            return mLastAlias;
         }
     }
 }

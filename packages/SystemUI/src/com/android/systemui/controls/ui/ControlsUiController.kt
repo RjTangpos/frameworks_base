@@ -17,20 +17,33 @@
 package com.android.systemui.controls.ui
 
 import android.content.ComponentName
+import android.content.Context
 import android.service.controls.Control
 import android.service.controls.actions.ControlAction
 import android.view.ViewGroup
+import com.android.systemui.controls.controller.StructureInfo
 
 interface ControlsUiController {
-    val available: Boolean
-
     companion object {
         public const val TAG = "ControlsUiController"
         public const val EXTRA_ANIMATE = "extra_animate"
+        public const val EXIT_TO_DREAM = "extra_exit_to_dream"
     }
 
-    fun show(parent: ViewGroup, dismissGlobalActions: Runnable)
-    fun hide()
+    fun show(parent: ViewGroup, onDismiss: Runnable, activityContext: Context)
+
+    /**
+     * Hide the controls content if it's attached to this parent.
+     */
+    fun hide(parent: ViewGroup)
+
+    val isShowing: Boolean
+
+    /**
+     * Returns the preferred activity to start, depending on if the user has favorited any
+     * controls or whether there are any app providing panels.
+     */
+    fun resolveActivity(): Class<*>
 
     /**
      * Request all open dialogs be closed. Set [immediately] to true to dismiss without
@@ -44,4 +57,47 @@ interface ControlsUiController {
         controlId: String,
         @ControlAction.ResponseResult response: Int
     )
+
+    /**
+     * Returns the element that is currently preferred by the user.
+     *
+     * This element will be the one that appears when the user first opens the controls activity.
+     */
+    fun getPreferredSelectedItem(structures: List<StructureInfo>): SelectedItem
+
+    fun onSizeChange()
+}
+
+sealed class SelectedItem {
+
+    abstract val name: CharSequence
+    abstract val hasControls: Boolean
+    abstract val componentName: ComponentName
+
+    /**
+     * Represents the currently selected item for a structure.
+     */
+    data class StructureItem(val structure: StructureInfo) : SelectedItem() {
+        override val name: CharSequence = structure.structure
+        override val hasControls: Boolean = structure.controls.isNotEmpty()
+        override val componentName: ComponentName = structure.componentName
+    }
+
+    /**
+     * Represents the currently selected item for a service that provides a panel activity.
+     *
+     * The [componentName] is that of the service, as that is the expected identifier that should
+     * not change (to always provide proper migration).
+     */
+    data class PanelItem(
+            val appName: CharSequence,
+            override val componentName:
+            ComponentName
+    ) : SelectedItem() {
+        override val name: CharSequence = appName
+        override val hasControls: Boolean = true
+    }
+    companion object {
+        val EMPTY_SELECTION: SelectedItem = StructureItem(StructureInfo.EMPTY_STRUCTURE)
+    }
 }

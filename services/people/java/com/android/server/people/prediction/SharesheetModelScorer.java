@@ -20,22 +20,18 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.usage.UsageEvents;
-import android.provider.DeviceConfig;
 import android.util.ArrayMap;
 import android.util.Pair;
 import android.util.Range;
 import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.app.ChooserActivity;
-import com.android.internal.config.sysui.SystemUiDeviceConfigFlags;
 import com.android.server.people.data.AppUsageStatsData;
 import com.android.server.people.data.DataManager;
 import com.android.server.people.data.Event;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +45,6 @@ class SharesheetModelScorer {
     private static final String TAG = "SharesheetModelScorer";
     private static final boolean DEBUG = false;
     private static final Integer RECENCY_SCORE_COUNT = 6;
-    private static final Integer NATIVE_RANK_COUNT = 2;
     private static final float RECENCY_INITIAL_BASE_SCORE = 0.4F;
     private static final float RECENCY_SCORE_INITIAL_DECAY = 0.05F;
     private static final float RECENCY_SCORE_SUBSEQUENT_DECAY = 0.02F;
@@ -59,8 +54,6 @@ class SharesheetModelScorer {
     private static final float FREQUENTLY_USED_APP_SCORE_INITIAL_DECAY = 0.3F;
     @VisibleForTesting
     static final float FOREGROUND_APP_WEIGHT = 0F;
-    @VisibleForTesting
-    static final String CHOOSER_ACTIVITY = ChooserActivity.class.getSimpleName();
 
     // Keep constructor private to avoid class being instantiated.
     private SharesheetModelScorer() {
@@ -173,84 +166,14 @@ class SharesheetModelScorer {
      */
     static void computeScoreForAppShare(List<ShareTargetPredictor.ShareTarget> shareTargets,
             int shareEventType, int targetsLimit, long now, @NonNull DataManager dataManager,
-            @UserIdInt int callingUserId) {
+            @UserIdInt int callingUserId, @Nullable String chooserActivity) {
         computeScore(shareTargets, shareEventType, now);
-        postProcess(shareTargets, targetsLimit, dataManager, callingUserId);
-    }
-
-    /**
-     * Computes ranking score for direct sharing. Update
-     * {@link ShareTargetPredictor.ShareTargetScore}.
-     */
-    static void computeScoreForDirectShare(List<ShareTargetPredictor.ShareTarget> shareTargets,
-            int shareEventType, long now) {
-        computeScore(shareTargets, shareEventType, now);
-        promoteTopNativeRankedShortcuts(shareTargets);
-    }
-
-    /**
-     * Promotes top (NATIVE_RANK_COUNT) shortcuts for each package and class, as per shortcut native
-     * ranking provided by apps.
-     */
-    private static void promoteTopNativeRankedShortcuts(
-            List<ShareTargetPredictor.ShareTarget> shareTargets) {
-        float topShortcutBonus = DeviceConfig.getFloat(
-                DeviceConfig.NAMESPACE_SYSTEMUI,
-                SystemUiDeviceConfigFlags.TOP_NATIVE_RANKED_SHARING_SHORTCUTS_BOOSTER,
-                0f);
-        float secondTopShortcutBonus = DeviceConfig.getFloat(
-                DeviceConfig.NAMESPACE_SYSTEMUI,
-                SystemUiDeviceConfigFlags.NON_TOP_NATIVE_RANKED_SHARING_SHORTCUTS_BOOSTER,
-                0f);
-        // Populates a map which key is a packageName and className pair, value is a max heap
-        // containing top (NATIVE_RANK_COUNT) shortcuts as per shortcut native ranking provided
-        // by apps.
-        Map<Pair<String, String>, PriorityQueue<ShareTargetPredictor.ShareTarget>>
-                topNativeRankedShareTargetMap = new ArrayMap<>();
-        for (ShareTargetPredictor.ShareTarget shareTarget : shareTargets) {
-            Pair<String, String> key = new Pair<>(shareTarget.getAppTarget().getPackageName(),
-                    shareTarget.getAppTarget().getClassName());
-            if (!topNativeRankedShareTargetMap.containsKey(key)) {
-                topNativeRankedShareTargetMap.put(key,
-                        new PriorityQueue<>(NATIVE_RANK_COUNT,
-                                Collections.reverseOrder(Comparator.comparingInt(
-                                        p -> p.getAppTarget().getRank()))));
-            }
-            PriorityQueue<ShareTargetPredictor.ShareTarget> rankMaxHeap =
-                    topNativeRankedShareTargetMap.get(key);
-            if (rankMaxHeap.isEmpty() || shareTarget.getAppTarget().getRank()
-                    < rankMaxHeap.peek().getAppTarget().getRank()) {
-                if (rankMaxHeap.size() == NATIVE_RANK_COUNT) {
-                    rankMaxHeap.poll();
-                }
-                rankMaxHeap.offer(shareTarget);
-            }
-        }
-        for (PriorityQueue<ShareTargetPredictor.ShareTarget> maxHeap :
-                topNativeRankedShareTargetMap.values()) {
-            while (!maxHeap.isEmpty()) {
-                ShareTargetPredictor.ShareTarget target = maxHeap.poll();
-                float bonus = maxHeap.isEmpty() ? topShortcutBonus : secondTopShortcutBonus;
-                target.setScore(probOR(target.getScore(), bonus));
-
-                if (DEBUG) {
-                    Slog.d(TAG, String.format(
-                            "SharesheetModel: promote top shortcut as per native ranking,"
-                                    + "packageName: %s, className: %s, shortcutId: %s, bonus:%.2f,"
-                                    + "total:%.2f",
-                            target.getAppTarget().getPackageName(),
-                            target.getAppTarget().getClassName(),
-                            target.getAppTarget().getShortcutInfo() != null
-                                    ? target.getAppTarget().getShortcutInfo().getId() : null,
-                            bonus,
-                            target.getScore()));
-                }
-            }
-        }
+        postProcess(shareTargets, targetsLimit, dataManager, callingUserId, chooserActivity);
     }
 
     private static void postProcess(List<ShareTargetPredictor.ShareTarget> shareTargets,
-            int targetsLimit, @NonNull DataManager dataManager, @UserIdInt int callingUserId) {
+            int targetsLimit, @NonNull DataManager dataManager, @UserIdInt int callingUserId,
+            @Nullable String chooserActivity) {
         // Populates a map which key is package name and value is list of shareTargets descended
         // on total score.
         Map<String, List<ShareTargetPredictor.ShareTarget>> shareTargetMap = new ArrayMap<>();
@@ -267,7 +190,7 @@ class SharesheetModelScorer {
             }
             targetsList.add(index, shareTarget);
         }
-        promoteForegroundApp(shareTargetMap, dataManager, callingUserId);
+        promoteForegroundApp(shareTargetMap, dataManager, callingUserId, chooserActivity);
         promoteMostChosenAndFrequentlyUsedApps(shareTargetMap, targetsLimit, dataManager,
                 callingUserId);
     }
@@ -347,9 +270,10 @@ class SharesheetModelScorer {
      */
     private static void promoteForegroundApp(
             Map<String, List<ShareTargetPredictor.ShareTarget>> shareTargetMap,
-            @NonNull DataManager dataManager, @UserIdInt int callingUserId) {
+            @NonNull DataManager dataManager, @UserIdInt int callingUserId,
+            @Nullable String chooserActivity) {
         String sharingForegroundApp = findSharingForegroundApp(shareTargetMap, dataManager,
-                callingUserId);
+                callingUserId, chooserActivity);
         if (sharingForegroundApp != null) {
             ShareTargetPredictor.ShareTarget target = shareTargetMap.get(sharingForegroundApp).get(
                     0);
@@ -372,7 +296,8 @@ class SharesheetModelScorer {
     @Nullable
     private static String findSharingForegroundApp(
             Map<String, List<ShareTargetPredictor.ShareTarget>> shareTargetMap,
-            @NonNull DataManager dataManager, @UserIdInt int callingUserId) {
+            @NonNull DataManager dataManager, @UserIdInt int callingUserId,
+            @Nullable String chooserActivity) {
         String sharingForegroundApp = null;
         long now = System.currentTimeMillis();
         List<UsageEvents.Event> events = dataManager.queryAppMovingToForegroundEvents(
@@ -381,8 +306,8 @@ class SharesheetModelScorer {
         for (int i = events.size() - 1; i >= 0; i--) {
             String className = events.get(i).getClassName();
             String packageName = events.get(i).getPackageName();
-            if (packageName == null || (className != null && className.contains(CHOOSER_ACTIVITY))
-                    || packageName.contains(CHOOSER_ACTIVITY)) {
+            if (packageName == null || (className != null && chooserActivity != null
+                    && className.contains(chooserActivity))) {
                 continue;
             }
             if (sourceApp == null) {

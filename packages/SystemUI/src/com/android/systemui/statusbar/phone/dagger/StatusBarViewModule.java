@@ -16,20 +16,112 @@
 
 package com.android.systemui.statusbar.phone.dagger;
 
-import com.android.systemui.statusbar.phone.NotificationPanelView;
-import com.android.systemui.statusbar.phone.NotificationShadeWindowView;
+import com.android.keyguard.KeyguardUpdateMonitor;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FeatureFlags;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.shade.ShadeExpansionStateManager;
+import com.android.systemui.shade.ShadeViewController;
+import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.statusbar.OperatorNameViewController;
+import com.android.systemui.statusbar.events.SystemStatusAnimationScheduler;
+import com.android.systemui.statusbar.phone.NotificationIconAreaController;
+import com.android.systemui.statusbar.phone.StatusBarHideIconsForBouncerManager;
+import com.android.systemui.statusbar.phone.StatusBarIconController;
+import com.android.systemui.statusbar.phone.StatusBarLocationPublisher;
+import com.android.systemui.statusbar.phone.fragment.CollapsedStatusBarFragment;
+import com.android.systemui.statusbar.phone.fragment.CollapsedStatusBarFragmentLogger;
+import com.android.systemui.statusbar.phone.fragment.dagger.StatusBarFragmentComponent;
+import com.android.systemui.statusbar.phone.ongoingcall.OngoingCallController;
+import com.android.systemui.statusbar.pipeline.shared.ui.binder.CollapsedStatusBarViewBinder;
+import com.android.systemui.statusbar.pipeline.shared.ui.viewmodel.CollapsedStatusBarViewModel;
+import com.android.systemui.statusbar.policy.KeyguardStateController;
+import com.android.systemui.statusbar.window.StatusBarWindowStateController;
+import com.android.systemui.util.CarrierConfigTracker;
+import com.android.systemui.util.settings.SecureSettings;
 
 import dagger.Module;
 import dagger.Provides;
 
-@Module
-public abstract class StatusBarViewModule {
-    /** */
-    @Provides
-    @StatusBarComponent.StatusBarScope
-    public static NotificationPanelView getNotificationPanelView(
-            NotificationShadeWindowView notificationShadeWindowView) {
-        return notificationShadeWindowView.getNotificationPanelView();
-    }
+import java.util.concurrent.Executor;
 
+import javax.inject.Named;
+
+/**
+ * A module for {@link CentralSurfacesComponent.CentralSurfacesScope} components.
+ *
+ * @deprecated CentralSurfacesScope will be removed shortly (b/277762009). Classes should be
+ *   annotated with @SysUISingleton instead.
+ */
+@Module(subcomponents = StatusBarFragmentComponent.class)
+@Deprecated
+public abstract class StatusBarViewModule {
+
+    public static final String STATUS_BAR_FRAGMENT = "status_bar_fragment";
+
+    /**
+     * Creates a new {@link CollapsedStatusBarFragment}.
+     *
+     * **IMPORTANT**: This method intentionally does not have
+     * {@link CentralSurfacesComponent.CentralSurfacesScope}, which means a new fragment *will* be
+     * created each time this method is called. This is intentional because we need fragments to
+     * re-created in certain lifecycle scenarios.
+     *
+     * This provider is {@link Named} such that it does not conflict with the provider inside of
+     * {@link StatusBarFragmentComponent}.
+     */
+    @Provides
+    @Named(STATUS_BAR_FRAGMENT)
+    public static CollapsedStatusBarFragment createCollapsedStatusBarFragment(
+            StatusBarFragmentComponent.Factory statusBarFragmentComponentFactory,
+            OngoingCallController ongoingCallController,
+            SystemStatusAnimationScheduler animationScheduler,
+            StatusBarLocationPublisher locationPublisher,
+            NotificationIconAreaController notificationIconAreaController,
+            ShadeExpansionStateManager shadeExpansionStateManager,
+            FeatureFlags featureFlags,
+            StatusBarIconController statusBarIconController,
+            StatusBarIconController.DarkIconManager.Factory darkIconManagerFactory,
+            CollapsedStatusBarViewModel collapsedStatusBarViewModel,
+            CollapsedStatusBarViewBinder collapsedStatusBarViewBinder,
+            StatusBarHideIconsForBouncerManager statusBarHideIconsForBouncerManager,
+            KeyguardStateController keyguardStateController,
+            ShadeViewController shadeViewController,
+            StatusBarStateController statusBarStateController,
+            CommandQueue commandQueue,
+            CarrierConfigTracker carrierConfigTracker,
+            CollapsedStatusBarFragmentLogger collapsedStatusBarFragmentLogger,
+            OperatorNameViewController.Factory operatorNameViewControllerFactory,
+            SecureSettings secureSettings,
+            @Main Executor mainExecutor,
+            DumpManager dumpManager,
+            StatusBarWindowStateController statusBarWindowStateController,
+            KeyguardUpdateMonitor keyguardUpdateMonitor
+    ) {
+        return new CollapsedStatusBarFragment(statusBarFragmentComponentFactory,
+                ongoingCallController,
+                animationScheduler,
+                locationPublisher,
+                notificationIconAreaController,
+                shadeExpansionStateManager,
+                featureFlags,
+                statusBarIconController,
+                darkIconManagerFactory,
+                collapsedStatusBarViewModel,
+                collapsedStatusBarViewBinder,
+                statusBarHideIconsForBouncerManager,
+                keyguardStateController,
+                shadeViewController,
+                statusBarStateController,
+                commandQueue,
+                carrierConfigTracker,
+                collapsedStatusBarFragmentLogger,
+                operatorNameViewControllerFactory,
+                secureSettings,
+                mainExecutor,
+                dumpManager,
+                statusBarWindowStateController,
+                keyguardUpdateMonitor);
+    }
 }

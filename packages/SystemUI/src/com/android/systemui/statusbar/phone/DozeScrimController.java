@@ -18,26 +18,21 @@ package com.android.systemui.statusbar.phone;
 
 import android.annotation.NonNull;
 import android.os.Handler;
-import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.systemui.Dependency;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.doze.DozeHost;
 import com.android.systemui.doze.DozeLog;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController.StateListener;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Controller which handles all the doze animations of the scrims.
  */
-@Singleton
+@SysUISingleton
 public class DozeScrimController implements StateListener {
-    private static final String TAG = "DozeScrimController";
-    private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
-
     private final DozeLog mDozeLog;
     private final DozeParameters mDozeParameters;
     private final Handler mHandler = new Handler();
@@ -45,28 +40,26 @@ public class DozeScrimController implements StateListener {
     private boolean mDozing;
     private DozeHost.PulseCallback mPulseCallback;
     private int mPulseReason;
-    private boolean mFullyPulsing;
 
     private final ScrimController.Callback mScrimCallback = new ScrimController.Callback() {
         @Override
         public void onDisplayBlanked() {
-            if (DEBUG) {
-                Log.d(TAG, "Pulse in, mDozing=" + mDozing + " mPulseReason="
-                        + DozeLog.reasonToString(mPulseReason));
-            }
             if (!mDozing) {
+                mDozeLog.tracePulseDropped("onDisplayBlanked - not dozing");
                 return;
             }
 
-            // Signal that the pulse is ready to turn the screen on and draw.
-            pulseStarted();
+            if (mPulseCallback != null) {
+                // Signal that the pulse is ready to turn the screen on and draw.
+                mDozeLog.tracePulseStart(mPulseReason);
+                mPulseCallback.onPulseStarted();
+            }
         }
 
         @Override
         public void onFinished() {
-            if (DEBUG) {
-                Log.d(TAG, "Pulse in finished, mDozing=" + mDozing);
-            }
+            mDozeLog.tracePulseEvent("scrimCallback-onFinished", mDozing, mPulseReason);
+
             if (!mDozing) {
                 return;
             }
@@ -79,7 +72,6 @@ public class DozeScrimController implements StateListener {
                 mHandler.postDelayed(mPulseOutExtended,
                         mDozeParameters.getPulseVisibleDurationExtended());
             }
-            mFullyPulsing = true;
         }
 
         /**
@@ -92,10 +84,14 @@ public class DozeScrimController implements StateListener {
     };
 
     @Inject
-    public DozeScrimController(DozeParameters dozeParameters, DozeLog dozeLog) {
+    public DozeScrimController(
+            DozeParameters dozeParameters,
+            DozeLog dozeLog,
+            StatusBarStateController statusBarStateController
+    ) {
         mDozeParameters = dozeParameters;
-        //Never expected to be destroyed
-        Dependency.get(StatusBarStateController.class).addCallback(this);
+        // Never expected to be destroyed
+        statusBarStateController.addCallback(this);
         mDozeLog = dozeLog;
     }
 
@@ -115,12 +111,14 @@ public class DozeScrimController implements StateListener {
         }
 
         if (!mDozing || mPulseCallback != null) {
-            if (DEBUG) {
-                Log.d(TAG, "Pulse supressed. Dozing: " + mDozeParameters + " had callback? "
-                        + (mPulseCallback != null));
-            }
             // Pulse suppressed.
             callback.onPulseFinished();
+            if (!mDozing) {
+                mDozeLog.tracePulseDropped("pulse - device isn't dozing");
+            } else {
+                mDozeLog.tracePulseDropped("pulse - already has pulse callback mPulseCallback="
+                        + mPulseCallback);
+            }
             return;
         }
 
@@ -131,9 +129,7 @@ public class DozeScrimController implements StateListener {
     }
 
     public void pulseOutNow() {
-        if (mPulseCallback != null && mFullyPulsing) {
-            mPulseOut.run();
-        }
+        mPulseOut.run();
     }
 
     public boolean isPulsing() {
@@ -158,24 +154,16 @@ public class DozeScrimController implements StateListener {
 
     private void cancelPulsing() {
         if (mPulseCallback != null) {
-            if (DEBUG) Log.d(TAG, "Cancel pulsing");
-            mFullyPulsing = false;
+            mDozeLog.tracePulseEvent("cancel", mDozing, mPulseReason);
             mHandler.removeCallbacks(mPulseOut);
             mHandler.removeCallbacks(mPulseOutExtended);
             pulseFinished();
         }
     }
 
-    private void pulseStarted() {
-        mDozeLog.tracePulseStart(mPulseReason);
-        if (mPulseCallback != null) {
-            mPulseCallback.onPulseStarted();
-        }
-    }
-
     private void pulseFinished() {
-        mDozeLog.tracePulseFinish();
         if (mPulseCallback != null) {
+            mDozeLog.tracePulseFinish();
             mPulseCallback.onPulseFinished();
             mPulseCallback = null;
         }
@@ -192,10 +180,9 @@ public class DozeScrimController implements StateListener {
     private final Runnable mPulseOut = new Runnable() {
         @Override
         public void run() {
-            mFullyPulsing = false;
             mHandler.removeCallbacks(mPulseOut);
             mHandler.removeCallbacks(mPulseOutExtended);
-            if (DEBUG) Log.d(TAG, "Pulse out, mDozing=" + mDozing);
+            mDozeLog.tracePulseEvent("out", mDozing, mPulseReason);
             if (!mDozing) return;
             pulseFinished();
         }
@@ -212,6 +199,10 @@ public class DozeScrimController implements StateListener {
 
     @Override
     public void onDozingChanged(boolean isDozing) {
+        if (mDozing != isDozing) {
+            mDozeLog.traceDozingChanged(isDozing);
+        }
+
         setDozing(isDozing);
     }
 }

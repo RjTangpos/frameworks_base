@@ -16,14 +16,17 @@
 
 package com.android.systemui.statusbar.notification.row;
 
+import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.animation.Interpolator;
 
+import com.android.app.animation.Interpolators;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.systemui.Interpolators;
+
+import java.util.function.Consumer;
 
 /**
  * A common base class for all views in the notification stack scroller which don't have a
@@ -48,7 +51,7 @@ public abstract class StackScrollerDecorView extends ExpandableView {
     };
 
     private boolean mSecondaryAnimating = false;
-    private final Runnable mSecondaryVisibilityEndRunnable = () -> {
+    private final Consumer<Boolean> mSecondaryVisibilityEndRunnable = (cancelled) -> {
         mSecondaryAnimating = false;
         // If we were on screen, become GONE to avoid touches
         if (mSecondaryView == null) return;
@@ -71,11 +74,6 @@ public abstract class StackScrollerDecorView extends ExpandableView {
         mSecondaryView = findSecondaryView();
         setVisible(false /* nowVisible */, false /* animate */);
         setSecondaryVisible(false /* nowVisible */, false /* animate */);
-    }
-
-    @Override
-    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-        super.onLayout(changed, left, top, right, bottom);
         setOutlineProvider(null);
     }
 
@@ -85,23 +83,31 @@ public abstract class StackScrollerDecorView extends ExpandableView {
     }
 
     /**
-     * Set the content of this view to be visible in an animated way.
-     *
-     * @param contentVisible True if the content should be visible or false if it should be hidden.
+     * @param visible True if we should animate contents visible
      */
-    public void setContentVisible(boolean contentVisible) {
-        setContentVisible(contentVisible, true /* animate */);
+    public void setContentVisible(boolean visible) {
+        setContentVisible(visible, true /* animate */, null /* runAfter */);
     }
+
     /**
-     * Set the content of this view to be visible.
-     * @param contentVisible True if the content should be visible or false if it should be hidden.
-     * @param animate Should an animation be performed.
+     * @param visible True if the contents should be visible
+     * @param animate True if we should fade to new visibility
+     * @param runAfter Runnable to run after visibility updates
      */
-    private void setContentVisible(boolean contentVisible, boolean animate) {
-        if (mContentVisible != contentVisible) {
+    public void setContentVisible(boolean visible, boolean animate, Consumer<Boolean> runAfter) {
+        if (mContentVisible != visible) {
             mContentAnimating = animate;
-            mContentVisible = contentVisible;
-            setViewVisible(mContent, contentVisible, animate, mContentVisibilityEndRunnable);
+            mContentVisible = visible;
+            Consumer<Boolean> endRunnable = (cancelled) -> {
+                mContentVisibilityEndRunnable.run();
+                if (runAfter != null) {
+                    runAfter.accept(cancelled);
+                }
+            };
+            setViewVisible(mContent, visible, animate, endRunnable);
+        } else if (runAfter != null) {
+            // Execute the runAfter runnable immediately if there's no animation to perform.
+            runAfter.accept(true);
         }
 
         if (!mContentAnimating) {
@@ -132,10 +138,10 @@ public abstract class StackScrollerDecorView extends ExpandableView {
                 } else {
                     setWillBeGone(true);
                 }
-                setContentVisible(nowVisible, true /* animate */);
+                setContentVisible(nowVisible, true /* animate */, null /* runAfter */);
             } else {
                 setVisibility(nowVisible ? VISIBLE : GONE);
-                setContentVisible(nowVisible, false /* animate */);
+                setContentVisible(nowVisible, false /* animate */, null /* runAfter */);
                 setWillBeGone(false);
                 notifyHeightChanged(false /* needsAnimation */);
             }
@@ -156,7 +162,7 @@ public abstract class StackScrollerDecorView extends ExpandableView {
         }
 
         if (!mSecondaryAnimating) {
-            mSecondaryVisibilityEndRunnable.run();
+            mSecondaryVisibilityEndRunnable.accept(true /* cancelled */);
         }
     }
 
@@ -185,7 +191,7 @@ public abstract class StackScrollerDecorView extends ExpandableView {
      * @param endRunnable A runnable that is run when the animation is done.
      */
     private void setViewVisible(View view, boolean nowVisible,
-            boolean animate, Runnable endRunnable) {
+            boolean animate, Consumer<Boolean> endRunnable) {
         if (view == null) {
             return;
         }
@@ -201,7 +207,7 @@ public abstract class StackScrollerDecorView extends ExpandableView {
         if (!animate) {
             view.setAlpha(endValue);
             if (endRunnable != null) {
-                endRunnable.run();
+                endRunnable.accept(true);
             }
             return;
         }
@@ -212,21 +218,40 @@ public abstract class StackScrollerDecorView extends ExpandableView {
                 .alpha(endValue)
                 .setInterpolator(interpolator)
                 .setDuration(mDuration)
-                .withEndAction(endRunnable);
+                .setListener(new AnimatorListenerAdapter() {
+                    boolean mCancelled;
+
+                    @Override
+                    public void onAnimationCancel(Animator animation) {
+                        mCancelled = true;
+                    }
+
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        endRunnable.accept(mCancelled);
+                    }
+                });
     }
 
     @Override
     public long performRemoveAnimation(long duration, long delay,
-            float translationDirection, boolean isHeadsUpAnimation, float endLocation,
+            float translationDirection, boolean isHeadsUpAnimation,
             Runnable onFinishedRunnable,
             AnimatorListenerAdapter animationListener) {
         // TODO: Use duration
-        setContentVisible(false);
+        setContentVisible(false, true /* animate */, (cancelled) -> onFinishedRunnable.run());
         return 0;
     }
 
     @Override
     public void performAddAnimation(long delay, long duration, boolean isHeadsUpAppear) {
+        // TODO: use delay and duration
+        setContentVisible(true);
+    }
+
+    @Override
+    public void performAddAnimation(long delay, long duration, boolean isHeadsUpAppear,
+            Runnable endRunnable) {
         // TODO: use delay and duration
         setContentVisible(true);
     }

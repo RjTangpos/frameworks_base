@@ -16,28 +16,13 @@
 
 package com.android.internal.os;
 
+import com.android.internal.power.EnergyConsumerStatsTest;
+
 import org.junit.runner.RunWith;
 import org.junit.runners.Suite;
 
 @RunWith(Suite.class)
 @Suite.SuiteClasses({
-        BatteryStatsCpuTimesTest.class,
-        BatteryStatsBackgroundStatsTest.class,
-        BatteryStatsCounterTest.class,
-        BatteryStatsDualTimerTest.class,
-        BatteryStatsDurationTimerTest.class,
-        BatteryStatsHelperTest.class,
-        BatteryStatsHistoryTest.class,
-        BatteryStatsImplTest.class,
-        BatteryStatsNoteTest.class,
-        BatteryStatsSamplingTimerTest.class,
-        BatteryStatsSensorTest.class,
-        BatteryStatsServTest.class,
-        BatteryStatsStopwatchTimerTest.class,
-        BatteryStatsTimeBaseTest.class,
-        BatteryStatsTimerTest.class,
-        BatteryStatsUidTest.class,
-        BatteryStatsUserLifecycleTests.class,
         KernelCpuProcStringReaderTest.class,
         KernelCpuUidActiveTimeReaderTest.class,
         KernelCpuUidBpfMapReaderTest.class,
@@ -45,13 +30,13 @@ import org.junit.runners.Suite;
         KernelCpuUidFreqTimeReaderTest.class,
         KernelCpuUidUserSysTimeReaderTest.class,
         KernelMemoryBandwidthStatsTest.class,
+        KernelSingleProcessCpuThreadReaderTest.class,
         KernelSingleUidTimeReaderTest.class,
-        KernelWakelockReaderTest.class,
-        LongSamplingCounterTest.class,
-        LongSamplingCounterArrayTest.class,
-        PowerCalculatorTest.class,
-        PowerProfileTest.class
+        LongArrayMultiStateCounterTest.class,
+        LongMultiStateCounterTest.class,
+        PowerProfileTest.class,
+
+        EnergyConsumerStatsTest.class
     })
 public class BatteryStatsTests {
 }
-

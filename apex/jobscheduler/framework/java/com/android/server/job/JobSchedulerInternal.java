@@ -17,7 +17,9 @@
 package com.android.server.job;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.job.JobInfo;
+import android.app.job.JobParameters;
 import android.util.proto.ProtoOutputStream;
 
 import java.util.List;
@@ -29,14 +31,17 @@ import java.util.List;
 public interface JobSchedulerInternal {
 
     /**
-     * Returns a list of pending jobs scheduled by the system service.
+     * Returns a list of jobs scheduled by the system service for itself.
      */
-    List<JobInfo> getSystemScheduledPendingJobs();
+    List<JobInfo> getSystemScheduledOwnJobs(@Nullable String namespace);
 
     /**
      * Cancel the jobs for a given uid (e.g. when app data is cleared)
+     *
+     * @param includeProxiedJobs Include jobs scheduled for this UID by other apps
      */
-    void cancelJobsForUid(int uid, String reason);
+    void cancelJobsForUid(int uid, boolean includeProxiedJobs,
+            @JobParameters.StopReason int reason, int debugReasonCode, String debugReason);
 
     /**
      * These are for activity manager to communicate to use what is currently performing backups.
@@ -45,14 +50,31 @@ public interface JobSchedulerInternal {
     void removeBackingUpUid(int uid);
     void clearAllBackingUpUids();
 
-    /** Returns the package responsible for backing up media on the device. */
-    @NonNull
-    String getMediaBackupPackage();
+    /** Returns the package responsible for providing media from the cloud to the device. */
+    @Nullable
+    String getCloudMediaProviderPackage(int userId);
 
     /**
      * The user has started interacting with the app.  Take any appropriate action.
      */
     void reportAppUsage(String packageName, int userId);
+
+    /** @return {@code true} if the app is considered buggy from JobScheduler's perspective. */
+    boolean isAppConsideredBuggy(int callingUserId, @NonNull String callingPackageName,
+            int timeoutBlameUserId, @NonNull String timeoutBlamePackageName);
+
+    /**
+     * @return {@code true} if the given notification is associated with any user-initiated jobs.
+     */
+    boolean isNotificationAssociatedWithAnyUserInitiatedJobs(int notificationId,
+            int userId, @NonNull String packageName);
+
+    /**
+     * @return {@code true} if the given notification channel is associated with any user-initiated
+     * jobs.
+     */
+    boolean isNotificationChannelAssociatedWithAnyUserInitiatedJobs(
+            @NonNull String notificationChannel, int userId, @NonNull String packageName);
 
     /**
      * Report a snapshot of sync-related jobs back to the sync manager

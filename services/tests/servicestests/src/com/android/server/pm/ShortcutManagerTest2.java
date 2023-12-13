@@ -36,18 +36,22 @@ import android.app.Person;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.LocusId;
+import android.content.pm.Capability;
+import android.content.pm.CapabilityParams;
 import android.content.pm.ShortcutInfo;
+import android.content.pm.UserPackage;
 import android.content.res.Resources;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.PersistableBundle;
 import android.os.UserHandle;
+import android.platform.test.annotations.Presubmit;
 import android.test.MoreAsserts;
-import android.test.suitebuilder.annotation.SmallTest;
+
+import androidx.test.filters.SmallTest;
 
 import com.android.frameworks.servicestests.R;
-import com.android.server.pm.ShortcutUser.PackageWithUser;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -64,6 +68,7 @@ import java.util.Locale;
  adb shell am instrument -e class com.android.server.pm.ShortcutManagerTest2 \
  -w com.android.frameworks.servicestests/androidx.test.runner.AndroidJUnitRunner
  */
+@Presubmit
 @SmallTest
 public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
     // ShortcutInfo tests
@@ -223,6 +228,15 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
                 });
     }
 
+    public void testShortcutIdTruncated() {
+        ShortcutInfo si = new ShortcutInfo.Builder(getTestContext(),
+                "s".repeat(Short.MAX_VALUE)).build();
+
+        assertTrue(
+                "id must be truncated to MAX_ID_LENGTH",
+                si.getId().length() <= ShortcutInfo.MAX_ID_LENGTH);
+    }
+
     public void testShortcutInfoParcel() {
         setCaller(CALLING_PACKAGE_1, USER_10);
         ShortcutInfo si = parceled(new ShortcutInfo.Builder(mClientContext)
@@ -253,6 +267,16 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
                 .setPerson(makePerson("person", "personKey", "personUri"))
                 .setLongLived(true)
                 .setExtras(pb)
+                .setStartingTheme(android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+                .addCapabilityBinding(
+                        new Capability.Builder("action.intent.START_EXERCISE").build(),
+                        new CapabilityParams.Builder("exercise.type", "running")
+                                .addAlias("jogging")
+                                .build())
+                .addCapabilityBinding(
+                        new Capability.Builder("action.intent.START_EXERCISE").build(),
+                        new CapabilityParams.Builder("exercise.duration", "10m")
+                                .build())
                 .build();
         si.addFlags(ShortcutInfo.FLAG_PINNED);
         si.setBitmapPath("abc");
@@ -288,6 +312,16 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
         assertEquals(null, si.getTextResName());
         assertEquals(0, si.getDisabledMessageResourceId());
         assertEquals(null, si.getDisabledMessageResName());
+        assertEquals("android:style/Theme.Black.NoTitleBar.Fullscreen",
+                si.getStartingThemeResName());
+        assertEquals(list(new Capability.Builder("action.intent.START_EXERCISE").build()),
+                si.getCapabilities());
+        assertEquals(list(
+                        new CapabilityParams.Builder("exercise.type", "running")
+                                .addAlias("jogging").build(),
+                        new CapabilityParams.Builder("exercise.duration", "10m").build()),
+                si.getCapabilityParams(
+                        new Capability.Builder("action.intent.START_EXERCISE").build()));
     }
 
     public void testShortcutInfoParcel_resId() {
@@ -308,6 +342,7 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
                 .setCategories(set(ShortcutInfo.SHORTCUT_CATEGORY_CONVERSATION, "xyz"))
                 .setRank(123)
                 .setExtras(pb)
+                .setStartingTheme(android.R.style.Theme_Black_NoTitleBar_Fullscreen)
                 .build();
         si.addFlags(ShortcutInfo.FLAG_PINNED);
         si.setBitmapPath("abc");
@@ -339,6 +374,8 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
         assertEquals(456, si.getIconResourceId());
         assertEquals("string/r456", si.getIconResName());
         assertEquals("test_uri", si.getIconUri());
+        assertEquals("android:style/Theme.Black.NoTitleBar.Fullscreen",
+                si.getStartingThemeResName());
     }
 
     public void testShortcutInfoClone() {
@@ -938,6 +975,15 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
                 .setRank(123)
                 .setExtras(pb)
                 .setLocusId(new LocusId("1.2.3.4.5"))
+                .addCapabilityBinding(
+                        new Capability.Builder("action.intent.START_EXERCISE").build(),
+                        new CapabilityParams.Builder("exercise.type", "running")
+                                .addAlias("jogging")
+                                .build())
+                .addCapabilityBinding(
+                        new Capability.Builder("action.intent.START_EXERCISE").build(),
+                        new CapabilityParams.Builder("exercise.duration", "10m")
+                                .build())
                 .build();
         sorig.setTimestamp(mInjectedCurrentTimeMillis);
 
@@ -998,6 +1044,15 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
         assertEquals(0, si.getIconResourceId());
         assertNull(si.getIconUri());
         assertTrue(si.getLastChangedTimestamp() < now);
+
+        assertEquals(list(new Capability.Builder("action.intent.START_EXERCISE").build()),
+                si.getCapabilities());
+        assertEquals(list(
+                        new CapabilityParams.Builder("exercise.type", "running")
+                                .addAlias("jogging").build(),
+                        new CapabilityParams.Builder("exercise.duration", "10m").build()),
+                si.getCapabilityParams(
+                        new Capability.Builder("action.intent.START_EXERCISE").build()));
 
         // Make sure ranks are saved too.  Because of the auto-adjusting, we need two shortcuts
         // to test it.
@@ -2138,7 +2193,6 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
             mManager.reportShortcutUsed("s2");
             verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
                     eq(CALLING_PACKAGE_1), eq("s2"), eq(USER_10));
-
         });
         runWithCaller(CALLING_PACKAGE_2, USER_10, () -> {
             // Try with a different package.
@@ -2158,7 +2212,6 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
             mManager.reportShortcutUsed("s3");
             verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
                     eq(CALLING_PACKAGE_2), eq("s3"), eq(USER_10));
-
         });
     }
 
@@ -2212,6 +2265,10 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
                 android.R.drawable.alert_dark_frame, true, getTestContext().getPackageName()));
         assertEquals("" + android.R.string.cancel, ShortcutInfo.lookUpResourceName(res,
                 android.R.string.cancel, false, getTestContext().getPackageName()));
+        assertEquals("" + android.R.style.Theme_Black_NoTitleBar_Fullscreen,
+                ShortcutInfo.lookUpResourceName(
+                        res, android.R.style.Theme_Black_NoTitleBar_Fullscreen, true,
+                        getTestContext().getPackageName()));
     }
 
     public void testLookUpResourceName_appResources() {
@@ -2238,6 +2295,10 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
         assertEquals(android.R.drawable.alert_dark_frame, ShortcutInfo.lookUpResourceId(res,
                 "" + android.R.drawable.alert_dark_frame, null,
                 getTestContext().getPackageName()));
+        assertEquals(android.R.style.Theme_Black_NoTitleBar_Fullscreen,
+                ShortcutInfo.lookUpResourceId(
+                        res, "" + android.R.style.Theme_Black_NoTitleBar_Fullscreen,
+                        null, getTestContext().getPackageName()));
     }
 
     // Test for a ShortcutInfo method.
@@ -2297,7 +2358,7 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
      * can still be read.
      */
     public void testLoadLegacySavedFile() throws Exception {
-        final File path = mService.getUserFile(USER_0);
+        final File path = mService.getUserFile(USER_0).getBaseFile();
         path.getParentFile().mkdirs();
         try (Writer w = new FileWriter(path)) {
             w.write(readTestAsset("shortcut/shortcut_legacy_file.xml"));
@@ -2361,7 +2422,7 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
             assertWith(mManager.getDynamicShortcuts()).isEmpty();
         });
         // Make package 1 ephemeral.
-        mEphemeralPackages.add(PackageWithUser.of(USER_0, CALLING_PACKAGE_1));
+        mEphemeralPackages.add(UserPackage.of(USER_0, CALLING_PACKAGE_1));
 
         runWithCaller(CALLING_PACKAGE_1, USER_0, () -> {
             assertExpectException(IllegalStateException.class, "Ephemeral apps", () -> {

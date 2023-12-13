@@ -23,6 +23,7 @@ package {
 
 cc_defaults {
     name: "idmap2_defaults",
+    cpp_std: "gnu++2b",
     tidy: true,
     tidy_checks: [
         "modernize-*",
@@ -31,13 +32,18 @@ cc_defaults {
         "android-*",
         "misc-*",
         "readability-*",
+        "-readability-identifier-length",
     ],
     tidy_checks_as_errors: [
         "modernize-*",
         "-modernize-avoid-c-arrays",
+        "-modernize-concat-nested-namespaces",
         "-modernize-pass-by-value",
         "-modernize-replace-disallow-copy-and-assign-macro",
+        "-modernize-return-braced-init-list",
+        "-modernize-use-default-member-init",
         "-modernize-use-equals-default",
+        "-modernize-use-emplace",
         "-modernize-use-nodiscard",
         "-modernize-use-override",
         "-modernize-use-trailing-return-type",
@@ -49,13 +55,11 @@ cc_defaults {
         "-readability-braces-around-statements",
         "-readability-const-return-type",
         "-readability-convert-member-functions-to-static",
+        "-readability-duplicate-include",
         "-readability-else-after-return",
         "-readability-named-parameter",
         "-readability-redundant-access-specifiers",
         "-readability-uppercase-literal-suffix",
-    ],
-    tidy_flags: [
-        "-system-headers",
     ],
 }
 
@@ -67,6 +71,7 @@ cc_library {
     host_supported: true,
     srcs: [
         "libidmap2/**/*.cpp",
+        "self_targeting/*.cpp",
     ],
     export_include_dirs: ["include"],
     target: {
@@ -74,13 +79,18 @@ cc_library {
             static: {
                 enabled: false,
             },
+            static_libs: [
+                "libidmap2_protos",
+            ],
             shared_libs: [
                 "libandroidfw",
                 "libbase",
                 "libcutils",
-                "libutils",
-                "libziparchive",
                 "libidmap2_policies",
+                "libprotobuf-cpp-lite",
+                "libutils",
+                "libz",
+                "libziparchive",
             ],
         },
         host: {
@@ -91,11 +101,27 @@ cc_library {
                 "libandroidfw",
                 "libbase",
                 "libcutils",
-                "libutils",
-                "libziparchive",
                 "libidmap2_policies",
+                "libidmap2_protos",
+                "libprotobuf-cpp-lite",
+                "libutils",
+                "libz",
+                "libziparchive",
             ],
         },
+    },
+}
+
+cc_library {
+    name: "libidmap2_protos",
+    srcs: [
+        "libidmap2/proto/*.proto",
+    ],
+    host_supported: true,
+    tidy: false,
+    proto: {
+        type: "lite",
+        export_proto_headers: true,
     },
 }
 
@@ -111,9 +137,6 @@ cc_library {
             enabled: true,
         },
         android: {
-            static: {
-                enabled: false,
-            },
             shared_libs: [
                 "libandroidfw",
             ],
@@ -142,6 +165,7 @@ cc_test {
     srcs: [
         "tests/BinaryStreamVisitorTests.cpp",
         "tests/CommandLineOptionsTests.cpp",
+        "tests/FabricatedOverlayTests.cpp",
         "tests/FileUtilsTests.cpp",
         "tests/Idmap2BinaryTests.cpp",
         "tests/IdmapTests.cpp",
@@ -153,20 +177,27 @@ cc_test {
         "tests/ResourceUtilsTests.cpp",
         "tests/ResultTests.cpp",
         "tests/XmlParserTests.cpp",
-        "tests/ZipFileTests.cpp",
     ],
-    static_libs: ["libgmock"],
+    required: [
+        "idmap2",
+    ],
+    static_libs: [
+        "libgmock",
+        "libidmap2_protos",
+    ],
     target: {
         android: {
             shared_libs: [
                 "libandroidfw",
                 "libbase",
                 "libidmap2",
+                "libidmap2_policies",
                 "liblog",
+                "libprotobuf-cpp-lite",
                 "libutils",
                 "libz",
+                "libz",
                 "libziparchive",
-                "libidmap2_policies",
             ],
         },
         host: {
@@ -175,10 +206,11 @@ cc_test {
                 "libbase",
                 "libcutils",
                 "libidmap2",
+                "libidmap2_policies",
                 "liblog",
+                "libprotobuf-cpp-lite",
                 "libutils",
                 "libziparchive",
-                "libidmap2_policies",
             ],
             shared_libs: [
                 "libz",
@@ -191,6 +223,7 @@ cc_test {
     },
     data: [
         "tests/data/**/*.apk",
+        "tests/data/**/*.png",
     ],
     compile_multilib: "first",
     test_options: {
@@ -212,6 +245,9 @@ cc_binary {
         "idmap2/Lookup.cpp",
         "idmap2/Main.cpp",
     ],
+    static_libs: [
+        "libidmap2_protos",
+    ],
     target: {
         android: {
             shared_libs: [
@@ -219,9 +255,11 @@ cc_binary {
                 "libbase",
                 "libcutils",
                 "libidmap2",
-                "libutils",
-                "libziparchive",
                 "libidmap2_policies",
+                "libprotobuf-cpp-lite",
+                "libutils",
+                "libz",
+                "libziparchive",
             ],
         },
         host: {
@@ -230,10 +268,11 @@ cc_binary {
                 "libbase",
                 "libcutils",
                 "libidmap2",
+                "libidmap2_policies",
                 "liblog",
+                "libprotobuf-cpp-lite",
                 "libutils",
                 "libziparchive",
-                "libidmap2_policies",
             ],
             shared_libs: [
                 "libz",
@@ -259,11 +298,14 @@ cc_binary {
         "libbinder",
         "libcutils",
         "libidmap2",
+        "libidmap2_policies",
+        "libprotobuf-cpp-lite",
         "libutils",
         "libziparchive",
-        "libidmap2_policies",
     ],
     static_libs: [
+        "libc++fs",
+        "libidmap2_protos",
         "libidmap2daidl",
     ],
     init_rc: ["idmap2d/idmap2d.rc"],
@@ -271,28 +313,41 @@ cc_binary {
 
 cc_library_static {
     name: "libidmap2daidl",
-    defaults: [
-        "idmap2_defaults",
-    ],
-    tidy: false,
-    host_supported: false,
     srcs: [
         ":idmap2_aidl",
+        ":idmap2_core_aidl",
+    ],
+    header_libs: [
+        "libbinder_headers",
     ],
     shared_libs: [
         "libbase",
     ],
     aidl: {
         export_aidl_headers: true,
+        local_include_dirs: [
+            "idmap2d/aidl/core",
+            "idmap2d/aidl/services/",
+        ],
     },
+}
+
+filegroup {
+    name: "idmap2_core_aidl",
+    srcs: [
+        "idmap2d/aidl/core/android/os/FabricatedOverlayInternal.aidl",
+        "idmap2d/aidl/core/android/os/FabricatedOverlayInternalEntry.aidl",
+        "idmap2d/aidl/core/android/os/FabricatedOverlayInfo.aidl",
+    ],
+    path: "idmap2d/aidl/core/",
 }
 
 filegroup {
     name: "idmap2_aidl",
     srcs: [
-        "idmap2d/aidl/android/os/IIdmap2.aidl",
+        "idmap2d/aidl/services/android/os/IIdmap2.aidl",
     ],
-    path: "idmap2d/aidl",
+    path: "idmap2d/aidl/services/",
 }
 
 aidl_interface {
@@ -304,7 +359,7 @@ aidl_interface {
 filegroup {
     name: "overlayable_policy_aidl_files",
     srcs: [
-        "idmap2d/aidl/android/os/OverlayablePolicy.aidl",
+        "idmap2d/aidl/services/android/os/OverlayablePolicy.aidl",
     ],
-    path: "idmap2d/aidl",
+    path: "idmap2d/aidl/services/",
 }

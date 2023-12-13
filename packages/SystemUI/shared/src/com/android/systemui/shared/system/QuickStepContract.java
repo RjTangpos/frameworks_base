@@ -23,6 +23,7 @@ import static android.view.WindowManagerPolicyConstants.NAV_BAR_MODE_GESTURAL;
 import android.annotation.IntDef;
 import android.content.Context;
 import android.content.res.Resources;
+import android.os.SystemProperties;
 import android.view.ViewConfiguration;
 import android.view.WindowManagerPolicyConstants;
 
@@ -36,14 +37,15 @@ import java.util.StringJoiner;
  * Various shared constants between Launcher and SysUI as part of quickstep
  */
 public class QuickStepContract {
+    // Fully qualified name of the Launcher activity.
+    public static final String LAUNCHER_ACTIVITY_CLASS_NAME =
+            "com.google.android.apps.nexuslauncher.NexusLauncherActivity";
 
     public static final String KEY_EXTRA_SYSUI_PROXY = "extra_sysui_proxy";
-    public static final String KEY_EXTRA_INPUT_MONITOR = "extra_input_monitor";
-    public static final String KEY_EXTRA_WINDOW_CORNER_RADIUS = "extra_window_corner_radius";
-    public static final String KEY_EXTRA_SUPPORTS_WINDOW_CORNERS = "extra_supports_window_corners";
+    public static final String KEY_EXTRA_UNFOLD_ANIMATION_FORWARDER = "extra_unfold_animation";
+    // See ISysuiUnlockAnimationController.aidl
+    public static final String KEY_EXTRA_UNLOCK_ANIMATION_CONTROLLER = "unlock_animation";
 
-    public static final String NAV_BAR_MODE_2BUTTON_OVERLAY =
-            WindowManagerPolicyConstants.NAV_BAR_MODE_2BUTTON_OVERLAY;
     public static final String NAV_BAR_MODE_3BUTTON_OVERLAY =
             WindowManagerPolicyConstants.NAV_BAR_MODE_3BUTTON_OVERLAY;
     public static final String NAV_BAR_MODE_GESTURAL_OVERLAY =
@@ -86,8 +88,57 @@ public class QuickStepContract {
     // enabled (since it's used to navigate back within the bubbled app, or to collapse the bubble
     // stack.
     public static final int SYSUI_STATE_BUBBLES_EXPANDED = 1 << 14;
-    // The global actions dialog is showing
-    public static final int SYSUI_STATE_GLOBAL_ACTIONS_SHOWING = 1 << 15;
+    // A SysUI dialog is showing.
+    public static final int SYSUI_STATE_DIALOG_SHOWING = 1 << 15;
+    // The one-handed mode is active
+    public static final int SYSUI_STATE_ONE_HANDED_ACTIVE = 1 << 16;
+    // Allow system gesture no matter the system bar(s) is visible or not
+    public static final int SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY = 1 << 17;
+    // The IME is showing
+    public static final int SYSUI_STATE_IME_SHOWING = 1 << 18;
+    // The window magnification is overlapped with system gesture insets at the bottom.
+    public static final int SYSUI_STATE_MAGNIFICATION_OVERLAP = 1 << 19;
+    // ImeSwitcher is showing
+    public static final int SYSUI_STATE_IME_SWITCHER_SHOWING = 1 << 20;
+    // Device dozing/AOD state
+    public static final int SYSUI_STATE_DEVICE_DOZING = 1 << 21;
+    // The home feature is disabled (either by SUW/SysUI/device policy)
+    public static final int SYSUI_STATE_BACK_DISABLED = 1 << 22;
+    // The bubble stack is expanded AND the mange menu for bubbles is expanded on top of it.
+    public static final int SYSUI_STATE_BUBBLES_MANAGE_MENU_EXPANDED = 1 << 23;
+    // The current app is in immersive mode
+    public static final int SYSUI_STATE_IMMERSIVE_MODE = 1 << 24;
+    // The voice interaction session window is showing
+    public static final int SYSUI_STATE_VOICE_INTERACTION_WINDOW_SHOWING = 1 << 25;
+    // Freeform windows are showing in desktop mode
+    public static final int SYSUI_STATE_FREEFORM_ACTIVE_IN_DESKTOP_MODE = 1 << 26;
+    // Device dreaming state
+    public static final int SYSUI_STATE_DEVICE_DREAMING = 1 << 27;
+    // Whether the device is currently awake (as opposed to asleep, see WakefulnessLifecycle).
+    // Note that the device is awake on while waking up on, but not while going to sleep.
+    public static final int SYSUI_STATE_AWAKE = 1 << 28;
+    // Whether the device is currently transitioning between awake/asleep indicated by
+    // SYSUI_STATE_AWAKE.
+    public static final int SYSUI_STATE_WAKEFULNESS_TRANSITION = 1 << 29;
+    // The notification panel expansion fraction is > 0
+    public static final int SYSUI_STATE_NOTIFICATION_PANEL_VISIBLE = 1 << 30;
+    // When keyguard will be dismissed but didn't start animation yet
+    public static final int SYSUI_STATE_STATUS_BAR_KEYGUARD_GOING_AWAY = 1 << 31;
+
+    // Mask for SystemUiStateFlags to isolate SYSUI_STATE_AWAKE and
+    // SYSUI_STATE_WAKEFULNESS_TRANSITION, to match WAKEFULNESS_* constants
+    public static final int SYSUI_STATE_WAKEFULNESS_MASK =
+            SYSUI_STATE_AWAKE | SYSUI_STATE_WAKEFULNESS_TRANSITION;
+    // Mirroring the WakefulnessLifecycle#Wakefulness states
+    public static final int WAKEFULNESS_ASLEEP = 0;
+    public static final int WAKEFULNESS_AWAKE = SYSUI_STATE_AWAKE;
+    public static final int WAKEFULNESS_GOING_TO_SLEEP = SYSUI_STATE_WAKEFULNESS_TRANSITION;
+    public static final int WAKEFULNESS_WAKING =
+            SYSUI_STATE_WAKEFULNESS_TRANSITION | SYSUI_STATE_AWAKE;
+
+    // Whether the back gesture is allowed (or ignored) by the Shade
+    public static final boolean ALLOW_BACK_GESTURE_IN_SHADE = SystemProperties.getBoolean(
+            "persist.wm.debug.shade_allow_back_gesture", false);
 
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({SYSUI_STATE_SCREEN_PINNING,
@@ -105,30 +156,125 @@ public class QuickStepContract {
             SYSUI_STATE_TRACING_ENABLED,
             SYSUI_STATE_ASSIST_GESTURE_CONSTRAINED,
             SYSUI_STATE_BUBBLES_EXPANDED,
-            SYSUI_STATE_GLOBAL_ACTIONS_SHOWING
+            SYSUI_STATE_DIALOG_SHOWING,
+            SYSUI_STATE_ONE_HANDED_ACTIVE,
+            SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY,
+            SYSUI_STATE_IME_SHOWING,
+            SYSUI_STATE_MAGNIFICATION_OVERLAP,
+            SYSUI_STATE_IME_SWITCHER_SHOWING,
+            SYSUI_STATE_DEVICE_DOZING,
+            SYSUI_STATE_BACK_DISABLED,
+            SYSUI_STATE_BUBBLES_MANAGE_MENU_EXPANDED,
+            SYSUI_STATE_IMMERSIVE_MODE,
+            SYSUI_STATE_VOICE_INTERACTION_WINDOW_SHOWING,
+            SYSUI_STATE_FREEFORM_ACTIVE_IN_DESKTOP_MODE,
+            SYSUI_STATE_DEVICE_DREAMING,
+            SYSUI_STATE_AWAKE,
+            SYSUI_STATE_WAKEFULNESS_TRANSITION,
+            SYSUI_STATE_NOTIFICATION_PANEL_VISIBLE,
+            SYSUI_STATE_STATUS_BAR_KEYGUARD_GOING_AWAY,
     })
     public @interface SystemUiStateFlags {}
 
     public static String getSystemUiStateString(int flags) {
         StringJoiner str = new StringJoiner("|");
-        str.add((flags & SYSUI_STATE_SCREEN_PINNING) != 0 ? "screen_pinned" : "");
-        str.add((flags & SYSUI_STATE_OVERVIEW_DISABLED) != 0 ? "overview_disabled" : "");
-        str.add((flags & SYSUI_STATE_HOME_DISABLED) != 0 ? "home_disabled" : "");
-        str.add((flags & SYSUI_STATE_SEARCH_DISABLED) != 0 ? "search_disabled" : "");
-        str.add((flags & SYSUI_STATE_NAV_BAR_HIDDEN) != 0 ? "navbar_hidden" : "");
-        str.add((flags & SYSUI_STATE_NOTIFICATION_PANEL_EXPANDED) != 0 ? "notif_visible" : "");
-        str.add((flags & SYSUI_STATE_QUICK_SETTINGS_EXPANDED) != 0 ? "qs_visible" : "");
-        str.add((flags & SYSUI_STATE_STATUS_BAR_KEYGUARD_SHOWING) != 0 ? "keygrd_visible" : "");
-        str.add((flags & SYSUI_STATE_STATUS_BAR_KEYGUARD_SHOWING_OCCLUDED) != 0
-                ? "keygrd_occluded" : "");
-        str.add((flags & SYSUI_STATE_BOUNCER_SHOWING) != 0 ? "bouncer_visible" : "");
-        str.add((flags & SYSUI_STATE_GLOBAL_ACTIONS_SHOWING) != 0 ? "global_actions" : "");
-        str.add((flags & SYSUI_STATE_A11Y_BUTTON_CLICKABLE) != 0 ? "a11y_click" : "");
-        str.add((flags & SYSUI_STATE_A11Y_BUTTON_LONG_CLICKABLE) != 0 ? "a11y_long_click" : "");
-        str.add((flags & SYSUI_STATE_TRACING_ENABLED) != 0 ? "tracing" : "");
-        str.add((flags & SYSUI_STATE_ASSIST_GESTURE_CONSTRAINED) != 0
-                ? "asst_gesture_constrain" : "");
-        str.add((flags & SYSUI_STATE_BUBBLES_EXPANDED) != 0 ? "bubbles_expanded" : "");
+        if ((flags & SYSUI_STATE_SCREEN_PINNING) != 0) {
+            str.add("screen_pinned");
+        }
+        if ((flags & SYSUI_STATE_OVERVIEW_DISABLED) != 0) {
+            str.add("overview_disabled");
+        }
+        if ((flags & SYSUI_STATE_HOME_DISABLED) != 0) {
+            str.add("home_disabled");
+        }
+        if ((flags & SYSUI_STATE_SEARCH_DISABLED) != 0) {
+            str.add("search_disabled");
+        }
+        if ((flags & SYSUI_STATE_NAV_BAR_HIDDEN) != 0) {
+            str.add("navbar_hidden");
+        }
+        if ((flags & SYSUI_STATE_NOTIFICATION_PANEL_EXPANDED) != 0) {
+            str.add("notif_expanded");
+        }
+        if ((flags & SYSUI_STATE_QUICK_SETTINGS_EXPANDED) != 0) {
+            str.add("qs_visible");
+        }
+        if ((flags & SYSUI_STATE_STATUS_BAR_KEYGUARD_SHOWING) != 0) {
+            str.add("keygrd_visible");
+        }
+        if ((flags & SYSUI_STATE_STATUS_BAR_KEYGUARD_SHOWING_OCCLUDED) != 0) {
+            str.add("keygrd_occluded");
+        }
+        if ((flags & SYSUI_STATE_BOUNCER_SHOWING) != 0) {
+            str.add("bouncer_visible");
+        }
+        if ((flags & SYSUI_STATE_DIALOG_SHOWING) != 0) {
+            str.add("dialog_showing");
+        }
+        if ((flags & SYSUI_STATE_A11Y_BUTTON_CLICKABLE) != 0) {
+            str.add("a11y_click");
+        }
+        if ((flags & SYSUI_STATE_A11Y_BUTTON_LONG_CLICKABLE) != 0) {
+            str.add("a11y_long_click");
+        }
+        if ((flags & SYSUI_STATE_TRACING_ENABLED) != 0) {
+            str.add("tracing");
+        }
+        if ((flags & SYSUI_STATE_ASSIST_GESTURE_CONSTRAINED) != 0) {
+            str.add("asst_gesture_constrain");
+        }
+        if ((flags & SYSUI_STATE_BUBBLES_EXPANDED) != 0) {
+            str.add("bubbles_expanded");
+        }
+        if ((flags & SYSUI_STATE_ONE_HANDED_ACTIVE) != 0) {
+            str.add("one_handed_active");
+        }
+        if ((flags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0) {
+            str.add("allow_gesture");
+        }
+        if ((flags & SYSUI_STATE_IME_SHOWING) != 0) {
+            str.add("ime_visible");
+        }
+        if ((flags & SYSUI_STATE_MAGNIFICATION_OVERLAP) != 0) {
+            str.add("magnification_overlap");
+        }
+        if ((flags & SYSUI_STATE_IME_SWITCHER_SHOWING) != 0) {
+            str.add("ime_switcher_showing");
+        }
+        if ((flags & SYSUI_STATE_DEVICE_DOZING) != 0) {
+            str.add("device_dozing");
+        }
+        if ((flags & SYSUI_STATE_BACK_DISABLED) != 0) {
+            str.add("back_disabled");
+        }
+        if ((flags & SYSUI_STATE_BUBBLES_MANAGE_MENU_EXPANDED) != 0) {
+            str.add("bubbles_mange_menu_expanded");
+        }
+        if ((flags & SYSUI_STATE_IMMERSIVE_MODE) != 0) {
+            str.add("immersive_mode");
+        }
+        if ((flags & SYSUI_STATE_VOICE_INTERACTION_WINDOW_SHOWING) != 0) {
+            str.add("vis_win_showing");
+        }
+        if ((flags & SYSUI_STATE_FREEFORM_ACTIVE_IN_DESKTOP_MODE) != 0) {
+            str.add("freeform_active_in_desktop_mode");
+        }
+        if ((flags & SYSUI_STATE_DEVICE_DREAMING) != 0) {
+            str.add("device_dreaming");
+        }
+        if ((flags & SYSUI_STATE_WAKEFULNESS_TRANSITION) != 0) {
+            str.add("wakefulness_transition");
+        }
+        if ((flags & SYSUI_STATE_AWAKE) != 0) {
+            str.add("awake");
+        }
+        if ((flags & SYSUI_STATE_NOTIFICATION_PANEL_VISIBLE) != 0) {
+            str.add("notif_visible");
+        }
+        if ((flags & SYSUI_STATE_STATUS_BAR_KEYGUARD_GOING_AWAY) != 0) {
+            str.add("keygrd_going_away");
+        }
+
         return str.toString();
     }
 
@@ -145,32 +291,13 @@ public class QuickStepContract {
     }
 
     /**
-     * Touch slopes and thresholds for quick step operations. Drag slop is the point where the
-     * home button press/long press over are ignored and will start to drag when exceeded and the
-     * touch slop is when the respected operation will occur when exceeded. Touch slop must be
-     * larger than the drag slop.
-     */
-    public static int getQuickStepDragSlopPx() {
-        return convertDpToPixel(10);
-    }
-
-    public static int getQuickStepTouchSlopPx() {
-        return convertDpToPixel(24);
-    }
-
-    public static int getQuickScrubTouchSlopPx() {
-        return convertDpToPixel(24);
-    }
-
-    private static int convertDpToPixel(float dp) {
-        return (int) (dp * Resources.getSystem().getDisplayMetrics().density);
-    }
-
-    /**
      * Returns whether the specified sysui state is such that the assistant gesture should be
      * disabled.
      */
     public static boolean isAssistantGestureDisabled(int sysuiStateFlags) {
+        if ((sysuiStateFlags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0) {
+            sysuiStateFlags &= ~SYSUI_STATE_NAV_BAR_HIDDEN;
+        }
         // Disable when in quick settings, screen pinning, immersive, the bouncer is showing, 
         // or search is disabled
         int disableFlags = SYSUI_STATE_SCREEN_PINNING
@@ -195,17 +322,34 @@ public class QuickStepContract {
      * Returns whether the specified sysui state is such that the back gesture should be
      * disabled.
      */
-    public static boolean isBackGestureDisabled(int sysuiStateFlags) {
-        // Always allow when the bouncer/global actions is showing (even on top of the keyguard)
+    public static boolean isBackGestureDisabled(int sysuiStateFlags, boolean forTrackpad) {
+        // Always allow when the bouncer/global actions/voice session is showing (even on top of
+        // the keyguard)
         if ((sysuiStateFlags & SYSUI_STATE_BOUNCER_SHOWING) != 0
-                || (sysuiStateFlags & SYSUI_STATE_GLOBAL_ACTIONS_SHOWING) != 0) {
+                || (sysuiStateFlags & SYSUI_STATE_DIALOG_SHOWING) != 0
+                || (sysuiStateFlags & SYSUI_STATE_VOICE_INTERACTION_WINDOW_SHOWING) != 0) {
             return false;
         }
+        if ((sysuiStateFlags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0) {
+            sysuiStateFlags &= ~SYSUI_STATE_NAV_BAR_HIDDEN;
+        }
+
+        return (sysuiStateFlags & getBackGestureDisabledMask(forTrackpad)) != 0;
+    }
+
+    private static int getBackGestureDisabledMask(boolean forTrackpad) {
         // Disable when in immersive, or the notifications are interactive
-        int disableFlags = SYSUI_STATE_NAV_BAR_HIDDEN
-                | SYSUI_STATE_NOTIFICATION_PANEL_EXPANDED
-                | SYSUI_STATE_STATUS_BAR_KEYGUARD_SHOWING;
-        return (sysuiStateFlags & disableFlags) != 0;
+        int disableFlags = SYSUI_STATE_STATUS_BAR_KEYGUARD_SHOWING;
+        if (!forTrackpad) {
+            disableFlags |= SYSUI_STATE_NAV_BAR_HIDDEN;
+        }
+
+        // EdgeBackGestureHandler ignores Back gesture when SYSUI_STATE_NOTIFICATION_PANEL_EXPANDED.
+        // To allow Shade to respond to Back, we're bypassing this check (behind a flag).
+        if (!ALLOW_BACK_GESTURE_IN_SHADE) {
+            disableFlags |= SYSUI_STATE_NOTIFICATION_PANEL_EXPANDED;
+        }
+        return disableFlags;
     }
 
     /**
@@ -234,8 +378,8 @@ public class QuickStepContract {
      * These values are expressed in pixels because they should not respect display or font
      * scaling, this means that we don't have to reload them on config changes.
      */
-    public static float getWindowCornerRadius(Resources resources) {
-        return ScreenDecorationsUtils.getWindowCornerRadius(resources);
+    public static float getWindowCornerRadius(Context context) {
+        return ScreenDecorationsUtils.getWindowCornerRadius(context);
     }
 
     /**

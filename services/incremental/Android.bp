@@ -65,9 +65,9 @@ cc_defaults {
         "libincremental_manager_aidl-cpp",
         "libprotobuf-cpp-lite",
         "service.incremental.proto",
-        "libutils",
         "libvold_binder",
         "libc++fs",
+        "libziparchive_for_incfs",
     ],
     shared_libs: [
         "libandroidfw",
@@ -76,8 +76,9 @@ cc_defaults {
         "libcutils",
         "libincfs",
         "liblog",
+        "libpermission",
+        "libutils",
         "libz",
-        "libziparchive",
     ],
 }
 
@@ -133,5 +134,8 @@ cc_test {
     ],
     static_libs: [
         "libgmock",
-    ]
+    ],
+    test_options: {
+        unit_test: true,
+    },
 }

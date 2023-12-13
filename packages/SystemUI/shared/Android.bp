@@ -40,14 +40,60 @@ android_library {
     name: "SystemUISharedLib",
     srcs: [
         "src/**/*.java",
-        "src/**/I*.aidl",
+        "src/**/*.kt",
+        "src/**/*.aidl",
+        ":wm_shell-aidls",
+        ":wm_shell_util-sources",
     ],
-
     static_libs: [
         "PluginCoreLib",
+        "SystemUIAnimationLib",
+        "SystemUIPluginLib",
+        "SystemUIUnfoldLib",
+        "androidx.dynamicanimation_dynamicanimation",
+        "androidx.concurrent_concurrent-futures",
+        "androidx.lifecycle_lifecycle-runtime-ktx",
+        "androidx.lifecycle_lifecycle-viewmodel-ktx",
+        "androidx.recyclerview_recyclerview",
+        "kotlinx_coroutines_android",
+        "kotlinx_coroutines",
+        "dagger2",
+        "jsr330",
     ],
+    resource_dirs: [
+        "res",
+    ],
+    min_sdk_version: "current",
+    plugins: ["dagger2-compiler"],
+    kotlincflags: ["-Xjvm-default=enable"],
+}
 
-
+java_library {
+    name: "SystemUI-flag-types",
+    srcs: [
+        "src/com/android/systemui/flags/Flag.kt",
+    ],
+    include_srcs: true,
+    static_kotlin_stdlib: false,
     java_version: "1.8",
-    min_sdk_version: "26",
+    min_sdk_version: "current",
+}
+
+java_library {
+    name: "SystemUIFlagsLib",
+    srcs: [
+        "src/com/android/systemui/flags/**/*.kt",
+    ],
+    static_kotlin_stdlib: false,
+    libs: [
+        "androidx.concurrent_concurrent-futures",
+    ],
+    static_libs: [
+        "SystemUI-flag-types",
+    ],
+    optimize: {
+        proguard_flags_files: ["proguard_flags.flags"],
+    },
+    java_version: "1.8",
+    min_sdk_version: "current",
 }

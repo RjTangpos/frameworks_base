@@ -78,7 +78,7 @@ class ServiceManagerProxy implements IServiceManager {
 
     public void registerForNotifications(String name, IServiceCallback cb)
             throws RemoteException {
-        throw new RemoteException();
+        mServiceManager.registerForNotifications(name, cb);
     }
 
     public void unregisterForNotifications(String name, IServiceCallback cb)
@@ -92,6 +92,18 @@ class ServiceManagerProxy implements IServiceManager {
 
     public String[] getDeclaredInstances(String iface) throws RemoteException {
         return mServiceManager.getDeclaredInstances(iface);
+    }
+
+    public String updatableViaApex(String name) throws RemoteException {
+        return mServiceManager.updatableViaApex(name);
+    }
+
+    public String[] getUpdatableNames(String apexName) throws RemoteException {
+        return mServiceManager.getUpdatableNames(apexName);
+    }
+
+    public ConnectionInfo getConnectionInfo(String name) throws RemoteException {
+        return mServiceManager.getConnectionInfo(name);
     }
 
     public void registerClientCallback(String name, IBinder service, IClientCallback cb)

@@ -30,6 +30,7 @@
 
 #include <android_runtime/AndroidRuntime.h>
 #include <android_runtime/android_view_Surface.h>
+#include <android_runtime/android_graphics_GraphicBuffer.h>
 #include <android_runtime/android_hardware_HardwareBuffer.h>
 #include <grallocusage/GrallocUsageConversion.h>
 
@@ -42,9 +43,12 @@
 #include <inttypes.h>
 #include <android/hardware_buffer_jni.h>
 
+#include <ui/Rect.h>
+
 #define ANDROID_MEDIA_IMAGEREADER_CTX_JNI_ID       "mNativeContext"
 #define ANDROID_MEDIA_SURFACEIMAGE_BUFFER_JNI_ID   "mNativeBuffer"
 #define ANDROID_MEDIA_SURFACEIMAGE_TS_JNI_ID       "mTimestamp"
+#define ANDROID_MEDIA_SURFACEIMAGE_DS_JNI_ID       "mDataSpace"
 #define ANDROID_MEDIA_SURFACEIMAGE_TF_JNI_ID       "mTransform"
 #define ANDROID_MEDIA_SURFACEIMAGE_SM_JNI_ID       "mScalingMode"
 
@@ -68,6 +72,7 @@ static struct {
 static struct {
     jfieldID mNativeBuffer;
     jfieldID mTimestamp;
+    jfieldID mDataSpace;
     jfieldID mTransform;
     jfieldID mScalingMode;
     jfieldID mPlanes;
@@ -77,6 +82,11 @@ static struct {
     jclass clazz;
     jmethodID ctor;
 } gSurfacePlaneClassInfo;
+
+static struct {
+    jclass clazz;
+    jmethodID ctor;
+} gImagePlaneClassInfo;
 
 // Get an ID that's unique within this process.
 static int32_t createProcessUniqueId() {
@@ -311,6 +321,12 @@ static void ImageReader_classInit(JNIEnv* env, jclass clazz)
                         "can't find android/graphics/ImageReader.%s",
                         ANDROID_MEDIA_SURFACEIMAGE_TS_JNI_ID);
 
+    gSurfaceImageClassInfo.mDataSpace = env->GetFieldID(
+            imageClazz, ANDROID_MEDIA_SURFACEIMAGE_DS_JNI_ID, "I");
+    LOG_ALWAYS_FATAL_IF(gSurfaceImageClassInfo.mDataSpace == NULL,
+                        "can't find android/graphics/ImageReader.%s",
+                        ANDROID_MEDIA_SURFACEIMAGE_DS_JNI_ID);
+
     gSurfaceImageClassInfo.mTransform = env->GetFieldID(
             imageClazz, ANDROID_MEDIA_SURFACEIMAGE_TF_JNI_ID, "I");
     LOG_ALWAYS_FATAL_IF(gSurfaceImageClassInfo.mTransform == NULL,
@@ -347,21 +363,25 @@ static void ImageReader_classInit(JNIEnv* env, jclass clazz)
             "(Landroid/media/ImageReader$SurfaceImage;IILjava/nio/ByteBuffer;)V");
     LOG_ALWAYS_FATAL_IF(gSurfacePlaneClassInfo.ctor == NULL,
             "Can not find SurfacePlane constructor");
+
+    planeClazz = env->FindClass("android/media/ImageReader$ImagePlane");
+    LOG_ALWAYS_FATAL_IF(planeClazz == NULL, "Can not find ImagePlane class");
+    // FindClass only gives a local reference of jclass object.
+    gImagePlaneClassInfo.clazz = (jclass) env->NewGlobalRef(planeClazz);
+    gImagePlaneClassInfo.ctor = env->GetMethodID(gImagePlaneClassInfo.clazz, "<init>",
+            "(IILjava/nio/ByteBuffer;)V");
+    LOG_ALWAYS_FATAL_IF(gImagePlaneClassInfo.ctor == NULL,
+            "Can not find ImagePlane constructor");
 }
 
 static void ImageReader_init(JNIEnv* env, jobject thiz, jobject weakThiz, jint width, jint height,
-                             jint format, jint maxImages, jlong ndkUsage)
-{
+                             jint maxImages, jlong ndkUsage, jint nativeHalFormat, jint dataSpace) {
     status_t res;
-    int nativeFormat;
-    android_dataspace nativeDataspace;
 
-    ALOGV("%s: width:%d, height: %d, format: 0x%x, maxImages:%d",
-          __FUNCTION__, width, height, format, maxImages);
+    ALOGV("%s: width:%d, height: %d, nativeHalFormat: %d, maxImages:%d",
+          __FUNCTION__, width, height, nativeHalFormat, maxImages);
 
-    PublicFormat publicFormat = static_cast<PublicFormat>(format);
-    nativeFormat = mapPublicFormatToHalFormat(publicFormat);
-    nativeDataspace = mapPublicFormatToHalDataspace(publicFormat);
+    android_dataspace nativeDataspace = static_cast<android_dataspace>(dataSpace);
 
     jclass clazz = env->GetObjectClass(thiz);
     if (clazz == NULL) {
@@ -375,7 +395,7 @@ static void ImageReader_init(JNIEnv* env, jobject thiz, jobject weakThiz, jint w
     BufferQueue::createBufferQueue(&gbProducer, &gbConsumer);
     sp<BufferItemConsumer> bufferConsumer;
     String8 consumerName = String8::format("ImageReader-%dx%df%xm%d-%d-%d",
-            width, height, format, maxImages, getpid(),
+            width, height, nativeHalFormat, maxImages, getpid(),
             createProcessUniqueId());
     uint64_t consumerUsage =
             android_hardware_HardwareBuffer_convertToGrallocUsageBits(ndkUsage);
@@ -384,8 +404,8 @@ static void ImageReader_init(JNIEnv* env, jobject thiz, jobject weakThiz, jint w
             /*controlledByApp*/true);
     if (bufferConsumer == nullptr) {
         jniThrowExceptionFmt(env, "java/lang/RuntimeException",
-                "Failed to allocate native buffer consumer for format 0x%x and usage 0x%x",
-                nativeFormat, consumerUsage);
+                "Failed to allocate native buffer consumer for hal format 0x%x and usage 0x%x",
+                nativeHalFormat, consumerUsage);
         return;
     }
 
@@ -399,7 +419,7 @@ static void ImageReader_init(JNIEnv* env, jobject thiz, jobject weakThiz, jint w
     ctx->setProducer(gbProducer);
     bufferConsumer->setFrameAvailableListener(ctx);
     ImageReader_setNativeContext(env, thiz, ctx);
-    ctx->setBufferFormat(nativeFormat);
+    ctx->setBufferFormat(nativeHalFormat);
     ctx->setBufferDataspace(nativeDataspace);
     ctx->setBufferWidth(width);
     ctx->setBufferHeight(height);
@@ -408,14 +428,14 @@ static void ImageReader_init(JNIEnv* env, jobject thiz, jobject weakThiz, jint w
     res = bufferConsumer->setDefaultBufferSize(width, height);
     if (res != OK) {
         jniThrowExceptionFmt(env, "java/lang/IllegalStateException",
-                          "Failed to set buffer consumer default size (%dx%d) for format 0x%x",
-                          width, height, nativeFormat);
+                          "Failed to set buffer consumer default size (%dx%d) for Hal format 0x%x",
+                          width, height, nativeHalFormat);
         return;
     }
-    res = bufferConsumer->setDefaultBufferFormat(nativeFormat);
+    res = bufferConsumer->setDefaultBufferFormat(nativeHalFormat);
     if (res != OK) {
         jniThrowExceptionFmt(env, "java/lang/IllegalStateException",
-                          "Failed to set buffer consumer default format 0x%x", nativeFormat);
+                          "Failed to set buffer consumer default Halformat 0x%x", nativeHalFormat);
         return;
     }
     res = bufferConsumer->setDefaultBufferDataSpace(nativeDataspace);
@@ -556,23 +576,29 @@ static jint ImageReader_imageSetup(JNIEnv* env, jobject thiz, jobject image) {
         int outputWidth = getBufferWidth(buffer);
         int outputHeight = getBufferHeight(buffer);
 
-        int imgReaderFmt = ctx->getBufferFormat();
+        int imgReaderHalFmt = ctx->getBufferFormat();
         int imageReaderWidth = ctx->getBufferWidth();
         int imageReaderHeight = ctx->getBufferHeight();
         int bufferFormat = buffer->mGraphicBuffer->getPixelFormat();
-        if ((bufferFormat != HAL_PIXEL_FORMAT_BLOB) && (imgReaderFmt != HAL_PIXEL_FORMAT_BLOB) &&
+        if ((bufferFormat != HAL_PIXEL_FORMAT_BLOB) && (imgReaderHalFmt != HAL_PIXEL_FORMAT_BLOB) &&
                 (imageReaderWidth != outputWidth || imageReaderHeight != outputHeight)) {
             ALOGV("%s: Producer buffer size: %dx%d, doesn't match ImageReader configured size: %dx%d",
                     __FUNCTION__, outputWidth, outputHeight, imageReaderWidth, imageReaderHeight);
         }
-        if (imgReaderFmt != bufferFormat) {
-            if (imgReaderFmt == HAL_PIXEL_FORMAT_YCbCr_420_888 &&
+        if (imgReaderHalFmt != bufferFormat) {
+            if (imgReaderHalFmt == HAL_PIXEL_FORMAT_YCbCr_420_888 &&
                     isPossiblyYUV(bufferFormat)) {
                 // Treat formats that are compatible with flexible YUV
                 // (HAL_PIXEL_FORMAT_YCbCr_420_888) as HAL_PIXEL_FORMAT_YCbCr_420_888.
                 ALOGV("%s: Treat buffer format to 0x%x as HAL_PIXEL_FORMAT_YCbCr_420_888",
                         __FUNCTION__, bufferFormat);
-            } else if (imgReaderFmt == HAL_PIXEL_FORMAT_BLOB &&
+            } else if (imgReaderHalFmt == HAL_PIXEL_FORMAT_YCBCR_P010 &&
+                    isPossibly10BitYUV(bufferFormat)) {
+                // Treat formats that are compatible with flexible 10-bit YUV
+                // (HAL_PIXEL_FORMAT_YCBCR_P010) as HAL_PIXEL_FORMAT_YCBCR_P010.
+                ALOGV("%s: Treat buffer format to 0x%x as HAL_PIXEL_FORMAT_YCBCR_P010",
+                        __FUNCTION__, bufferFormat);
+            } else if (imgReaderHalFmt == HAL_PIXEL_FORMAT_BLOB &&
                     bufferFormat == HAL_PIXEL_FORMAT_RGBA_8888) {
                 // Using HAL_PIXEL_FORMAT_RGBA_8888 Gralloc buffers containing JPEGs to get around
                 // SW write limitations for (b/17379185).
@@ -602,6 +628,8 @@ static jint ImageReader_imageSetup(JNIEnv* env, jobject thiz, jobject image) {
     Image_setBufferItem(env, image, buffer);
     env->SetLongField(image, gSurfaceImageClassInfo.mTimestamp,
             static_cast<jlong>(buffer->mTimestamp));
+    env->SetIntField(image, gSurfaceImageClassInfo.mDataSpace,
+            static_cast<jint>(buffer->mDataSpace));
     auto transform = buffer->mTransform;
     if (buffer->mTransformToDisplayInverse) {
         transform |= NATIVE_WINDOW_TRANSFORM_INVERSE_DISPLAY;
@@ -614,7 +642,8 @@ static jint ImageReader_imageSetup(JNIEnv* env, jobject thiz, jobject image) {
     return ACQUIRE_SUCCESS;
 }
 
-static jint ImageReader_detachImage(JNIEnv* env, jobject thiz, jobject image) {
+static jint ImageReader_detachImage(JNIEnv* env, jobject thiz, jobject image,
+                                    jboolean throwISEOnly) {
     ALOGV("%s:", __FUNCTION__);
     JNIImageReaderContext* ctx = ImageReader_getContext(env, thiz);
     if (ctx == NULL) {
@@ -637,8 +666,12 @@ static jint ImageReader_detachImage(JNIEnv* env, jobject thiz, jobject image) {
     res = bufferConsumer->detachBuffer(buffer->mSlot);
     if (res != OK) {
         ALOGE("Image detach failed: %s (%d)!!!", strerror(-res), res);
-        jniThrowRuntimeException(env,
-                "nativeDetachImage failed for image!!!");
+        if ((bool) throwISEOnly) {
+            jniThrowException(env, "java/lang/IllegalStateException",
+                    "nativeDetachImage failed for image!!!");
+        } else {
+             jniThrowRuntimeException(env, "nativeDetachImage failed for image!!!");
+        }
         return res;
     }
     return OK;
@@ -675,7 +708,8 @@ static jobject ImageReader_getSurface(JNIEnv* env, jobject thiz)
     return android_view_Surface_createFromIGraphicBufferProducer(env, gbp);
 }
 
-static void Image_getLockedImage(JNIEnv* env, jobject thiz, LockedImage *image) {
+static void Image_getLockedImage(JNIEnv* env, jobject thiz, LockedImage *image,
+        uint64_t ndkReaderUsage) {
     ALOGV("%s", __FUNCTION__);
     BufferItem* buffer = Image_getBufferItem(env, thiz);
     if (buffer == NULL) {
@@ -684,8 +718,16 @@ static void Image_getLockedImage(JNIEnv* env, jobject thiz, LockedImage *image) 
         return;
     }
 
-    status_t res = lockImageFromBuffer(buffer,
-            GRALLOC_USAGE_SW_READ_OFTEN, buffer->mFence->dup(), image);
+    uint32_t lockUsage;
+    if ((ndkReaderUsage & (AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY
+            | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN)) != 0) {
+        lockUsage = GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN;
+    } else {
+        lockUsage = GRALLOC_USAGE_SW_READ_OFTEN;
+    }
+
+    status_t res = lockImageFromBuffer(buffer, lockUsage, buffer->mFence->dup(), image);
+
     if (res != OK) {
         jniThrowExceptionFmt(env, "java/lang/RuntimeException",
                 "lock buffer failed for format 0x%x",
@@ -720,8 +762,92 @@ static bool Image_getLockedImageInfo(JNIEnv* env, LockedImage* buffer, int idx,
     return true;
 }
 
+static void ImageReader_unlockGraphicBuffer(JNIEnv* env, jobject /*thiz*/,
+        jobject buffer) {
+    sp<GraphicBuffer> graphicBuffer =
+            android_graphics_GraphicBuffer_getNativeGraphicsBuffer(env, buffer);
+    if (graphicBuffer.get() == NULL) {
+        jniThrowRuntimeException(env, "Invalid graphic buffer!");
+        return;
+    }
+
+    status_t res = graphicBuffer->unlock();
+    if (res != OK) {
+        jniThrowRuntimeException(env, "unlock buffer failed");
+    }
+}
+
+static jobjectArray ImageReader_createImagePlanes(JNIEnv* env, jobject /*thiz*/,
+        int numPlanes, jobject buffer, int fenceFd, int format, int cropLeft, int cropTop,
+        int cropRight, int cropBottom)
+{
+    ALOGV("%s: create ImagePlane array with size %d", __FUNCTION__, numPlanes);
+    int rowStride = 0;
+    int pixelStride = 0;
+    uint8_t *pData = NULL;
+    uint32_t dataSize = 0;
+    jobject byteBuffer = NULL;
+
+    PublicFormat publicReaderFormat = static_cast<PublicFormat>(format);
+    int halReaderFormat = mapPublicFormatToHalFormat(publicReaderFormat);
+
+    if (isFormatOpaque(halReaderFormat) && numPlanes > 0) {
+        String8 msg;
+        msg.appendFormat("Format 0x%x is opaque, thus not writable, the number of planes (%d)"
+                " must be 0", halReaderFormat, numPlanes);
+        jniThrowException(env, "java/lang/IllegalArgumentException", msg.string());
+        return NULL;
+    }
+
+    jobjectArray imagePlanes = env->NewObjectArray(numPlanes, gImagePlaneClassInfo.clazz,
+            /*initial_element*/NULL);
+    if (imagePlanes == NULL) {
+        jniThrowRuntimeException(env, "Failed to create ImagePlane arrays,"
+                " probably out of memory");
+        return NULL;
+    }
+    if (isFormatOpaque(halReaderFormat)) {
+        // Return 0 element surface array.
+        return imagePlanes;
+    }
+
+    LockedImage lockedImg = LockedImage();
+    uint32_t lockUsage = GRALLOC_USAGE_SW_READ_OFTEN;
+
+    Rect cropRect(cropLeft, cropTop, cropRight, cropBottom);
+    status_t res = lockImageFromBuffer(
+            android_graphics_GraphicBuffer_getNativeGraphicsBuffer(env, buffer), lockUsage,
+            cropRect, fenceFd, &lockedImg);
+    if (res != OK) {
+        jniThrowExceptionFmt(env, "java/lang/RuntimeException",
+                "lock buffer failed for format 0x%x", format);
+        return nullptr;
+    }
+
+    // Create all ImagePlanes
+    for (int i = 0; i < numPlanes; i++) {
+        if (!Image_getLockedImageInfo(env, &lockedImg, i, halReaderFormat,
+                &pData, &dataSize, &pixelStride, &rowStride)) {
+            return NULL;
+        }
+        byteBuffer = env->NewDirectByteBuffer(pData, dataSize);
+        if ((byteBuffer == NULL) && (env->ExceptionCheck() == false)) {
+            jniThrowException(env, "java/lang/IllegalStateException",
+                    "Failed to allocate ByteBuffer");
+            return NULL;
+        }
+
+        // Finally, create this ImagePlane.
+        jobject imagePlane = env->NewObject(gImagePlaneClassInfo.clazz,
+                    gImagePlaneClassInfo.ctor, rowStride, pixelStride, byteBuffer);
+        env->SetObjectArrayElement(imagePlanes, i, imagePlane);
+    }
+
+    return imagePlanes;
+}
+
 static jobjectArray Image_createSurfacePlanes(JNIEnv* env, jobject thiz,
-        int numPlanes, int readerFormat)
+        int numPlanes, int halReaderFormat, uint64_t ndkReaderUsage)
 {
     ALOGV("%s: create SurfacePlane array with size %d", __FUNCTION__, numPlanes);
     int rowStride = 0;
@@ -729,9 +855,6 @@ static jobjectArray Image_createSurfacePlanes(JNIEnv* env, jobject thiz,
     uint8_t *pData = NULL;
     uint32_t dataSize = 0;
     jobject byteBuffer = NULL;
-
-    PublicFormat publicReaderFormat = static_cast<PublicFormat>(readerFormat);
-    int halReaderFormat = mapPublicFormatToHalFormat(publicReaderFormat);
 
     if (isFormatOpaque(halReaderFormat) && numPlanes > 0) {
         String8 msg;
@@ -754,7 +877,7 @@ static jobjectArray Image_createSurfacePlanes(JNIEnv* env, jobject thiz,
     }
 
     LockedImage lockedImg = LockedImage();
-    Image_getLockedImage(env, thiz, &lockedImg);
+    Image_getLockedImage(env, thiz, &lockedImg, ndkReaderUsage);
     if (env->ExceptionCheck()) {
         return NULL;
     }
@@ -790,6 +913,16 @@ static jint Image_getHeight(JNIEnv* env, jobject thiz)
 {
     BufferItem* buffer = Image_getBufferItem(env, thiz);
     return getBufferHeight(buffer);
+}
+
+static jint Image_getFenceFd(JNIEnv* env, jobject thiz)
+{
+    BufferItem* buffer = Image_getBufferItem(env, thiz);
+    if ((buffer != NULL) && (buffer->mFence.get() != NULL)){
+        return buffer->mFence->get();
+    }
+
+    return -1;
 }
 
 static jint Image_getFormat(JNIEnv* env, jobject thiz, jint readerFormat)
@@ -829,21 +962,27 @@ static jobject Image_getHardwareBuffer(JNIEnv* env, jobject thiz) {
 
 static const JNINativeMethod gImageReaderMethods[] = {
     {"nativeClassInit",        "()V",                        (void*)ImageReader_classInit },
-    {"nativeInit",             "(Ljava/lang/Object;IIIIJ)V",  (void*)ImageReader_init },
+    {"nativeInit",             "(Ljava/lang/Object;IIIJII)V",   (void*)ImageReader_init },
     {"nativeClose",            "()V",                        (void*)ImageReader_close },
     {"nativeReleaseImage",     "(Landroid/media/Image;)V",   (void*)ImageReader_imageRelease },
     {"nativeImageSetup",       "(Landroid/media/Image;)I",   (void*)ImageReader_imageSetup },
     {"nativeGetSurface",       "()Landroid/view/Surface;",   (void*)ImageReader_getSurface },
-    {"nativeDetachImage",      "(Landroid/media/Image;)I",   (void*)ImageReader_detachImage },
+    {"nativeDetachImage",      "(Landroid/media/Image;Z)I",   (void*)ImageReader_detachImage },
+    {"nativeCreateImagePlanes",
+        "(ILandroid/graphics/GraphicBuffer;IIIIII)[Landroid/media/ImageReader$ImagePlane;",
+                                                             (void*)ImageReader_createImagePlanes },
+    {"nativeUnlockGraphicBuffer",
+        "(Landroid/graphics/GraphicBuffer;)V",             (void*)ImageReader_unlockGraphicBuffer },
     {"nativeDiscardFreeBuffers", "()V",                      (void*)ImageReader_discardFreeBuffers }
 };
 
 static const JNINativeMethod gImageMethods[] = {
-    {"nativeCreatePlanes",      "(II)[Landroid/media/ImageReader$SurfaceImage$SurfacePlane;",
+    {"nativeCreatePlanes",      "(IIJ)[Landroid/media/ImageReader$SurfaceImage$SurfacePlane;",
                                                              (void*)Image_createSurfacePlanes },
     {"nativeGetWidth",          "()I",                       (void*)Image_getWidth },
     {"nativeGetHeight",         "()I",                       (void*)Image_getHeight },
     {"nativeGetFormat",         "(I)I",                      (void*)Image_getFormat },
+    {"nativeGetFenceFd",        "()I",                       (void*)Image_getFenceFd },
     {"nativeGetHardwareBuffer", "()Landroid/hardware/HardwareBuffer;",
                                                              (void*)Image_getHardwareBuffer },
 };

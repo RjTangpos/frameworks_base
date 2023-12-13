@@ -20,6 +20,8 @@
 #include <hwui/Paint.h>
 #include <minikin/Layout.h>
 
+#include <SkBlendMode.h>
+
 #include <cstdio>
 
 class GlyphStressAnimation;
@@ -55,6 +57,6 @@ public:
             TestUtils::drawUtf8ToCanvas(canvas.get(), text, paint, 0, 100 * (i + 2));
         }
 
-        container->setStagingDisplayList(canvas->finishRecording());
+        canvas->finishRecording(container.get());
     }
 };

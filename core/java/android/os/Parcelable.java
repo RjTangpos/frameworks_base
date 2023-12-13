@@ -17,6 +17,7 @@
 package android.os;
 
 import android.annotation.IntDef;
+import android.annotation.NonNull;
 import android.annotation.SystemApi;
 
 import java.lang.annotation.Retention;
@@ -25,12 +26,39 @@ import java.lang.annotation.RetentionPolicy;
 /**
  * Interface for classes whose instances can be written to
  * and restored from a {@link Parcel}.  Classes implementing the Parcelable
- * interface must also have a non-null static field called <code>CREATOR</code>
- * of a type that implements the {@link Parcelable.Creator} interface.
- * 
+ * interface must also have a non-null public static field called
+ * <code>CREATOR</code> of a type that implements the {@link Parcelable.Creator}
+ * interface.
+ *
  * <p>A typical implementation of Parcelable is:</p>
- * 
- * <pre>
+ *
+ * <div>
+ * <div class="ds-selector-tabs"><section><h3 id="kotlin">Kotlin</h3>
+ * <pre class="prettyprint lang-kotlin">
+ * class MyParcelable private constructor(`in`: Parcel) : Parcelable {
+ *     private val mData: Int = `in`.readInt()
+ *
+ *     override fun describeContents(): Int {
+ *         return 0
+ *     }
+ *
+ *     override fun writeToParcel(out: Parcel, flags: Int) {
+ *         out.writeInt(mData)
+ *     }
+ *
+ *     companion object CREATOR: Parcelable.Creator&lt;MyParcelable?&gt; {
+ *         override fun createFromParcel(`in`: Parcel): MyParcelable? {
+ *             return MyParcelable(`in`)
+ *         }
+ *
+ *         override fun newArray(size: Int): Array&lt;MyParcelable?&gt; {
+ *             return arrayOfNulls(size)
+ *         }
+ *     }
+ * }
+ * </pre>
+ * </section><section><h3 id="java">Java</h3>
+ * <pre class="prettyprint lang-java">
  * public class MyParcelable implements Parcelable {
  *     private int mData;
  *
@@ -52,11 +80,11 @@ import java.lang.annotation.RetentionPolicy;
  *             return new MyParcelable[size];
  *         }
  *     };
- *     
+ *
  *     private MyParcelable(Parcel in) {
  *         mData = in.readInt();
  *     }
- * }</pre>
+ * }</pre></section></div></div>
  */
 public interface Parcelable {
     /** @hide */
@@ -161,7 +189,7 @@ public interface Parcelable {
      * @return true if this parcelable is stable.
      * @hide
      */
-    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @SystemApi(client = SystemApi.Client.PRIVILEGED_APPS)
     default @Stability int getStability() {
         return PARCELABLE_STABILITY_LOCAL;
     }
@@ -173,7 +201,7 @@ public interface Parcelable {
      * @param flags Additional flags about how the object should be written.
      * May be 0 or {@link #PARCELABLE_WRITE_RETURN_VALUE}.
      */
-    public void writeToParcel(Parcel dest, @WriteFlags int flags);
+    public void writeToParcel(@NonNull Parcel dest, @WriteFlags int flags);
 
     /**
      * Interface that must be implemented and provided as a public CREATOR

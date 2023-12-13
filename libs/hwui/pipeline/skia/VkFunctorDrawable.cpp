@@ -15,17 +15,21 @@
  */
 
 #include "VkFunctorDrawable.h"
-#include <private/hwui/DrawVkInfo.h>
 
 #include <GrBackendDrawableInfo.h>
 #include <SkAndroidFrameworkUtils.h>
 #include <SkImage.h>
-#include "include/private/SkM44.h"
+#include <SkM44.h>
+#include <gui/TraceUtils.h>
+#include <private/hwui/DrawVkInfo.h>
 #include <utils/Color.h>
 #include <utils/Trace.h>
-#include <utils/TraceUtils.h>
 #include <vk/GrVkTypes.h>
+
 #include <thread>
+
+#include "effects/GainmapRenderer.h"
+#include "renderthread/CanvasContext.h"
 #include "renderthread/RenderThread.h"
 #include "renderthread/VulkanManager.h"
 #include "thread/ThreadBase.h"
@@ -72,6 +76,9 @@ void VkFunctorDrawHandler::draw(const GrBackendDrawableInfo& info) {
             .clip_top = mClip.fTop,
             .clip_right = mClip.fRight,
             .clip_bottom = mClip.fBottom,
+            .is_layer = !vulkan_info.fFromSwapchainOrAndroidWindow,
+            .currentHdrSdrRatio = getTargetHdrSdrRatio(mImageInfo.colorSpace()),
+            .shouldDither = renderthread::CanvasContext::shouldDither(),
     };
     mat4.getColMajor(&params.transform[0]);
     params.secondary_command_buffer = vulkan_info.fSecondaryCommandBuffer;
@@ -96,7 +103,7 @@ void VkFunctorDrawable::onDraw(SkCanvas* canvas) {
     // "VkFunctorDrawable::onDraw" is not invoked for the most common case, when drawing in a GPU
     // canvas.
 
-    if (canvas->getGrContext() == nullptr) {
+    if (canvas->recordingContext() == nullptr) {
         // We're dumping a picture, render a light-blue rectangle instead
         SkPaint paint;
         paint.setColor(0xFF81D4FA);
@@ -121,12 +128,7 @@ std::unique_ptr<FunctorDrawable::GpuDrawHandler> VkFunctorDrawable::onSnapGpuDra
         return nullptr;
     }
     std::unique_ptr<VkFunctorDrawHandler> draw;
-    if (mAnyFunctor.index() == 0) {
-        return std::make_unique<VkFunctorDrawHandler>(std::get<0>(mAnyFunctor).handle, matrix, clip,
-                                                      image_info);
-    } else {
-        LOG_ALWAYS_FATAL("Not implemented");
-    }
+    return std::make_unique<VkFunctorDrawHandler>(mWebViewHandle, matrix, clip, image_info);
 }
 
 }  // namespace skiapipeline

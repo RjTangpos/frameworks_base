@@ -61,12 +61,12 @@ struct ManifestFixerTest : public ::testing::Test {
             .Build();
   }
 
-  std::unique_ptr<xml::XmlResource> Verify(const StringPiece& str) {
+  std::unique_ptr<xml::XmlResource> Verify(StringPiece str) {
     return VerifyWithOptions(str, {});
   }
 
-  std::unique_ptr<xml::XmlResource> VerifyWithOptions(
-      const StringPiece& str, const ManifestFixerOptions& options) {
+  std::unique_ptr<xml::XmlResource> VerifyWithOptions(StringPiece str,
+                                                      const ManifestFixerOptions& options) {
     std::unique_ptr<xml::XmlResource> doc = test::BuildXmlDom(str);
     ManifestFixer fixer(options);
     if (fixer.Consume(mContext.get(), doc.get())) {
@@ -351,6 +351,54 @@ TEST_F(ManifestFixerTest,
   EXPECT_THAT(attr->value, StrEq("com.android"));
 }
 
+TEST_F(ManifestFixerTest, AddOverlayCategory) {
+  ManifestFixerOptions options;
+  options.rename_overlay_category = std::string("category");
+
+  std::unique_ptr<xml::XmlResource> doc = VerifyWithOptions(R"EOF(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                package="android">
+        <overlay android:targetName="Customization" android:targetPackage="android" />
+      </manifest>)EOF",
+                                                            options);
+  ASSERT_THAT(doc, NotNull());
+
+  xml::Element* manifest_el = doc->root.get();
+  ASSERT_THAT(manifest_el, NotNull());
+
+  xml::Element* overlay_el = manifest_el->FindChild({}, "overlay");
+  ASSERT_THAT(overlay_el, NotNull());
+
+  xml::Attribute* attr = overlay_el->FindAttribute(xml::kSchemaAndroid, "category");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("category"));
+}
+
+TEST_F(ManifestFixerTest, OverrideOverlayCategory) {
+  ManifestFixerOptions options;
+  options.rename_overlay_category = std::string("category");
+
+  std::unique_ptr<xml::XmlResource> doc = VerifyWithOptions(R"EOF(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                package="android">
+        <overlay android:targetName="Customization"
+                 android:targetPackage="android"
+                 android:category="yrogetac"/>
+      </manifest>)EOF",
+                                                            options);
+  ASSERT_THAT(doc, NotNull());
+
+  xml::Element* manifest_el = doc->root.get();
+  ASSERT_THAT(manifest_el, NotNull());
+
+  xml::Element* overlay_el = manifest_el->FindChild({}, "overlay");
+  ASSERT_THAT(overlay_el, NotNull());
+
+  xml::Attribute* attr = overlay_el->FindAttribute(xml::kSchemaAndroid, "category");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("category"));
+}
+
 TEST_F(ManifestFixerTest, UseDefaultVersionNameAndCode) {
   ManifestFixerOptions options;
   options.version_name_default = std::string("Beta");
@@ -443,6 +491,66 @@ TEST_F(ManifestFixerTest, ReplaceVersionNameAndCode) {
   attr = manifest_el->FindAttribute(xml::kSchemaAndroid, "versionCodeMajor");
   ASSERT_THAT(attr, NotNull());
   EXPECT_THAT(attr->value, StrEq("0x20000000"));
+}
+
+TEST_F(ManifestFixerTest, UseDefaultRevisionCode) {
+  ManifestFixerOptions options;
+  options.revision_code_default = std::string("0x10000000");
+
+  std::unique_ptr<xml::XmlResource> doc = VerifyWithOptions(R"EOF(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                package="android"
+                android:versionCode="0x00000001" />)EOF",
+                                                            options);
+  ASSERT_THAT(doc, NotNull());
+
+  xml::Element* manifest_el = doc->root.get();
+  ASSERT_THAT(manifest_el, NotNull());
+
+  xml::Attribute* attr = manifest_el->FindAttribute(xml::kSchemaAndroid, "revisionCode");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("0x10000000"));
+}
+
+TEST_F(ManifestFixerTest, DontUseDefaultRevisionCode) {
+  ManifestFixerOptions options;
+  options.revision_code_default = std::string("0x10000000");
+
+  std::unique_ptr<xml::XmlResource> doc = VerifyWithOptions(R"EOF(
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                  package="android"
+                  android:versionCode="0x00000001"
+                  android:revisionCode="0x00000002" />)EOF",
+                                                            options);
+  ASSERT_THAT(doc, NotNull());
+
+  xml::Element* manifest_el = doc->root.get();
+  ASSERT_THAT(manifest_el, NotNull());
+
+  xml::Attribute* attr = manifest_el->FindAttribute(xml::kSchemaAndroid, "revisionCode");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("0x00000002"));
+}
+
+TEST_F(ManifestFixerTest, ReplaceRevisionCode) {
+  ManifestFixerOptions options;
+  options.replace_version = true;
+  options.revision_code_default = std::string("0x10000000");
+
+  std::unique_ptr<xml::XmlResource> doc = VerifyWithOptions(R"EOF(
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                  package="android"
+                  android:versionCode="0x00000001"
+                  android:revisionCode="0x00000002" />)EOF",
+                                                            options);
+  ASSERT_THAT(doc, NotNull());
+
+  xml::Element* manifest_el = doc->root.get();
+  ASSERT_THAT(manifest_el, NotNull());
+
+  xml::Attribute* attr = manifest_el->FindAttribute(xml::kSchemaAndroid, "revisionCode");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("0x10000000"));
 }
 
 TEST_F(ManifestFixerTest, ReplaceVersionName) {
@@ -784,6 +892,35 @@ TEST_F(ManifestFixerTest, InsertCompileSdkVersions) {
   EXPECT_THAT(attr->value, StrEq("P"));
 }
 
+TEST_F(ManifestFixerTest, DoNotInsertCompileSdkVersions) {
+  std::string input = R"(<manifest package="com.pkg" />)";
+  ManifestFixerOptions options;
+  options.no_compile_sdk_metadata = true;
+  options.compile_sdk_version = {"28"};
+  options.compile_sdk_version_codename = {"P"};
+
+  std::unique_ptr<xml::XmlResource> manifest = VerifyWithOptions(input, options);
+  ASSERT_THAT(manifest, NotNull());
+
+  // There should be a declaration of kSchemaAndroid, even when the input
+  // didn't have one.
+  EXPECT_EQ(manifest->root->namespace_decls.size(), 1);
+  EXPECT_EQ(manifest->root->namespace_decls[0].prefix, "android");
+  EXPECT_EQ(manifest->root->namespace_decls[0].uri, xml::kSchemaAndroid);
+
+  xml::Attribute* attr = manifest->root->FindAttribute(xml::kSchemaAndroid, "compileSdkVersion");
+  ASSERT_THAT(attr, IsNull());
+
+  attr = manifest->root->FindAttribute(xml::kSchemaAndroid, "compileSdkVersionCodename");
+  ASSERT_THAT(attr, IsNull());
+
+  attr = manifest->root->FindAttribute("", "platformBuildVersionCode");
+  ASSERT_THAT(attr, IsNull());
+
+  attr = manifest->root->FindAttribute("", "platformBuildVersionName");
+  ASSERT_THAT(attr, IsNull());
+}
+
 TEST_F(ManifestFixerTest, OverrideCompileSdkVersions) {
   std::string input = R"(
       <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="android"
@@ -857,6 +994,63 @@ TEST_F(ManifestFixerTest, UnexpectedElementsInManifest) {
   ASSERT_THAT(manifest, IsNull());
 }
 
+TEST_F(ManifestFixerTest, InsertFingerprintPrefixIfNotExist) {
+  std::string input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+      </manifest>)";
+  ManifestFixerOptions options;
+  options.fingerprint_prefixes = {"foo", "bar"};
+
+  std::unique_ptr<xml::XmlResource> manifest = VerifyWithOptions(input, options);
+  ASSERT_THAT(manifest, NotNull());
+  xml::Element* install_constraints = manifest->root.get()->FindChild({}, "install-constraints");
+  ASSERT_THAT(install_constraints, NotNull());
+  std::vector<xml::Element*> fingerprint_prefixes = install_constraints->GetChildElements();
+  EXPECT_EQ(fingerprint_prefixes.size(), 2);
+  xml::Attribute* attr;
+  EXPECT_THAT(fingerprint_prefixes[0]->name, StrEq("fingerprint-prefix"));
+  attr = fingerprint_prefixes[0]->FindAttribute(xml::kSchemaAndroid, "value");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("foo"));
+  EXPECT_THAT(fingerprint_prefixes[1]->name, StrEq("fingerprint-prefix"));
+  attr = fingerprint_prefixes[1]->FindAttribute(xml::kSchemaAndroid, "value");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("bar"));
+}
+
+TEST_F(ManifestFixerTest, AppendFingerprintPrefixIfExists) {
+  std::string input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+          <install-constraints>
+            <fingerprint-prefix android:value="foo" />
+          </install-constraints>
+      </manifest>)";
+  ManifestFixerOptions options;
+  options.fingerprint_prefixes = {"bar", "baz"};
+
+  std::unique_ptr<xml::XmlResource> manifest = VerifyWithOptions(input, options);
+  ASSERT_THAT(manifest, NotNull());
+  xml::Element* install_constraints = manifest->root.get()->FindChild({}, "install-constraints");
+  ASSERT_THAT(install_constraints, NotNull());
+  std::vector<xml::Element*> fingerprint_prefixes = install_constraints->GetChildElements();
+  EXPECT_EQ(fingerprint_prefixes.size(), 3);
+  xml::Attribute* attr;
+  EXPECT_THAT(fingerprint_prefixes[0]->name, StrEq("fingerprint-prefix"));
+  attr = fingerprint_prefixes[0]->FindAttribute(xml::kSchemaAndroid, "value");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("foo"));
+  EXPECT_THAT(fingerprint_prefixes[1]->name, StrEq("fingerprint-prefix"));
+  attr = fingerprint_prefixes[1]->FindAttribute(xml::kSchemaAndroid, "value");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("bar"));
+  EXPECT_THAT(fingerprint_prefixes[2]->name, StrEq("fingerprint-prefix"));
+  attr = fingerprint_prefixes[2]->FindAttribute(xml::kSchemaAndroid, "value");
+  ASSERT_THAT(attr, NotNull());
+  EXPECT_THAT(attr->value, StrEq("baz"));
+}
+
 TEST_F(ManifestFixerTest, UsesLibraryMustHaveNonEmptyName) {
   std::string input = R"(
       <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -886,4 +1080,438 @@ TEST_F(ManifestFixerTest, UsesLibraryMustHaveNonEmptyName) {
   EXPECT_THAT(Verify(input), NotNull());
 }
 
+TEST_F(ManifestFixerTest, ApplicationPropertyAttributeRequired) {
+  std::string input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+        <application>
+          <property android:name="" />
+        </application>
+      </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+}
+
+TEST_F(ManifestFixerTest, ApplicationPropertyOnlyOneAttributeDefined) {
+  std::string input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+        <application>
+          <property android:name="" android:value="" android:resource="" />
+        </application>
+      </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+        <application>
+          <property android:name="" android:resource="" />
+        </application>
+      </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+        <application>
+          <property android:name="" android:value="" />
+        </application>
+      </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+}
+
+TEST_F(ManifestFixerTest, ComponentPropertyOnlyOneAttributeDefined) {
+  std::string input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+        <application>
+          <activity android:name=".MyActivity">
+            <property android:name="" android:value="" android:resource="" />
+          </activity>
+        </application>
+      </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+        <application>
+          <activity android:name=".MyActivity">
+            <property android:name="" android:value="" />
+          </activity>
+        </application>
+      </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  input = R"(
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="android">
+        <application>
+          <activity android:name=".MyActivity">
+            <property android:name="" android:resource="" />
+          </activity>
+        </application>
+      </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+}
+
+TEST_F(ManifestFixerTest, IntentFilterActionMustHaveNonEmptyName) {
+  std::string input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+             package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+}
+
+TEST_F(ManifestFixerTest, IntentFilterCategoryMustHaveNonEmptyName) {
+  std::string input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <category android:name="" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+             package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <category />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <category android:name="android.intent.category.LAUNCHER" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+}
+
+TEST_F(ManifestFixerTest, IntentFilterPathMustStartWithLeadingSlashOnDeepLinks) {
+  // No DeepLink.
+  std::string input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+             package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <data />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // No DeepLink, missing ACTION_VIEW.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPrefix="pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // DeepLink, missing DEFAULT category while DEFAULT is recommended but not required.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPrefix="pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  // No DeepLink, missing BROWSABLE category.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPrefix="pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // No DeepLink, missing 'android:scheme' in <data> tag.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:host="www.example.com"
+                          android:pathPrefix="pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // No DeepLink, <action> is ACTION_MAIN not ACTION_VIEW.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPrefix="pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // DeepLink with no leading slash in android:path.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:path="path" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  // DeepLink with leading slash in android:path.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:path="/path" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // DeepLink with no leading slash in android:pathPrefix.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPrefix="pathPrefix" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  // DeepLink with leading slash in android:pathPrefix.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPrefix="/pathPrefix" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // DeepLink with no leading slash in android:pathPattern.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPattern="pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), IsNull());
+
+  // DeepLink with leading slash in android:pathPattern.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPattern="/pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // DeepLink with '.' start in pathPattern.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPattern=".*\\.pathPattern" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // DeepLink with '*' start in pathPattern.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:pathPattern="*" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+
+  // DeepLink with string reference as a path.
+  input = R"(
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="android">
+      <application>
+        <activity android:name=".MainActivity">
+          <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http"
+                          android:host="www.example.com"
+                          android:path="@string/startup_uri" />
+          </intent-filter>
+        </activity>
+      </application>
+    </manifest>)";
+  EXPECT_THAT(Verify(input), NotNull());
+}
 }  // namespace aapt

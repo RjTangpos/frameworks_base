@@ -32,7 +32,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 
-import com.android.systemui.Interpolators;
+import com.android.app.animation.Interpolators;
 import com.android.systemui.R;
 
 /**

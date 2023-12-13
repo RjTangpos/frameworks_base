@@ -24,8 +24,6 @@ import android.annotation.NonNull;
 import android.util.ArrayMap;
 import android.util.Slog;
 
-import com.android.server.wm.WindowManagerService.H;
-
 import java.io.PrintWriter;
 
 /**
@@ -71,6 +69,10 @@ class UnknownAppVisibilityController {
         return mUnknownApps.isEmpty();
     }
 
+    boolean isVisibilityUnknown(ActivityRecord r) {
+        return mUnknownApps.containsKey(r);
+    }
+
     void clear() {
         mUnknownApps.clear();
     }
@@ -102,7 +104,13 @@ class UnknownAppVisibilityController {
         if (DEBUG_UNKNOWN_APP_VISIBILITY) {
             Slog.d(TAG, "App launched activity=" + activity);
         }
-        mUnknownApps.put(activity, UNKNOWN_STATE_WAITING_RESUME);
+        // If the activity was started with launchTaskBehind, the lifecycle will goes to paused
+        // directly, and the process will pass onResume, so we don't need to waiting resume for it.
+        if (!activity.mLaunchTaskBehind) {
+            mUnknownApps.put(activity, UNKNOWN_STATE_WAITING_RESUME);
+        } else {
+            mUnknownApps.put(activity, UNKNOWN_STATE_WAITING_RELAYOUT);
+        }
     }
 
     /**
@@ -129,10 +137,10 @@ class UnknownAppVisibilityController {
             Slog.d(TAG, "App relayouted appWindow=" + activity);
         }
         int state = mUnknownApps.get(activity);
-        if (state == UNKNOWN_STATE_WAITING_RELAYOUT) {
+        if (state == UNKNOWN_STATE_WAITING_RELAYOUT || activity.mStartingWindow != null) {
             mUnknownApps.put(activity, UNKNOWN_STATE_WAITING_VISIBILITY_UPDATE);
-            mService.notifyKeyguardFlagsChanged(this::notifyVisibilitiesUpdated,
-                    activity.getDisplayContent().getDisplayId());
+            mDisplayContent.notifyKeyguardFlagsChanged();
+            notifyVisibilitiesUpdated();
         }
     }
 

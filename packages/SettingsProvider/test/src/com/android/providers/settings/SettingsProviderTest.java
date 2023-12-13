@@ -128,17 +128,18 @@ public class SettingsProviderTest extends BaseSettingsProviderTest {
         }
     }
 
-    @Test
-    public void testSelectAllSecureViaProviderApi() throws Exception {
-        setSettingViaProviderApiAndAssertSuccessfulChange(SETTING_TYPE_SECURE,
-                FAKE_SETTING_NAME, FAKE_SETTING_VALUE, false);
-        try {
-            queryAllSettingsViaProviderApiSettingAndAssertSettingPresent(SETTING_TYPE_SECURE,
-                    FAKE_SETTING_NAME);
-        } finally {
-            deleteStringViaProviderApi(SETTING_TYPE_SECURE, FAKE_SETTING_NAME);
-        }
-    }
+    // TODO(b/142206242): make this less flaky and re-enable it
+//    @Test
+//    public void testSelectAllSecureViaProviderApi() throws Exception {
+//        setSettingViaProviderApiAndAssertSuccessfulChange(SETTING_TYPE_SECURE,
+//                FAKE_SETTING_NAME, FAKE_SETTING_VALUE, false);
+//        try {
+//            queryAllSettingsViaProviderApiSettingAndAssertSettingPresent(SETTING_TYPE_SECURE,
+//                    FAKE_SETTING_NAME);
+//        } finally {
+//            deleteStringViaProviderApi(SETTING_TYPE_SECURE, FAKE_SETTING_NAME);
+//        }
+//    }
 
     @Test
     public void testSelectAllSystemViaProviderApi() throws Exception {
@@ -187,7 +188,6 @@ public class SettingsProviderTest extends BaseSettingsProviderTest {
         int insertedCount = 0;
         try {
             for (; insertedCount < 1200; insertedCount++) {
-                Log.w(LOG_TAG, "Adding app specific setting: " + insertedCount);
                 insertStringViaProviderApi(SETTING_TYPE_SYSTEM,
                         String.valueOf(insertedCount), FAKE_SETTING_VALUE, false);
             }
@@ -196,7 +196,6 @@ public class SettingsProviderTest extends BaseSettingsProviderTest {
             // expected
         } finally {
             for (; insertedCount >= 0; insertedCount--) {
-                Log.w(LOG_TAG, "Removing app specific setting: " + insertedCount);
                 deleteStringViaProviderApi(SETTING_TYPE_SYSTEM,
                         String.valueOf(insertedCount));
             }
@@ -381,10 +380,11 @@ public class SettingsProviderTest extends BaseSettingsProviderTest {
         }
     }
 
-    @Test
-    public void testResetModeUntrustedClearGlobal() throws Exception {
-        testResetModeUntrustedClearCommon(SETTING_TYPE_GLOBAL);
-    }
+    // TODO(b/142206242): make this less flaky and re-enable it
+//    @Test
+//    public void testResetModeUntrustedClearGlobal() throws Exception {
+//        testResetModeUntrustedClearCommon(SETTING_TYPE_GLOBAL);
+//    }
 
     @Test
     public void testResetModeUntrustedClearSecure() throws Exception {
@@ -422,10 +422,11 @@ public class SettingsProviderTest extends BaseSettingsProviderTest {
         }
     }
 
-    @Test
-    public void testResetModeTrustedDefaultsGlobal() throws Exception {
-        testResetModeTrustedDefaultsCommon(SETTING_TYPE_GLOBAL);
-    }
+    // TODO(b/142206242): make this less flaky and re-enable it
+//    @Test
+//    public void testResetModeTrustedDefaultsGlobal() throws Exception {
+//        testResetModeTrustedDefaultsCommon(SETTING_TYPE_GLOBAL);
+//    }
 
     @Test
     public void testResetModeTrustedDefaultsSecure() throws Exception {
@@ -460,6 +461,31 @@ public class SettingsProviderTest extends BaseSettingsProviderTest {
             // Make sure we have a clean slate.
             putSetting(type, FAKE_SETTING_NAME, null);
             setSettingViaShell(type, FAKE_SETTING_NAME_1, null, true);
+        }
+    }
+
+    // To prevent FRP bypasses, the SECURE_FRP_MODE setting should not be reset when all other
+    // settings are reset.  But it should still be possible to explicitly set its value.
+    @Test
+    public void testSecureFrpModeSettingCannotBeReset() throws Exception {
+        final String name = Settings.Global.SECURE_FRP_MODE;
+        final String origValue = getSetting(SETTING_TYPE_GLOBAL, name);
+        setSettingViaShell(SETTING_TYPE_GLOBAL, name, "1", false);
+        try {
+            assertEquals("1", getSetting(SETTING_TYPE_GLOBAL, name));
+            for (int type : new int[] { SETTING_TYPE_GLOBAL, SETTING_TYPE_SECURE }) {
+                resetSettingsViaShell(type, Settings.RESET_MODE_UNTRUSTED_DEFAULTS);
+                resetSettingsViaShell(type, Settings.RESET_MODE_UNTRUSTED_CHANGES);
+                resetSettingsViaShell(type, Settings.RESET_MODE_TRUSTED_DEFAULTS);
+            }
+            // The value should still be "1".  It should not have been reset to null.
+            assertEquals("1", getSetting(SETTING_TYPE_GLOBAL, name));
+            // It should still be possible to explicitly set the value to "0".
+            setSettingViaShell(SETTING_TYPE_GLOBAL, name, "0", false);
+            assertEquals("0", getSetting(SETTING_TYPE_GLOBAL, name));
+        } finally {
+            setSettingViaShell(SETTING_TYPE_GLOBAL, name, origValue, false);
+            assertEquals(origValue, getSetting(SETTING_TYPE_GLOBAL, name));
         }
     }
 

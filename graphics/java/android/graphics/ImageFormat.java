@@ -26,10 +26,21 @@ public class ImageFormat {
      @Retention(RetentionPolicy.SOURCE)
      @IntDef(value = {
              UNKNOWN,
+             /*
+              * Since some APIs accept either ImageFormat or PixelFormat (and the two
+              * enums do not overlap since they're both partial versions of the
+              * internal format enum), add PixelFormat values here so linting
+              * tools won't complain when method arguments annotated with
+              * ImageFormat are provided with PixelFormat values.
+              */
+             PixelFormat.RGBA_8888,
+             PixelFormat.RGBX_8888,
+             PixelFormat.RGB_888,
              RGB_565,
              YV12,
              Y8,
              Y16,
+             YCBCR_P010,
              NV16,
              NV21,
              YUY2,
@@ -47,8 +58,10 @@ public class ImageFormat {
              DEPTH16,
              DEPTH_POINT_CLOUD,
              RAW_DEPTH,
+             RAW_DEPTH10,
              PRIVATE,
-             HEIC
+             HEIC,
+             JPEG_R
      })
      public @interface Format {
      }
@@ -174,6 +187,25 @@ public class ImageFormat {
     public static final int Y16 = 0x20363159;
 
     /**
+     * <p>Android YUV P010 format.</p>
+     *
+     * P010 is a 4:2:0 YCbCr semiplanar format comprised of a WxH Y plane
+     * followed by a Wx(H/2) CbCr plane. Each sample is represented by a 16-bit
+     * little-endian value, with the lower 6 bits set to zero.
+     *
+     * <p>For example, the {@link android.media.Image} object can provide data
+     * in this format from a {@link android.hardware.camera2.CameraDevice}
+     * through a {@link android.media.ImageReader} object if this format is
+     * supported by {@link android.hardware.camera2.CameraDevice}.</p>
+     *
+     * @see android.media.Image
+     * @see android.media.ImageReader
+     * @see android.hardware.camera2.CameraDevice
+     *
+     */
+    public static final int YCBCR_P010 = 0x36;
+
+    /**
      * YCbCr format, used for video.
      *
      * <p>For the {@link android.hardware.camera2} API, the {@link #YUV_420_888} format is
@@ -225,6 +257,15 @@ public class ImageFormat {
      * following ISO 16684-1:2011(E).</p>
      */
     public static final int DEPTH_JPEG = 0x69656963;
+
+    /**
+     * Compressed JPEG format that includes an embedded recovery map.
+     *
+     * <p>JPEG compressed main image along with embedded recovery map following the
+     * <a href="https://developer.android.com/guide/topics/media/hdr-image-format">Ultra HDR
+     * Image format specification</a>.</p>
+     */
+    public static final int JPEG_R = 0x1005;
 
     /**
      * <p>Multi-plane Android YUV 420 format</p>
@@ -408,7 +449,7 @@ public class ImageFormat {
 
     /**
      * <p>Private raw camera sensor image format, a single channel image with
-     * implementation depedent pixel layout.</p>
+     * implementation dependent pixel layout.</p>
      *
      * <p>RAW_PRIVATE is a format for unprocessed raw image buffers coming from an
      * image sensor. The actual structure of buffers of this format is
@@ -725,6 +766,15 @@ public class ImageFormat {
     public static final int RAW_DEPTH = 0x1002;
 
     /**
+     * Unprocessed implementation-dependent raw
+     * depth measurements, opaque with 10 bit
+     * samples and device specific bit layout.
+     *
+     * @hide
+     */
+    public static final int RAW_DEPTH10 = 0x1003;
+
+    /**
      * Android private opaque image format.
      * <p>
      * The choices of the actual format and pixel data layout are entirely up to
@@ -797,6 +847,9 @@ public class ImageFormat {
             case RAW_DEPTH:
             case RAW_SENSOR:
                 return 16;
+            case YCBCR_P010:
+                return 24;
+            case RAW_DEPTH10:
             case RAW10:
                 return 10;
             case RAW12:
@@ -828,6 +881,7 @@ public class ImageFormat {
             case YUV_420_888:
             case YUV_422_888:
             case YUV_444_888:
+            case YCBCR_P010:
             case FLEX_RGB_888:
             case FLEX_RGBA_8888:
             case RAW_SENSOR:
@@ -838,9 +892,11 @@ public class ImageFormat {
             case DEPTH_POINT_CLOUD:
             case PRIVATE:
             case RAW_DEPTH:
+            case RAW_DEPTH10:
             case Y8:
             case DEPTH_JPEG:
             case HEIC:
+            case JPEG_R:
                 return true;
         }
 

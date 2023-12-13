@@ -23,9 +23,12 @@ interface IColorDisplayManager {
     boolean isDeviceColorManaged();
 
     boolean setSaturationLevel(int saturationLevel);
+    @EnforcePermission("CONTROL_DISPLAY_COLOR_TRANSFORMS")
     boolean setAppSaturationLevel(String packageName, int saturationLevel);
+    @EnforcePermission("CONTROL_DISPLAY_COLOR_TRANSFORMS")
     boolean isSaturationActivated();
 
+    @EnforcePermission("CONTROL_DISPLAY_COLOR_TRANSFORMS")
     int getTransformCapabilities();
 
     boolean isNightDisplayActivated();
@@ -45,4 +48,10 @@ interface IColorDisplayManager {
 
     boolean isDisplayWhiteBalanceEnabled();
     boolean setDisplayWhiteBalanceEnabled(boolean enabled);
+
+    boolean isReduceBrightColorsActivated();
+    boolean setReduceBrightColorsActivated(boolean activated);
+    int getReduceBrightColorsStrength();
+    boolean setReduceBrightColorsStrength(int strength);
+    float getReduceBrightColorsOffsetFactor();
 }

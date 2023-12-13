@@ -143,9 +143,32 @@ enum DebugLevel {
 #define PROPERTY_CAPTURE_SKP_ENABLED "debug.hwui.capture_skp_enabled"
 
 /**
- * Allows to record Skia drawing commands with systrace.
+ * Allows broad recording of Skia drawing commands.
+ *
+ * If disabled, a very minimal set of trace events *may* be recorded.
+ * If enabled, a much broader set of trace events *may* be recorded.
+ *
+ * In either case, trace events are only recorded if an appropriately configured tracing session is
+ * active.
+ *
+ * Use debug.hwui.skia_use_perfetto_track_events to determine if ATrace (default) or Perfetto is
+ * used as the tracing backend.
  */
-#define PROPERTY_SKIA_ATRACE_ENABLED "debug.hwui.skia_atrace_enabled"
+#define PROPERTY_SKIA_TRACING_ENABLED "debug.hwui.skia_tracing_enabled"
+
+/**
+ * Switches Skia's tracing to use Perfetto's Track Event system instead of ATrace.
+ *
+ * If disabled, ATrace will be used by default, which will record trace events from any of Skia's
+ * tracing categories if overall system tracing is active and the "gfx" and "view" ATrace categories
+ * are enabled.
+ *
+ * If enabled, then Perfetto's Track Event system will be used instead, which will only record if an
+ * active Perfetto tracing session is targeting the correct apps and Skia tracing categories with
+ * the Track Event data source enabled. This approach may be used to selectively filter out
+ * undesired Skia tracing categories, and events will contain more data fields.
+ */
+#define PROPERTY_SKIA_USE_PERFETTO_TRACK_EVENTS "debug.hwui.skia_use_perfetto_track_events"
 
 /**
  * Defines how many frames in a sequence to capture.
@@ -158,11 +181,44 @@ enum DebugLevel {
 #define PROPERTY_CAPTURE_SKP_FILENAME "debug.hwui.skp_filename"
 
 /**
+ * Controls whether HWUI will send timing hints to HintManager for
+ * better CPU scheduling. Accepted values are "true" and "false".
+ */
+#define PROPERTY_USE_HINT_MANAGER "debug.hwui.use_hint_manager"
+
+/**
+ * Percentage of frame time that's used for CPU work. The rest is
+ * reserved for GPU work. This is used with use_hint_manager to
+ * provide timing hints to HintManager. Accepted values are
+ * integer from 1-100.
+ */
+#define PROPERTY_TARGET_CPU_TIME_PERCENTAGE "debug.hwui.target_cpu_time_percent"
+
+/**
  * Property for whether this is running in the emulator.
  */
 #define PROPERTY_IS_EMULATOR "ro.boot.qemu"
 
-#define PROPERTY_RENDERAHEAD "debug.hwui.render_ahead"
+/**
+ * Turns on the Skia GPU option "reduceOpsTaskSplitting" which improves GPU
+ * efficiency but may increase VRAM consumption. Default is "true".
+ */
+#define PROPERTY_REDUCE_OPS_TASK_SPLITTING "renderthread.skia.reduceopstasksplitting"
+
+/**
+ * Enable WebView Overlays feature.
+ */
+#define PROPERTY_WEBVIEW_OVERLAYS_ENABLED "debug.hwui.webview_overlays_enabled"
+
+/**
+ * Property for globally GL drawing state. Can be overridden per process with
+ * setDrawingEnabled.
+ */
+#define PROPERTY_DRAWING_ENABLED "debug.hwui.drawing_enabled"
+
+#define PROPERTY_MEMORY_POLICY "debug.hwui.app_memory_policy"
+
+#define PROPERTY_8BIT_HDR_HEADROOM "debug.hwui.8bit_hdr_headroom"
 
 ///////////////////////////////////////////////////////////////////////////////
 // Misc
@@ -178,6 +234,14 @@ enum class ProfileType { None, Console, Bars };
 enum class OverdrawColorSet { Default = 0, Deuteranomaly };
 
 enum class RenderPipelineType { SkiaGL, SkiaVulkan, NotInitialized = 128 };
+
+enum class StretchEffectBehavior {
+    ShaderHWUI,   // Stretch shader in HWUI only, matrix scale in SF
+    Shader,       // Stretch shader in both HWUI and SF
+    UniformScale  // Uniform scale stretch everywhere
+};
+
+enum class DrawingEnabled { NotInitialized, On, Off };
 
 /**
  * Renderthread-only singleton which manages several static rendering properties. Most of these
@@ -195,6 +259,7 @@ public:
     static bool skipEmptyFrames;
     static bool useBufferAge;
     static bool enablePartialUpdates;
+    static bool enableRenderEffectCache;
 
     // TODO: Move somewhere else?
     static constexpr float textGamma = 1.45f;
@@ -213,10 +278,10 @@ public:
     static int overrideSpotShadowStrength;
 
     static ProfileType getProfileType();
-    ANDROID_API static RenderPipelineType peekRenderPipelineType();
-    ANDROID_API static RenderPipelineType getRenderPipelineType();
+    static RenderPipelineType peekRenderPipelineType();
+    static RenderPipelineType getRenderPipelineType();
 
-    ANDROID_API static bool enableHighContrastText;
+    static bool enableHighContrastText;
 
     // Should be used only by test apps
     static bool waitForGpuCompletion;
@@ -235,21 +300,63 @@ public:
     static bool skpCaptureEnabled;
 
     // For experimentation b/68769804
-    ANDROID_API static bool enableRTAnimations;
+    static bool enableRTAnimations;
 
     // Used for testing only to change the render pipeline.
     static void overrideRenderPipelineType(RenderPipelineType);
 
     static bool runningInEmulator;
 
-    ANDROID_API static bool debuggingEnabled;
-    ANDROID_API static bool isolatedProcess;
+    static bool debuggingEnabled;
+    static bool isolatedProcess;
 
-    ANDROID_API static int contextPriority;
+    static int contextPriority;
 
-    static int defaultRenderAhead;
+    static float defaultSdrWhitePoint;
+
+    static bool useHintManager;
+    static int targetCpuTimePercentage;
+
+    static bool enableWebViewOverlays;
+
+    static bool isHighEndGfx;
+    static bool isLowRam;
+    static bool isSystemOrPersistent;
+
+    static float maxHdrHeadroomOn8bit;
+
+    static StretchEffectBehavior getStretchEffectBehavior() {
+        return stretchEffectBehavior;
+    }
+
+    static void setIsHighEndGfx(bool isHighEndGfx) {
+        Properties::isHighEndGfx = isHighEndGfx;
+        stretchEffectBehavior = isHighEndGfx ?
+            StretchEffectBehavior::ShaderHWUI :
+            StretchEffectBehavior::UniformScale;
+    }
+
+    static void setIsLowRam(bool isLowRam) { Properties::isLowRam = isLowRam; }
+
+    static void setIsSystemOrPersistent(bool isSystemOrPersistent) {
+        Properties::isSystemOrPersistent = isSystemOrPersistent;
+    }
+
+    /**
+     * Used for testing. Typical configuration of stretch behavior is done
+     * through setIsHighEndGfx
+     */
+    static void setStretchEffectBehavior(StretchEffectBehavior behavior) {
+        stretchEffectBehavior = behavior;
+    }
+
+    // Represents if drawing is enabled. Should only be Off in headless testing environments
+    static DrawingEnabled drawingEnabled;
+    static bool isDrawingEnabled();
+    static void setDrawingEnabled(bool enable);
 
 private:
+    static StretchEffectBehavior stretchEffectBehavior;
     static ProfileType sProfileType;
     static bool sDisableProfileBars;
     static RenderPipelineType sRenderPipelineType;

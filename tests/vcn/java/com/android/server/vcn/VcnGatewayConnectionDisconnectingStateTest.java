@@ -79,6 +79,10 @@ public class VcnGatewayConnectionDisconnectingStateTest extends VcnGatewayConnec
         mGatewayConnection.teardownAsynchronously();
         mTestLooper.dispatchAll();
 
+        // Verify that sending a non-quitting disconnect request does not unset the isQuitting flag
+        mGatewayConnection.sendDisconnectRequestedAndAcquireWakelock("TEST", false);
+        mTestLooper.dispatchAll();
+
         // Should do nothing; already tearing down.
         assertEquals(mGatewayConnection.mDisconnectingState, mGatewayConnection.getCurrentState());
         verifyTeardownTimeoutAlarmAndGetCallback(false /* expectCanceled */);
@@ -86,8 +90,9 @@ public class VcnGatewayConnectionDisconnectingStateTest extends VcnGatewayConnec
     }
 
     @Test
-    public void testSafeModeTimeoutNotifiesCallback() {
-        verifySafeModeTimeoutNotifiesCallback(mGatewayConnection.mDisconnectingState);
+    public void testSafeModeTimeoutNotifiesCallbackAndUnregistersNetworkAgent() {
+        verifySafeModeTimeoutNotifiesCallbackAndUnregistersNetworkAgent(
+                mGatewayConnection.mDisconnectingState);
     }
 
     @Test

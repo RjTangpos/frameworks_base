@@ -16,10 +16,12 @@
 
 package com.android.server.net;
 
-import android.annotation.NonNull;
+import static com.android.server.net.NetworkPolicyManagerService.UidBlockedState.getAllowedReasonsForProcState;
+import static com.android.server.net.NetworkPolicyManagerService.UidBlockedState.getEffectiveBlockedReasons;
+
+import android.annotation.Nullable;
 import android.net.Network;
-import android.net.NetworkTemplate;
-import android.net.netstats.provider.NetworkStatsProvider;
+import android.os.PowerExemptionManager.ReasonCode;
 import android.telephony.SubscriptionPlan;
 
 import java.util.Set;
@@ -41,19 +43,18 @@ public abstract class NetworkPolicyManagerInternal {
      * that network rules for that appId can be updated.
      *
      * @param appId The appId which has been updated in the allowlist.
-     * @param added Denotes whether the {@param appId} has been added or removed from the allowlist.
+     * @param added Denotes whether the {@code appId} has been added or removed from the allowlist.
+     * @param reasonCode one of {@link ReasonCode} indicating the reason for the change.
+     *                   Only valid when {@code added} is {@code true}.
+     * @param reason an optional human-readable reason explaining why the app is temp allow-listed.
      */
-    public abstract void onTempPowerSaveWhitelistChange(int appId, boolean added);
+    public abstract void onTempPowerSaveWhitelistChange(int appId, boolean added,
+            @ReasonCode int reasonCode, @Nullable String reason);
 
     /**
      * Return the active {@link SubscriptionPlan} for the given network.
      */
     public abstract SubscriptionPlan getSubscriptionPlan(Network network);
-
-    /**
-     * Return the active {@link SubscriptionPlan} for the given template.
-     */
-    public abstract SubscriptionPlan getSubscriptionPlan(NetworkTemplate template);
 
     public static final int QUOTA_TYPE_JOBS = 1;
     public static final int QUOTA_TYPE_MULTIPATH = 2;
@@ -86,7 +87,6 @@ public abstract class NetworkPolicyManagerInternal {
     public abstract void setMeteredRestrictedPackages(
             Set<String> packageNames, int userId);
 
-
     /**
      * Similar to {@link #setMeteredRestrictedPackages(Set, int)} but updates the restricted
      * packages list asynchronously.
@@ -94,12 +94,15 @@ public abstract class NetworkPolicyManagerInternal {
     public abstract void setMeteredRestrictedPackagesAsync(
             Set<String> packageNames, int userId);
 
-    /**
-     *  Notifies that the specified {@link NetworkStatsProvider} has reached its quota
-     *  which was set through {@link NetworkStatsProvider#onSetLimit(String, long)} or
-     *  {@link NetworkStatsProvider#onSetWarningAndLimit(String, long, long)}.
-     *
-     * @param tag the human readable identifier of the custom network stats provider.
-     */
-    public abstract void onStatsProviderWarningOrLimitReached(@NonNull String tag);
+    /** Informs that Low Power Standby has become active */
+    public abstract void setLowPowerStandbyActive(boolean active);
+
+    /** Informs that the Low Power Standby allowlist has changed */
+    public abstract void setLowPowerStandbyAllowlist(int[] uids);
+
+    /** Update the {@code blockedReasons} taking into account the {@code procState} of the uid */
+    public static int updateBlockedReasonsWithProcState(int blockedReasons, int procState) {
+        final int allowedReasons = getAllowedReasonsForProcState(procState);
+        return getEffectiveBlockedReasons(blockedReasons, allowedReasons);
+    }
 }

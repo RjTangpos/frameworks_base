@@ -21,7 +21,6 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
-import android.content.pm.IPackageManager;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.content.res.XmlResourceParser;
@@ -34,8 +33,6 @@ import android.media.AudioSystem;
 import android.net.ConnectivityManager;
 import android.os.Build;
 import android.os.Environment;
-import android.os.RemoteException;
-import android.os.ServiceManager;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.provider.Settings;
@@ -46,7 +43,7 @@ import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
 
-import com.android.internal.content.PackageHelper;
+import com.android.internal.content.InstallLocationUtils;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.RILConstants;
 import com.android.internal.util.XmlUtils;
@@ -227,15 +224,7 @@ class DatabaseHelper extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX bookmarksIndex2 ON bookmarks (shortcut);");
 
         // Populate bookmarks table with initial bookmarks
-        boolean onlyCore = false;
-        try {
-            onlyCore = IPackageManager.Stub.asInterface(ServiceManager.getService(
-                    "package")).isOnlyCoreApps();
-        } catch (RemoteException e) {
-        }
-        if (!onlyCore) {
-            loadBookmarks(db);
-        }
+        loadBookmarks(db);
 
         // Load initial volume levels into DB
         loadVolumeLevels(db);
@@ -783,7 +772,7 @@ class DatabaseHelper extends SQLiteOpenHelper {
                         + " VALUES(?,?);");
                 loadSetting(stmt, Global.SET_INSTALL_LOCATION, 0);
                 loadSetting(stmt, Global.DEFAULT_INSTALL_LOCATION,
-                        PackageHelper.APP_INSTALL_AUTO);
+                        InstallLocationUtils.APP_INSTALL_AUTO);
                 db.setTransactionSuccessful();
              } finally {
                  db.endTransaction();
@@ -1176,8 +1165,6 @@ class DatabaseHelper extends SQLiteOpenHelper {
                         com.android.internal.R.bool.config_dreamsActivatedOnDockByDefault);
                 loadBooleanSetting(stmt, Settings.Secure.SCREENSAVER_ACTIVATE_ON_SLEEP,
                         com.android.internal.R.bool.config_dreamsActivatedOnSleepByDefault);
-                loadStringSetting(stmt, Settings.Secure.SCREENSAVER_COMPONENTS,
-                        com.android.internal.R.string.config_dreamsDefaultComponent);
                 loadStringSetting(stmt, Settings.Secure.SCREENSAVER_DEFAULT_COMPONENT,
                         com.android.internal.R.string.config_dreamsDefaultComponent);
 
@@ -1348,7 +1335,6 @@ class DatabaseHelper extends SQLiteOpenHelper {
                             Settings.Global.CONNECTIVITY_CHANGE_DELAY,
                             Settings.Global.CAPTIVE_PORTAL_DETECTION_ENABLED,
                             Settings.Global.CAPTIVE_PORTAL_SERVER,
-                            Settings.Global.NSD_ON,
                             Settings.Global.SET_INSTALL_LOCATION,
                             Settings.Global.DEFAULT_INSTALL_LOCATION,
                             Settings.Global.INET_CONDITION_DEBOUNCE_UP_DELAY,
@@ -2256,9 +2242,6 @@ class DatabaseHelper extends SQLiteOpenHelper {
             loadIntegerSetting(stmt, Settings.System.SCREEN_BRIGHTNESS,
                     R.integer.def_screen_brightness);
 
-            loadIntegerSetting(stmt, Settings.System.SCREEN_BRIGHTNESS_FOR_VR,
-                    com.android.internal.R.integer.config_screenBrightnessForVrSettingDefault);
-
             loadBooleanSetting(stmt, Settings.System.SCREEN_BRIGHTNESS_MODE,
                     R.bool.def_screen_brightness_automatic_mode);
 
@@ -2363,8 +2346,6 @@ class DatabaseHelper extends SQLiteOpenHelper {
                     com.android.internal.R.bool.config_dreamsActivatedOnDockByDefault);
             loadBooleanSetting(stmt, Settings.Secure.SCREENSAVER_ACTIVATE_ON_SLEEP,
                     com.android.internal.R.bool.config_dreamsActivatedOnSleepByDefault);
-            loadStringSetting(stmt, Settings.Secure.SCREENSAVER_COMPONENTS,
-                    com.android.internal.R.string.config_dreamsDefaultComponent);
             loadStringSetting(stmt, Settings.Secure.SCREENSAVER_DEFAULT_COMPONENT,
                     com.android.internal.R.string.config_dreamsDefaultComponent);
 
@@ -2432,6 +2413,12 @@ class DatabaseHelper extends SQLiteOpenHelper {
             loadStringSetting(stmt, Settings.Global.AIRPLANE_MODE_RADIOS,
                     R.string.def_airplane_mode_radios);
 
+            loadStringSetting(stmt, Global.SATELLITE_MODE_RADIOS,
+                    R.string.def_satellite_mode_radios);
+
+            loadIntegerSetting(stmt, Global.SATELLITE_MODE_ENABLED,
+                    R.integer.def_satellite_mode_enabled);
+
             loadStringSetting(stmt, Settings.Global.AIRPLANE_MODE_TOGGLEABLE_RADIOS,
                     R.string.airplane_mode_toggleable_radios);
 
@@ -2466,6 +2453,9 @@ class DatabaseHelper extends SQLiteOpenHelper {
 
             loadBooleanSetting(stmt, Settings.Global.BLUETOOTH_ON,
                     R.bool.def_bluetooth_on);
+
+            loadIntegerSetting(stmt, Settings.Global.CELL_ON,
+                    R.integer.def_cell_on);
 
             // Enable or disable Cell Broadcast SMS
             loadSetting(stmt, Settings.Global.CDMA_CELL_BROADCAST_SMS,
@@ -2536,7 +2526,7 @@ class DatabaseHelper extends SQLiteOpenHelper {
 
             loadSetting(stmt, Settings.Global.SET_INSTALL_LOCATION, 0);
             loadSetting(stmt, Settings.Global.DEFAULT_INSTALL_LOCATION,
-                    PackageHelper.APP_INSTALL_AUTO);
+                    InstallLocationUtils.APP_INSTALL_AUTO);
 
             // Set default cdma emergency tone
             loadSetting(stmt, Settings.Global.EMERGENCY_TONE, 0);

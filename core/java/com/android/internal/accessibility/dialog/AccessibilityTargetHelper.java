@@ -18,11 +18,15 @@ package com.android.internal.accessibility.dialog;
 
 import static android.view.accessibility.AccessibilityManager.ACCESSIBILITY_BUTTON;
 
+import static com.android.internal.accessibility.AccessibilityShortcutController.ACCESSIBILITY_HEARING_AIDS_COMPONENT_NAME;
 import static com.android.internal.accessibility.AccessibilityShortcutController.COLOR_INVERSION_COMPONENT_NAME;
 import static com.android.internal.accessibility.AccessibilityShortcutController.DALTONIZER_COMPONENT_NAME;
 import static com.android.internal.accessibility.AccessibilityShortcutController.MAGNIFICATION_CONTROLLER_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.ONE_HANDED_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.REDUCE_BRIGHT_COLORS_COMPONENT_NAME;
 import static com.android.internal.accessibility.util.AccessibilityUtils.getAccessibilityServiceFragmentType;
 import static com.android.internal.accessibility.util.ShortcutUtils.isShortcutContained;
+import static com.android.internal.os.RoSystemProperties.SUPPORT_ONE_HANDED_MODE;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.AccessibilityShortcutInfo;
@@ -31,7 +35,7 @@ import android.app.ActivityManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.os.Build;
-import android.os.storage.StorageManager;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.text.BidiFormatter;
 import android.view.LayoutInflater;
@@ -112,7 +116,7 @@ public final class AccessibilityTargetHelper {
             @ShortcutType int shortcutType) {
         final List<AccessibilityTarget> targets = new ArrayList<>();
         targets.addAll(getAccessibilityFilteredTargets(context, shortcutType));
-        targets.addAll(getWhiteListingFeatureTargets(context, shortcutType));
+        targets.addAll(getAllowListingFeatureTargets(context, shortcutType));
 
         return targets;
     }
@@ -196,42 +200,83 @@ public final class AccessibilityTargetHelper {
         return targets;
     }
 
-    private static List<AccessibilityTarget> getWhiteListingFeatureTargets(Context context,
+    private static List<AccessibilityTarget> getAllowListingFeatureTargets(Context context,
             @ShortcutType int shortcutType) {
         final List<AccessibilityTarget> targets = new ArrayList<>();
+        final int uid = context.getApplicationInfo().uid;
 
-        final InvisibleToggleWhiteListingFeatureTarget magnification =
-                new InvisibleToggleWhiteListingFeatureTarget(context,
-                shortcutType,
-                isShortcutContained(context, shortcutType, MAGNIFICATION_CONTROLLER_NAME),
-                MAGNIFICATION_CONTROLLER_NAME,
-                context.getString(R.string.accessibility_magnification_chooser_text),
-                context.getDrawable(R.drawable.ic_accessibility_magnification),
-                Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_NAVBAR_ENABLED);
-
-        final ToggleWhiteListingFeatureTarget daltonizer =
-                new ToggleWhiteListingFeatureTarget(context,
-                shortcutType,
-                isShortcutContained(context, shortcutType,
-                        DALTONIZER_COMPONENT_NAME.flattenToString()),
-                DALTONIZER_COMPONENT_NAME.flattenToString(),
-                context.getString(R.string.color_correction_feature_name),
-                context.getDrawable(R.drawable.ic_accessibility_color_correction),
-                Settings.Secure.ACCESSIBILITY_DISPLAY_DALTONIZER_ENABLED);
-
-        final ToggleWhiteListingFeatureTarget colorInversion =
-                new ToggleWhiteListingFeatureTarget(context,
-                shortcutType,
-                isShortcutContained(context, shortcutType,
-                        COLOR_INVERSION_COMPONENT_NAME.flattenToString()),
-                COLOR_INVERSION_COMPONENT_NAME.flattenToString(),
-                context.getString(R.string.color_inversion_feature_name),
-                context.getDrawable(R.drawable.ic_accessibility_color_inversion),
-                Settings.Secure.ACCESSIBILITY_DISPLAY_INVERSION_ENABLED);
-
+        final InvisibleToggleAllowListingFeatureTarget magnification =
+                new InvisibleToggleAllowListingFeatureTarget(context,
+                        shortcutType,
+                        isShortcutContained(context, shortcutType, MAGNIFICATION_CONTROLLER_NAME),
+                        MAGNIFICATION_CONTROLLER_NAME,
+                        uid,
+                        context.getString(R.string.accessibility_magnification_chooser_text),
+                        context.getDrawable(R.drawable.ic_accessibility_magnification),
+                        Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_NAVBAR_ENABLED);
         targets.add(magnification);
+
+        final ToggleAllowListingFeatureTarget daltonizer =
+                new ToggleAllowListingFeatureTarget(context,
+                        shortcutType,
+                        isShortcutContained(context, shortcutType,
+                                DALTONIZER_COMPONENT_NAME.flattenToString()),
+                        DALTONIZER_COMPONENT_NAME.flattenToString(),
+                        uid,
+                        context.getString(R.string.color_correction_feature_name),
+                        context.getDrawable(R.drawable.ic_accessibility_color_correction),
+                        Settings.Secure.ACCESSIBILITY_DISPLAY_DALTONIZER_ENABLED);
         targets.add(daltonizer);
+
+        final ToggleAllowListingFeatureTarget colorInversion =
+                new ToggleAllowListingFeatureTarget(context,
+                        shortcutType,
+                        isShortcutContained(context, shortcutType,
+                                COLOR_INVERSION_COMPONENT_NAME.flattenToString()),
+                        COLOR_INVERSION_COMPONENT_NAME.flattenToString(),
+                        uid,
+                        context.getString(R.string.color_inversion_feature_name),
+                        context.getDrawable(R.drawable.ic_accessibility_color_inversion),
+                        Settings.Secure.ACCESSIBILITY_DISPLAY_INVERSION_ENABLED);
         targets.add(colorInversion);
+
+        if (SUPPORT_ONE_HANDED_MODE) {
+            final ToggleAllowListingFeatureTarget oneHandedMode =
+                    new ToggleAllowListingFeatureTarget(context,
+                            shortcutType,
+                            isShortcutContained(context, shortcutType,
+                                    ONE_HANDED_COMPONENT_NAME.flattenToString()),
+                            ONE_HANDED_COMPONENT_NAME.flattenToString(),
+                            uid,
+                            context.getString(R.string.one_handed_mode_feature_name),
+                            context.getDrawable(R.drawable.ic_accessibility_one_handed),
+                            Settings.Secure.ONE_HANDED_MODE_ACTIVATED);
+            targets.add(oneHandedMode);
+        }
+
+        final ToggleAllowListingFeatureTarget reduceBrightColors =
+                new ToggleAllowListingFeatureTarget(context,
+                        shortcutType,
+                        isShortcutContained(context, shortcutType,
+                                REDUCE_BRIGHT_COLORS_COMPONENT_NAME.flattenToString()),
+                        REDUCE_BRIGHT_COLORS_COMPONENT_NAME.flattenToString(),
+                        uid,
+                        context.getString(R.string.reduce_bright_colors_feature_name),
+                        context.getDrawable(R.drawable.ic_accessibility_reduce_bright_colors),
+                        Settings.Secure.REDUCE_BRIGHT_COLORS_ACTIVATED);
+        targets.add(reduceBrightColors);
+
+        final InvisibleToggleAllowListingFeatureTarget hearingAids =
+                new InvisibleToggleAllowListingFeatureTarget(context,
+                        shortcutType,
+                        isShortcutContained(context, shortcutType,
+                                ACCESSIBILITY_HEARING_AIDS_COMPONENT_NAME.flattenToString()),
+                        ACCESSIBILITY_HEARING_AIDS_COMPONENT_NAME.flattenToString(),
+                        uid,
+                        context.getString(R.string.hearing_aids_feature_name),
+                        context.getDrawable(R.drawable.ic_accessibility_hearing_aid),
+                        /* key= */ null);
+        targets.add(hearingAids);
 
         return targets;
     }
@@ -258,19 +303,7 @@ public final class AccessibilityTargetHelper {
                 Context.LAYOUT_INFLATER_SERVICE);
 
         final View content = inflater.inflate(
-                R.layout.accessibility_enable_service_encryption_warning, /* root= */ null);
-
-        final TextView encryptionWarningView = (TextView) content.findViewById(
-                R.id.accessibility_encryption_warning);
-        if (StorageManager.isNonDefaultBlockEncrypted()) {
-            final String text = context.getString(
-                    R.string.accessibility_enable_service_encryption_warning,
-                    getServiceName(context, target.getLabel()));
-            encryptionWarningView.setText(text);
-            encryptionWarningView.setVisibility(View.VISIBLE);
-        } else {
-            encryptionWarningView.setVisibility(View.GONE);
-        }
+                R.layout.accessibility_enable_service_warning, /* root= */ null);
 
         final ImageView dialogIcon = content.findViewById(
                 R.id.accessibility_permissionDialog_icon);
@@ -301,5 +334,22 @@ public final class AccessibilityTargetHelper {
     private static CharSequence getServiceName(Context context, CharSequence label) {
         final Locale locale = context.getResources().getConfiguration().getLocales().get(0);
         return BidiFormatter.getInstance(locale).unicodeWrap(label);
+    }
+
+    /**
+     * Determines if the{@link AccessibilityTarget} is allowed.
+     */
+    public static boolean isAccessibilityTargetAllowed(Context context, String packageName,
+            int uid) {
+        final AccessibilityManager am = context.getSystemService(AccessibilityManager.class);
+        return am.isAccessibilityTargetAllowed(packageName, uid, UserHandle.myUserId());
+    }
+
+    /**
+     * Sends restricted dialog intent if the accessibility target is disallowed.
+     */
+    public static boolean sendRestrictedDialogIntent(Context context, String packageName, int uid) {
+        final AccessibilityManager am = context.getSystemService(AccessibilityManager.class);
+        return am.sendRestrictedDialogIntent(packageName, uid, UserHandle.myUserId());
     }
 }

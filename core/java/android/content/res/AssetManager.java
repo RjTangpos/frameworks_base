@@ -43,6 +43,8 @@ import java.io.FileDescriptor;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
+import java.lang.ref.Reference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -75,6 +77,13 @@ public final class AssetManager implements AutoCloseable {
 
     @GuardedBy("sSync") private static ApkAssets[] sSystemApkAssets = new ApkAssets[0];
     @GuardedBy("sSync") private static ArraySet<ApkAssets> sSystemApkAssetsSet;
+
+    /**
+     * Cookie value to use when the actual cookie is unknown. This value tells the system to search
+     * all the ApkAssets for the asset.
+     * @hide
+     */
+    public static final int COOKIE_UNKNOWN = -1;
 
     /**
      * Mode for {@link #open(String, int)}: no specific information about how
@@ -519,6 +528,10 @@ public final class AssetManager implements AutoCloseable {
         if (!mOpen) {
             throw new RuntimeException("AssetManager has been closed");
         }
+        // Let's still check if the native object exists, given all the memory corruptions.
+        if (mObject == 0) {
+            throw new RuntimeException("AssetManager is open but the native object is gone");
+        }
     }
 
     /**
@@ -550,7 +563,9 @@ public final class AssetManager implements AutoCloseable {
                     outValue.changingConfigurations);
 
             if (outValue.type == TypedValue.TYPE_STRING) {
-                outValue.string = getPooledStringForCookie(cookie, outValue.data);
+                if ((outValue.string = getPooledStringForCookie(cookie, outValue.data)) == null) {
+                    return false;
+                }
             }
             return true;
         }
@@ -731,7 +746,9 @@ public final class AssetManager implements AutoCloseable {
                     outValue.changingConfigurations);
 
             if (outValue.type == TypedValue.TYPE_STRING) {
-                outValue.string = getPooledStringForCookie(cookie, outValue.data);
+                if ((outValue.string = getPooledStringForCookie(cookie, outValue.data)) == null) {
+                    return false;
+                }
             }
             return true;
         }
@@ -787,6 +804,21 @@ public final class AssetManager implements AutoCloseable {
     }
 
     /**
+     * To get the parent theme resource id according to the parameter theme resource id.
+     * @param resId theme resource id.
+     * @return the parent theme resource id.
+     * @hide
+     */
+    @StyleRes
+    int getParentThemeIdentifier(@StyleRes int resId) {
+        synchronized (this) {
+            ensureValidLocked();
+            // name is checked in JNI.
+            return nativeGetParentThemeIdentifier(mObject, resId);
+        }
+    }
+
+    /**
      * Enable resource resolution logging to track the steps taken to resolve the last resource
      * entry retrieved. Stores the configuration and package names for each step.
      *
@@ -833,6 +865,7 @@ public final class AssetManager implements AutoCloseable {
         }
     }
 
+    @Nullable
     CharSequence getPooledStringForCookie(int cookie, int id) {
         // Cookies map to ApkAssets starting at 1.
         return getApkAssets()[cookie - 1].getStringFromPool(id);
@@ -1124,6 +1157,7 @@ public final class AssetManager implements AutoCloseable {
     int[] getAttributeResolutionStack(long themePtr, @AttrRes int defStyleAttr,
             @StyleRes int defStyleRes, @StyleRes int xmlStyle) {
         synchronized (this) {
+            ensureValidLocked();
             return nativeAttributeResolutionStack(
                     mObject, themePtr, xmlStyle, defStyleAttr, defStyleRes);
         }
@@ -1173,9 +1207,12 @@ public final class AssetManager implements AutoCloseable {
 
     void releaseTheme(long themePtr) {
         synchronized (this) {
-            nativeThemeDestroy(themePtr);
             decRefsLocked(themePtr);
         }
+    }
+
+    static long getThemeFreeFunction() {
+        return nativeGetThemeFreeFunction();
     }
 
     void applyStyleToTheme(long themePtr, @StyleRes int resId, boolean force) {
@@ -1185,6 +1222,31 @@ public final class AssetManager implements AutoCloseable {
             ensureValidLocked();
             nativeThemeApplyStyle(mObject, themePtr, resId, force);
         }
+    }
+
+    AssetManager rebaseTheme(long themePtr, @NonNull AssetManager newAssetManager,
+            @StyleRes int[] styleIds, @StyleRes boolean[] force, int count) {
+        // Exchange ownership of the theme with the new asset manager.
+        if (this != newAssetManager) {
+            synchronized (this) {
+                ensureValidLocked();
+                decRefsLocked(themePtr);
+            }
+            synchronized (newAssetManager) {
+                newAssetManager.ensureValidLocked();
+                newAssetManager.incRefsLocked(themePtr);
+            }
+        }
+
+        try {
+            synchronized (newAssetManager) {
+                newAssetManager.ensureValidLocked();
+                nativeThemeRebase(newAssetManager.mObject, themePtr, styleIds, force, count);
+            }
+        } finally {
+            Reference.reachabilityFence(newAssetManager);
+        }
+        return newAssetManager;
     }
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
@@ -1396,6 +1458,16 @@ public final class AssetManager implements AutoCloseable {
     }
 
     /**
+     * @hide
+     */
+    Configuration[] getSizeAndUiModeConfigurations() {
+        synchronized (this) {
+            ensureValidLocked();
+            return nativeGetSizeAndUiModeConfigurations(mObject);
+        }
+    }
+
+    /**
      * Change the configuration used when retrieving resources.  Not for use by
      * applications.
      * @hide
@@ -1404,13 +1476,14 @@ public final class AssetManager implements AutoCloseable {
     public void setConfiguration(int mcc, int mnc, @Nullable String locale, int orientation,
             int touchscreen, int density, int keyboard, int keyboardHidden, int navigation,
             int screenWidth, int screenHeight, int smallestScreenWidthDp, int screenWidthDp,
-            int screenHeightDp, int screenLayout, int uiMode, int colorMode, int majorVersion) {
+            int screenHeightDp, int screenLayout, int uiMode, int colorMode, int grammaticalGender,
+            int majorVersion) {
         synchronized (this) {
             ensureValidLocked();
             nativeSetConfiguration(mObject, mcc, mnc, locale, orientation, touchscreen, density,
                     keyboard, keyboardHidden, navigation, screenWidth, screenHeight,
                     smallestScreenWidthDp, screenWidthDp, screenHeightDp, screenLayout, uiMode,
-                    colorMode, majorVersion);
+                    colorMode, grammaticalGender, majorVersion);
         }
     }
 
@@ -1482,6 +1555,15 @@ public final class AssetManager implements AutoCloseable {
         }
     }
 
+    synchronized void dump(PrintWriter pw, String prefix) {
+        pw.println(prefix + "class=" + getClass());
+        pw.println(prefix + "apkAssets=");
+        for (int i = 0; i < mApkAssets.length; i++) {
+            pw.println(prefix + i);
+            mApkAssets[i].dump(pw, prefix + "  ");
+        }
+    }
+
     // AssetManager setup native methods.
     private static native long nativeCreate();
     private static native void nativeDestroy(long ptr);
@@ -1491,7 +1573,7 @@ public final class AssetManager implements AutoCloseable {
             @Nullable String locale, int orientation, int touchscreen, int density, int keyboard,
             int keyboardHidden, int navigation, int screenWidth, int screenHeight,
             int smallestScreenWidthDp, int screenWidthDp, int screenHeightDp, int screenLayout,
-            int uiMode, int colorMode, int majorVersion);
+            int uiMode, int colorMode, int grammaticalGender, int majorVersion);
     private static native @NonNull SparseArray<String> nativeGetAssignedPackageIdentifiers(
             long ptr, boolean includeOverlays, boolean includeLoaders);
 
@@ -1537,6 +1619,7 @@ public final class AssetManager implements AutoCloseable {
     private static native @Nullable String nativeGetResourceEntryName(long ptr, @AnyRes int resid);
     private static native @Nullable String[] nativeGetLocales(long ptr, boolean excludeSystem);
     private static native @Nullable Configuration[] nativeGetSizeConfigurations(long ptr);
+    private static native @Nullable Configuration[] nativeGetSizeAndUiModeConfigurations(long ptr);
     private static native void nativeSetResourceResolutionLoggingEnabled(long ptr, boolean enabled);
     private static native @Nullable String nativeGetLastResourceResolution(long ptr);
 
@@ -1554,17 +1637,20 @@ public final class AssetManager implements AutoCloseable {
 
     // Theme related native methods
     private static native long nativeThemeCreate(long ptr);
-    private static native void nativeThemeDestroy(long themePtr);
+    private static native long nativeGetThemeFreeFunction();
     private static native void nativeThemeApplyStyle(long ptr, long themePtr, @StyleRes int resId,
             boolean force);
+    private static native void nativeThemeRebase(long ptr, long themePtr, @NonNull int[] styleIds,
+            @NonNull boolean[] force, int styleSize);
     private static native void nativeThemeCopy(long dstAssetManagerPtr, long dstThemePtr,
             long srcAssetManagerPtr, long srcThemePtr);
-    static native void nativeThemeClear(long themePtr);
     private static native int nativeThemeGetAttributeValue(long ptr, long themePtr,
             @AttrRes int resId, @NonNull TypedValue outValue, boolean resolve);
     private static native void nativeThemeDump(long ptr, long themePtr, int priority, String tag,
             String prefix);
     static native @NativeConfig int nativeThemeGetChangingConfigurations(long themePtr);
+    @StyleRes
+    private static native int nativeGetParentThemeIdentifier(long ptr, @StyleRes int styleId);
 
     // AssetInputStream related native methods.
     private static native void nativeAssetDestroy(long assetPtr);

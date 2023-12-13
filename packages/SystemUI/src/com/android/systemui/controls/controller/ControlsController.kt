@@ -24,6 +24,7 @@ import com.android.systemui.controls.ControlStatus
 import com.android.systemui.util.UserAwareController
 import com.android.systemui.controls.management.ControlsFavoritingActivity
 import com.android.systemui.controls.ui.ControlsUiController
+import com.android.systemui.controls.ui.SelectedItem
 import java.util.function.Consumer
 
 /**
@@ -39,11 +40,6 @@ import java.util.function.Consumer
  *  information for the current user only.
  */
 interface ControlsController : UserAwareController {
-
-    /**
-     * Whether the controls system is available for the current user.
-     */
-    val available: Boolean
 
     // SERVICE COMMUNICATION
 
@@ -170,6 +166,13 @@ interface ControlsController : UserAwareController {
     )
 
     /**
+     * Removes favorites for a given component
+     * @param componentName the name of the service that provides the [Control]
+     * @return true when favorites is scheduled for deletion
+     */
+    fun removeFavorites(componentName: ComponentName): Boolean
+
+    /**
      * Replaces the favorites for the given structure.
      *
      * Calling this method will eliminate the previous selection of favorites and replace it with a
@@ -188,6 +191,19 @@ interface ControlsController : UserAwareController {
      * @return the number of current favorites for the given component
      */
     fun countFavoritesForComponent(componentName: ComponentName): Int
+
+    /** See [ControlsUiController.getPreferredSelectedItem]. */
+    fun getPreferredSelection(): SelectedItem
+
+    fun setPreferredSelection(selectedItem: SelectedItem)
+
+    /**
+     * Bind to a service that provides a Device Controls panel (embedded activity). This will allow
+     * the app to remain "warm", and reduce latency.
+     *
+     * @param component The [ComponentName] of the [ControlsProviderService] to bind.
+     */
+    fun bindComponentForPanel(componentName: ComponentName)
 
     /**
      * Interface for structure to pass data to [ControlsFavoritingActivity].

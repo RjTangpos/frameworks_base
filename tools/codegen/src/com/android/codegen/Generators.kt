@@ -3,7 +3,8 @@ package com.android.codegen
 import com.github.javaparser.ast.body.FieldDeclaration
 import com.github.javaparser.ast.body.MethodDeclaration
 import com.github.javaparser.ast.body.VariableDeclarator
-import com.github.javaparser.ast.expr.*
+import com.github.javaparser.ast.expr.AnnotationExpr
+import com.github.javaparser.ast.expr.ArrayInitializerExpr
 import java.io.File
 
 
@@ -13,10 +14,7 @@ import java.io.File
 fun ClassPrinter.generateConstDefs() {
     val consts = classAst.fields.filter {
         it.isStatic && it.isFinal && it.variables.all { variable ->
-            val initializer = variable.initializer.orElse(null)
-            val isLiteral = initializer is LiteralExpr
-                    || (initializer is UnaryExpr && initializer.expression is LiteralExpr)
-            isLiteral && variable.type.asString() in listOf("int", "String")
+            variable.type.asString() in listOf("int", "String")
         } && it.annotations.none { it.nameAsString == DataClassSuppressConstDefs }
     }.flatMap { field -> field.variables.map { it to field } }
     val intConsts = consts.filter { it.first.type.asString() == "int" }
@@ -163,7 +161,12 @@ fun ClassPrinter.generateCopyConstructor() {
         return
     }
 
-    +"/** Copy constructor */"
+    +"/**"
+    +" * Copy constructor"
+    if (FeatureFlag.COPY_CONSTRUCTOR.hidden) {
+        +" * @hide"
+    }
+    +" */"
     +GENERATED_MEMBER_HEADER
     "public $ClassName(@$NonNull $ClassName orig)" {
         fields.forEachApply {
@@ -390,7 +393,7 @@ private fun ClassPrinter.generateBuilderBuild() {
 fun ClassPrinter.generateParcelable() {
     val booleanFields = fields.filter { it.Type == "boolean" }
     val objectFields = fields.filter { it.Type !in PRIMITIVE_TYPES }
-    val nullableFields = objectFields.filter { it.mayBeNull }
+    val nullableFields = objectFields.filter { it.mayBeNull && it.Type !in PRIMITIVE_ARRAY_TYPES }
     val nonBooleanFields = fields - booleanFields
 
 
@@ -454,7 +457,7 @@ fun ClassPrinter.generateParcelable() {
                     hasAnnotation("@$DataClassEnum") ->
                         +"dest.writeInt($internalGetter == null ? -1 : $internalGetter.ordinal());"
                     else -> {
-                        if (mayBeNull) !"if ($internalGetter != null) "
+                        if (mayBeNull && Type !in PRIMITIVE_ARRAY_TYPES) !"if ($internalGetter != null) "
                         var args = internalGetter
                         if (ParcelMethodsSuffix.startsWith("Parcelable")
                                 || ParcelMethodsSuffix.startsWith("TypedObject")
@@ -526,7 +529,7 @@ fun ClassPrinter.generateParcelable() {
                     if (passContainer) {
                         methodArgs.add(_name)
                         !"$Type $_name = "
-                        if (mayBeNull) {
+                        if (mayBeNull && Type !in PRIMITIVE_ARRAY_TYPES) {
                             +"null;"
                             !"if ((flg & $fieldBit) != 0) {"
                             pushIndent()
@@ -536,7 +539,9 @@ fun ClassPrinter.generateParcelable() {
                         +"$containerInitExpr;"
                     } else {
                         !"$Type $_name = "
-                        if (mayBeNull) !"(flg & $fieldBit) == 0 ? null : "
+                        if (mayBeNull && Type !in PRIMITIVE_ARRAY_TYPES) {
+                            !"(flg & $fieldBit) == 0 ? null : "
+                        }
                         if (ParcelMethodsSuffix == "StrongInterface") {
                             !"$FieldClass.Stub.asInterface("
                         } else if (Type !in PRIMITIVE_TYPES + "String" + "Bundle" &&
@@ -575,7 +580,7 @@ fun ClassPrinter.generateParcelable() {
                     +";"
 
                     // Cleanup if passContainer
-                    if (passContainer && mayBeNull) {
+                    if (passContainer && mayBeNull && Type !in PRIMITIVE_ARRAY_TYPES) {
                         popIndent()
                         rmEmptyLine()
                         +"\n}"
@@ -703,7 +708,7 @@ fun ClassPrinter.generateSetters() {
 
             generateFieldJavadoc(forceHide = FeatureFlag.SETTERS.hidden)
             +GENERATED_MEMBER_HEADER
-            "public $ClassType set$NameUpperCamel($annotatedTypeForSetterParam value)" {
+            "public @$NonNull $ClassType set$NameUpperCamel($annotatedTypeForSetterParam value)" {
                 generateSetFrom("value")
                 +"return this;"
             }

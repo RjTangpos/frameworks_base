@@ -56,12 +56,15 @@ class QuickAccessWalletServiceInfo {
 
     private final ServiceInfo mServiceInfo;
     private final ServiceMetadata mServiceMetadata;
+    private final TileServiceMetadata mTileServiceMetadata;
 
     private QuickAccessWalletServiceInfo(
             @NonNull ServiceInfo serviceInfo,
-            @NonNull ServiceMetadata metadata) {
+            @NonNull ServiceMetadata metadata,
+            @NonNull TileServiceMetadata tileServiceMetadata) {
         mServiceInfo = serviceInfo;
         mServiceMetadata = metadata;
+        mTileServiceMetadata = tileServiceMetadata;
     }
 
     @Nullable
@@ -84,7 +87,9 @@ class QuickAccessWalletServiceInfo {
         }
 
         ServiceMetadata metadata = parseServiceMetadata(context, serviceInfo);
-        return new QuickAccessWalletServiceInfo(serviceInfo, metadata);
+        TileServiceMetadata tileServiceMetadata =
+                new TileServiceMetadata(parseTileServiceMetadata(context, serviceInfo));
+        return new QuickAccessWalletServiceInfo(serviceInfo, metadata, tileServiceMetadata);
     }
 
     private static ComponentName getDefaultPaymentApp(Context context) {
@@ -98,11 +103,39 @@ class QuickAccessWalletServiceInfo {
         intent.setPackage(packageName);
         List<ResolveInfo> resolveInfos =
                 context.getPackageManager().queryIntentServices(intent,
-                        PackageManager.MATCH_DEFAULT_ONLY);
+                        PackageManager.MATCH_DIRECT_BOOT_AWARE
+                        | PackageManager.MATCH_DIRECT_BOOT_UNAWARE
+                        | PackageManager.MATCH_DEFAULT_ONLY
+                        | PackageManager.GET_META_DATA);
         return resolveInfos.isEmpty() ? null : resolveInfos.get(0).serviceInfo;
     }
 
-    private static class ServiceMetadata {
+    private static class TileServiceMetadata {
+        @Nullable
+        private final Drawable mTileIcon;
+
+        private TileServiceMetadata(@Nullable Drawable tileIcon) {
+            mTileIcon = tileIcon;
+        }
+    }
+
+    @Nullable
+    private static Drawable parseTileServiceMetadata(Context context, ServiceInfo serviceInfo) {
+        PackageManager pm = context.getPackageManager();
+        int tileIconDrawableId =
+                serviceInfo.metaData.getInt(QuickAccessWalletService.TILE_SERVICE_META_DATA);
+        if (tileIconDrawableId != 0) {
+            try {
+                Resources resources = pm.getResourcesForApplication(serviceInfo.applicationInfo);
+                return resources.getDrawable(tileIconDrawableId, null);
+            } catch (PackageManager.NameNotFoundException e) {
+                Log.e(TAG, "Error parsing quickaccesswallet tile service meta-data", e);
+            }
+        }
+        return null;
+    }
+
+    static class ServiceMetadata {
         @Nullable
         private final String mSettingsActivity;
         @Nullable
@@ -128,7 +161,7 @@ class QuickAccessWalletServiceInfo {
         }
     }
 
-    private static ServiceMetadata parseServiceMetadata(Context context, ServiceInfo serviceInfo) {
+    static ServiceMetadata parseServiceMetadata(Context context, ServiceInfo serviceInfo) {
         PackageManager pm = context.getPackageManager();
         final XmlResourceParser parser =
                 serviceInfo.loadXmlMetaData(pm, QuickAccessWalletService.SERVICE_META_DATA);
@@ -211,6 +244,11 @@ class QuickAccessWalletServiceInfo {
             return drawable;
         }
         return mServiceInfo.loadIcon(context.getPackageManager());
+    }
+
+    @Nullable
+    Drawable getTileIcon() {
+        return mTileServiceMetadata.mTileIcon;
     }
 
     @NonNull

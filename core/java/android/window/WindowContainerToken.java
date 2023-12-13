@@ -17,6 +17,7 @@
 package android.window;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.TestApi;
 import android.os.IBinder;
 import android.os.Parcel;
@@ -47,7 +48,6 @@ public final class WindowContainerToken implements Parcelable {
     }
 
     @Override
-    /** @hide */
     public void writeToParcel(@NonNull Parcel dest, int flags) {
         dest.writeStrongBinder(mRealToken.asBinder());
     }
@@ -67,7 +67,6 @@ public final class WindowContainerToken implements Parcelable {
             };
 
     @Override
-    /** @hide */
     public int describeContents() {
         return 0;
     }
@@ -78,7 +77,12 @@ public final class WindowContainerToken implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public String toString() {
+        return "WCT{" + mRealToken + "}";
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
         if (!(obj instanceof WindowContainerToken)) {
             return false;
         }

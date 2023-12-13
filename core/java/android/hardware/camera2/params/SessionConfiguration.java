@@ -22,6 +22,9 @@ import static com.android.internal.util.Preconditions.*;
 import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.SuppressLint;
+import android.graphics.ColorSpace;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
@@ -29,6 +32,7 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.InputConfiguration;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.utils.HashCodeHelpers;
+import android.media.ImageReader;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.Log;
@@ -51,7 +55,7 @@ public final class SessionConfiguration implements Parcelable {
      * at regular non high speed FPS ranges and optionally {@link InputConfiguration} for
      * reprocessable sessions.
      *
-     * @see CameraDevice#createCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      * @see CameraDevice#createReprocessableCaptureSession
      */
     public static final int SESSION_REGULAR = CameraDevice.SESSION_OPERATION_MODE_NORMAL;
@@ -93,6 +97,7 @@ public final class SessionConfiguration implements Parcelable {
     private Executor mExecutor = null;
     private InputConfiguration mInputConfig = null;
     private CaptureRequest mSessionParameters = null;
+    private int mColorSpace;
 
     /**
      * Create a new {@link SessionConfiguration}.
@@ -105,10 +110,7 @@ public final class SessionConfiguration implements Parcelable {
      *
      * @see #SESSION_REGULAR
      * @see #SESSION_HIGH_SPEED
-     * @see CameraDevice#createCaptureSession(List, CameraCaptureSession.StateCallback, Handler)
-     * @see CameraDevice#createCaptureSessionByOutputConfigurations
-     * @see CameraDevice#createReprocessableCaptureSession
-     * @see CameraDevice#createConstrainedHighSpeedCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      */
     public SessionConfiguration(@SessionMode int sessionType,
             @NonNull List<OutputConfiguration> outputs,
@@ -129,11 +131,13 @@ public final class SessionConfiguration implements Parcelable {
         int inputWidth = source.readInt();
         int inputHeight = source.readInt();
         int inputFormat = source.readInt();
+        boolean isInputMultiResolution = source.readBoolean();
         ArrayList<OutputConfiguration> outConfigs = new ArrayList<OutputConfiguration>();
         source.readTypedList(outConfigs, OutputConfiguration.CREATOR);
 
         if ((inputWidth > 0) && (inputHeight > 0) && (inputFormat != -1)) {
-            mInputConfig = new InputConfiguration(inputWidth, inputHeight, inputFormat);
+            mInputConfig = new InputConfiguration(inputWidth, inputHeight,
+                    inputFormat, isInputMultiResolution);
         }
         mSessionType = sessionType;
         mOutputConfigurations = outConfigs;
@@ -143,13 +147,7 @@ public final class SessionConfiguration implements Parcelable {
             new Parcelable.Creator<SessionConfiguration> () {
         @Override
         public SessionConfiguration createFromParcel(Parcel source) {
-            try {
-                SessionConfiguration sessionConfiguration = new SessionConfiguration(source);
-                return sessionConfiguration;
-            } catch (Exception e) {
-                Log.e(TAG, "Exception creating SessionConfiguration from parcel", e);
-                return null;
-            }
+            return new SessionConfiguration(source);
         }
 
         @Override
@@ -168,10 +166,12 @@ public final class SessionConfiguration implements Parcelable {
             dest.writeInt(mInputConfig.getWidth());
             dest.writeInt(mInputConfig.getHeight());
             dest.writeInt(mInputConfig.getFormat());
+            dest.writeBoolean(mInputConfig.isMultiResolution());
         } else {
             dest.writeInt(/*inputWidth*/ 0);
             dest.writeInt(/*inputHeight*/ 0);
             dest.writeInt(/*inputFormat*/ -1);
+            dest.writeBoolean(/*isMultiResolution*/ false);
         }
         dest.writeTypedList(mOutputConfigurations);
     }
@@ -190,7 +190,7 @@ public final class SessionConfiguration implements Parcelable {
      * @return {@code true} if the objects were equal, {@code false} otherwise
      */
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (obj == null) {
             return false;
         } else if (this == obj) {
@@ -314,5 +314,46 @@ public final class SessionConfiguration implements Parcelable {
      */
     public CaptureRequest getSessionParameters() {
         return mSessionParameters;
+    }
+
+    /**
+     * Set a specific device-supported color space.
+     *
+     * <p>Clients can choose from any profile advertised as supported in
+     * {@link CameraCharacteristics#REQUEST_AVAILABLE_COLOR_SPACE_PROFILES}
+     * queried using {@link ColorSpaceProfiles#getSupportedColorSpaces}.
+     * When set, the colorSpace will override the default color spaces of the output targets,
+     * or the color space implied by the dataSpace passed into an {@link ImageReader}'s
+     * constructor.</p>
+     */
+    public void setColorSpace(@NonNull ColorSpace.Named colorSpace) {
+        mColorSpace = colorSpace.ordinal();
+        for (OutputConfiguration outputConfiguration : mOutputConfigurations) {
+            outputConfiguration.setColorSpace(colorSpace);
+        }
+    }
+
+    /**
+     * Clear the color space, such that the default color space will be used.
+     */
+    public void clearColorSpace() {
+        mColorSpace = ColorSpaceProfiles.UNSPECIFIED;
+        for (OutputConfiguration outputConfiguration : mOutputConfigurations) {
+            outputConfiguration.clearColorSpace();
+        }
+    }
+
+    /**
+     * Return the current color space.
+     *
+     * @return the currently set color space
+     */
+    @SuppressLint("MethodNameUnits")
+    public @Nullable ColorSpace getColorSpace() {
+        if (mColorSpace != ColorSpaceProfiles.UNSPECIFIED) {
+            return ColorSpace.get(ColorSpace.Named.values()[mColorSpace]);
+        } else {
+            return null;
+        }
     }
 }

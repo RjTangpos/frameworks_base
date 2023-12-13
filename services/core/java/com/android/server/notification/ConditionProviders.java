@@ -21,9 +21,11 @@ import android.app.NotificationManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.IPackageManager;
+import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.IBinder;
 import android.os.IInterface;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.provider.Settings;
@@ -37,9 +39,8 @@ import android.util.Slog;
 
 import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.TypedXmlSerializer;
 import com.android.server.notification.NotificationManagerService.DumpFilter;
-
-import org.xmlpull.v1.XmlSerializer;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -76,8 +77,8 @@ public class ConditionProviders extends ManagedServices {
     public void addSystemProvider(SystemConditionProviderService service) {
         mSystemConditionProviders.add(service);
         service.attachBase(mContext);
-        registerSystemService(
-                service.asInterface(), service.getComponent(), UserHandle.USER_SYSTEM);
+        registerSystemService(service.asInterface(), service.getComponent(), UserHandle.USER_SYSTEM,
+                Process.SYSTEM_UID);
     }
 
     public Iterable<SystemConditionProviderService> getSystemProviders() {
@@ -110,7 +111,7 @@ public class ConditionProviders extends ManagedServices {
     }
 
     @Override
-    void writeDefaults(XmlSerializer out) throws IOException {
+    void writeDefaults(TypedXmlSerializer out) throws IOException {
         synchronized (mDefaultsLock) {
             String defaults = String.join(ENABLED_SERVICES_SEPARATOR, mDefaultPackages);
             out.attribute(null, ATT_DEFAULTS, defaults);
@@ -122,7 +123,7 @@ public class ConditionProviders extends ManagedServices {
         final Config c = new Config();
         c.caption = "condition provider";
         c.serviceInterface = ConditionProviderService.SERVICE_INTERFACE;
-        c.secureSettingName = Settings.Secure.ENABLED_NOTIFICATION_POLICY_ACCESS_PACKAGES;
+        c.secureSettingName = null;
         c.xmlTag = TAG_ENABLED_DND_APPS;
         c.secondarySettingName = Settings.Secure.ENABLED_NOTIFICATION_LISTENERS;
         c.bindPermission = android.Manifest.permission.BIND_CONDITION_PROVIDER_SERVICE;
@@ -196,6 +197,11 @@ public class ConditionProviders extends ManagedServices {
     }
 
     @Override
+    protected void ensureFilters(ServiceInfo si, int userId) {
+        // nothing to filter
+    }
+
+    @Override
     protected void loadDefaultsFromConfig() {
         String defaultDndAccess = mContext.getResources().getString(
                 R.string.config_defaultDndAccessPackages);
@@ -245,6 +251,11 @@ public class ConditionProviders extends ManagedServices {
     }
 
     @Override
+    protected boolean allowRebindForParentUser() {
+        return true;
+    }
+
+    @Override
     protected String getRequiredPermission() {
         return null;
     }
@@ -255,11 +266,15 @@ public class ConditionProviders extends ManagedServices {
         }
     }
 
-    private Condition[] removeDuplicateConditions(String pkg, Condition[] conditions) {
+    private Condition[] getValidConditions(String pkg, Condition[] conditions) {
         if (conditions == null || conditions.length == 0) return null;
         final int N = conditions.length;
         final ArrayMap<Uri, Condition> valid = new ArrayMap<Uri, Condition>(N);
         for (int i = 0; i < N; i++) {
+            if (conditions[i] == null) {
+                Slog.w(TAG, "Ignoring null condition from " + pkg);
+                continue;
+            }
             final Uri id = conditions[i].id;
             if (valid.containsKey(id)) {
                 Slog.w(TAG, "Ignoring condition from " + pkg + " for duplicate id: " + id);
@@ -297,7 +312,7 @@ public class ConditionProviders extends ManagedServices {
         synchronized(mMutex) {
             if (DEBUG) Slog.d(TAG, "notifyConditions pkg=" + pkg + " info=" + info + " conditions="
                     + (conditions == null ? null : Arrays.asList(conditions)));
-            conditions = removeDuplicateConditions(pkg, conditions);
+            conditions = getValidConditions(pkg, conditions);
             if (conditions == null || conditions.length == 0) return;
             final int N = conditions.length;
             for (int i = 0; i < N; i++) {

@@ -66,7 +66,7 @@ import javax.crypto.spec.GCMParameterSpec;
  * @hide
  */
 public class PlatformKeyManager {
-    static final int MIN_GENERATION_ID_FOR_UNLOCKED_DEVICE_REQUIRED = 1000000;
+    static final int MIN_GENERATION_ID_FOR_UNLOCKED_DEVICE_REQUIRED = 1001000;
 
     private static final String TAG = "PlatformKeyManager";
     private static final String KEY_ALGORITHM = "AES";
@@ -75,7 +75,6 @@ public class PlatformKeyManager {
             "com.android.server.locksettings.recoverablekeystore/platform/";
     private static final String ENCRYPT_KEY_ALIAS_SUFFIX = "encrypt";
     private static final String DECRYPT_KEY_ALIAS_SUFFIX = "decrypt";
-    private static final int USER_AUTHENTICATION_VALIDITY_DURATION_SECONDS = 15;
     private static final String KEY_WRAP_CIPHER_ALGORITHM = "AES/GCM/NoPadding";
     private static final int GCM_TAG_LENGTH_BITS = 128;
     // Only used for checking if a key is usable
@@ -184,7 +183,6 @@ public class PlatformKeyManager {
             invalidatePlatformKey(userId, generationId);
             nextId = generationId + 1;
         }
-        generationId = Math.max(generationId, MIN_GENERATION_ID_FOR_UNLOCKED_DEVICE_REQUIRED);
         generateAndLoadKey(userId, nextId);
     }
 
@@ -431,21 +429,7 @@ public class PlatformKeyManager {
         if (userId ==  UserHandle.USER_SYSTEM) {
             decryptionKeyProtection.setUnlockedDeviceRequired(true);
         } else {
-            // With setUnlockedDeviceRequired, KeyStore thinks that device is locked .
-            decryptionKeyProtection.setUserAuthenticationRequired(true);
-            decryptionKeyProtection.setUserAuthenticationValidityDurationSeconds(
-                            USER_AUTHENTICATION_VALIDITY_DURATION_SECONDS);
-            // Bind decryption key to secondary profile lock screen secret.
-            long secureUserId = getGateKeeperService().getSecureUserId(userId);
-            // TODO(b/124095438): Propagate this failure instead of silently failing.
-            if (secureUserId == GateKeeper.INVALID_SECURE_USER_ID) {
-                Log.e(TAG, "No SID available for user " + userId);
-                return;
-            }
-            decryptionKeyProtection
-                    .setBoundToSpecificSecureUserId(secureUserId)
-                    // Ignore caller uid which always belongs to the primary profile.
-                    .setCriticalToDeviceEncryption(true);
+            // Don't set protection params to prevent losing key.
         }
         // Store decryption key first since it is more likely to fail.
         mKeyStore.setEntry(

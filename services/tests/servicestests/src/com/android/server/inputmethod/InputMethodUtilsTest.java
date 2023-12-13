@@ -23,9 +23,18 @@ import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.IContentProvider;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
@@ -34,10 +43,17 @@ import android.content.res.Resources;
 import android.os.Build;
 import android.os.LocaleList;
 import android.os.Parcel;
+import android.os.UserHandle;
+import android.provider.Settings;
+import android.test.mock.MockContentResolver;
+import android.text.TextUtils;
+import android.util.ArrayMap;
+import android.util.IntArray;
 import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodSubtype;
 import android.view.inputmethod.InputMethodSubtype.InputMethodSubtypeBuilder;
 
+import androidx.annotation.NonNull;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
@@ -48,6 +64,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -60,6 +77,7 @@ public class InputMethodUtilsTest {
     private static final boolean IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE = true;
     private static final boolean IS_ASCII_CAPABLE = true;
     private static final boolean IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE = true;
+    private static final boolean CHECK_COUNTRY = true;
     private static final Locale LOCALE_EN = new Locale("en");
     private static final Locale LOCALE_EN_US = new Locale("en", "US");
     private static final Locale LOCALE_EN_GB = new Locale("en", "GB");
@@ -195,9 +213,6 @@ public class InputMethodUtilsTest {
         final InputMethodSubtype nonAutoEnGB = createFakeInputMethodSubtype("en_GB",
                 SUBTYPE_MODE_KEYBOARD, !IS_AUX, !IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE,
                 IS_ASCII_CAPABLE, IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE);
-        final InputMethodSubtype nonAutoEnIN = createFakeInputMethodSubtype("en_IN",
-                SUBTYPE_MODE_KEYBOARD, !IS_AUX, !IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE,
-                IS_ASCII_CAPABLE, IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE);
         final InputMethodSubtype nonAutoFrCA = createFakeInputMethodSubtype("fr_CA",
                 SUBTYPE_MODE_KEYBOARD, !IS_AUX, !IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE,
                 IS_ASCII_CAPABLE, IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE);
@@ -271,7 +286,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_EN_US), imi);
             assertEquals(1, result.size());
             verifyEquality(autoSubtype, result.get(0));
@@ -295,7 +310,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_EN_US), imi);
             assertEquals(2, result.size());
             verifyEquality(nonAutoEnUS, result.get(0));
@@ -319,7 +334,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_EN_GB), imi);
             assertEquals(2, result.size());
             verifyEquality(nonAutoEnGB, result.get(0));
@@ -344,7 +359,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_FR), imi);
             assertEquals(2, result.size());
             verifyEquality(nonAutoFrCA, result.get(0));
@@ -365,7 +380,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_FR_CA), imi);
             assertEquals(2, result.size());
             verifyEquality(nonAutoFrCA, result.get(0));
@@ -387,7 +402,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_JA_JP), imi);
             assertEquals(3, result.size());
             verifyEquality(nonAutoJa, result.get(0));
@@ -409,7 +424,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_JA_JP), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoHi, result.get(0));
@@ -426,7 +441,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_JA_JP), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoEnUS, result.get(0));
@@ -443,7 +458,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_JA_JP), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoEnUS, result.get(0));
@@ -465,7 +480,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(Locale.forLanguageTag("sr-Latn-RS")), imi);
             assertEquals(2, result.size());
             assertThat(nonAutoSrLatn, is(in(result)));
@@ -485,7 +500,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(Locale.forLanguageTag("sr-Cyrl-RS")), imi);
             assertEquals(2, result.size());
             assertThat(nonAutoSrCyrl, is(in(result)));
@@ -511,7 +526,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(
                                     Locale.forLanguageTag("sr-Latn-RS-x-android"),
                                     Locale.forLanguageTag("ja-JP"),
@@ -538,7 +553,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_FIL_PH), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoFil, result.get(0));
@@ -556,7 +571,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_FI), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoJa, result.get(0));
@@ -572,7 +587,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_IN), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoIn, result.get(0));
@@ -586,7 +601,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_ID), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoIn, result.get(0));
@@ -600,7 +615,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_IN), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoId, result.get(0));
@@ -614,7 +629,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_ID), imi);
             assertEquals(1, result.size());
             verifyEquality(nonAutoId, result.get(0));
@@ -636,7 +651,7 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
             final ArrayList<InputMethodSubtype> result =
-                    InputMethodUtils.getImplicitlyApplicableSubtypesLocked(
+                    SubtypeUtils.getImplicitlyApplicableSubtypesLocked(
                             getResourcesForLocales(LOCALE_FR, LOCALE_EN_US, LOCALE_JA_JP), imi);
             assertThat(nonAutoFrCA, is(in(result)));
             assertThat(nonAutoEnUS, is(in(result)));
@@ -652,9 +667,6 @@ public class InputMethodUtilsTest {
         final InputMethodSubtype nonAutoEnUS = createFakeInputMethodSubtype("en_US",
                 SUBTYPE_MODE_KEYBOARD, !IS_AUX, !IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE,
                 IS_ASCII_CAPABLE, !IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE);
-        final InputMethodSubtype nonAutoEnGB = createFakeInputMethodSubtype("en_GB",
-                SUBTYPE_MODE_KEYBOARD, !IS_AUX, !IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE,
-                IS_ASCII_CAPABLE, IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE);
         final InputMethodSubtype nonAutoFil = createFakeInputMethodSubtype("fil",
                 SUBTYPE_MODE_KEYBOARD, !IS_AUX, !IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE,
                 IS_ASCII_CAPABLE, !IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE);
@@ -668,8 +680,6 @@ public class InputMethodUtilsTest {
                 SUBTYPE_MODE_KEYBOARD, !IS_AUX, !IS_OVERRIDES_IMPLICITLY_ENABLED_SUBTYPE,
                 IS_ASCII_CAPABLE, IS_ENABLED_WHEN_DEFAULT_IS_NOT_ASCII_CAPABLE);
 
-        final boolean CHECK_COUNTRY = true;
-
         {
             final ArrayList<InputMethodSubtype> subtypes = new ArrayList<>();
             subtypes.add(nonAutoEnUS);
@@ -678,26 +688,26 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
 
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_US, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_US, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_US, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_US, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_US, !CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_US, !CHECK_COUNTRY,
                     SUBTYPE_MODE_VOICE));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_US, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_US, CHECK_COUNTRY,
                     SUBTYPE_MODE_VOICE));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_US, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_US, !CHECK_COUNTRY,
                     SUBTYPE_MODE_ANY));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_US, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_US, CHECK_COUNTRY,
                     SUBTYPE_MODE_ANY));
 
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_GB, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_GB, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_EN_GB, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_EN_GB, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
         }
 
@@ -709,22 +719,22 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin",
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
 
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI, !CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI_FI, !CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI_FI, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI_FI, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI_FI, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
         }
 
@@ -736,22 +746,22 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin",
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FIL_PH, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
 
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI, !CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI_FI, !CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI_FI, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertFalse(InputMethodUtils.containsSubtypeOf(imi, LOCALE_FI_FI, CHECK_COUNTRY,
+            assertFalse(SubtypeUtils.containsSubtypeOf(imi, LOCALE_FI_FI, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
         }
 
@@ -764,13 +774,13 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin",
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_IN, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_IN, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_IN, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_IN, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_ID, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_ID, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_ID, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_ID, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
         }
 
@@ -783,14 +793,105 @@ public class InputMethodUtilsTest {
                     "com.android.apps.inputmethod.latin",
                     "com.android.apps.inputmethod.latin", "FakeLatinIme", !IS_AUX, IS_DEFAULT,
                     subtypes);
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_IN, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_IN, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_IN, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_IN, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_ID, !CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_ID, !CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
-            assertTrue(InputMethodUtils.containsSubtypeOf(imi, LOCALE_ID, CHECK_COUNTRY,
+            assertTrue(SubtypeUtils.containsSubtypeOf(imi, LOCALE_ID, CHECK_COUNTRY,
                     SUBTYPE_MODE_KEYBOARD));
+        }
+    }
+
+    @Test
+    public void testChooseSystemVoiceIme() throws Exception {
+        final InputMethodInfo systemIme = createFakeInputMethodInfo("SystemIme", "fake.voice0",
+                true /* isSystem */);
+
+        // Returns null when the config value is null.
+        {
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            methodMap.put(systemIme.getId(), systemIme);
+            assertNull(InputMethodInfoUtils.chooseSystemVoiceIme(methodMap, null, ""));
+        }
+
+        // Returns null when the config value is empty.
+        {
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            methodMap.put(systemIme.getId(), systemIme);
+            assertNull(InputMethodInfoUtils.chooseSystemVoiceIme(methodMap, "", ""));
+        }
+
+        // Returns null when the configured package doesn't have an IME.
+        {
+            assertNull(InputMethodInfoUtils.chooseSystemVoiceIme(new ArrayMap<>(),
+                    systemIme.getPackageName(), ""));
+        }
+
+        // Returns the right one when the current default is null.
+        {
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            methodMap.put(systemIme.getId(), systemIme);
+            assertEquals(systemIme, InputMethodInfoUtils.chooseSystemVoiceIme(methodMap,
+                    systemIme.getPackageName(), null));
+        }
+
+        // Returns the right one when the current default is empty.
+        {
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            methodMap.put(systemIme.getId(), systemIme);
+            assertEquals(systemIme, InputMethodInfoUtils.chooseSystemVoiceIme(methodMap,
+                    systemIme.getPackageName(), ""));
+        }
+
+        // Returns null when the current default isn't found.
+        {
+            assertNull(InputMethodInfoUtils.chooseSystemVoiceIme(new ArrayMap<>(),
+                    systemIme.getPackageName(), systemIme.getId()));
+        }
+
+        // Returns null when there are multiple IMEs defined by the config package.
+        {
+            final InputMethodInfo secondIme = createFakeInputMethodInfo(systemIme.getPackageName(),
+                    "fake.voice1", true /* isSystem */);
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            methodMap.put(systemIme.getId(), systemIme);
+            methodMap.put(secondIme.getId(), secondIme);
+            assertNull(InputMethodInfoUtils.chooseSystemVoiceIme(methodMap,
+                    systemIme.getPackageName(), ""));
+        }
+
+        // Returns the current one when the current default and config point to the same package.
+        {
+            final InputMethodInfo secondIme = createFakeInputMethodInfo("SystemIme", "fake.voice1",
+                    true /* isSystem */);
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            methodMap.put(systemIme.getId(), systemIme);
+            methodMap.put(secondIme.getId(), secondIme);
+            assertEquals(systemIme, InputMethodInfoUtils.chooseSystemVoiceIme(methodMap,
+                    systemIme.getPackageName(), systemIme.getId()));
+        }
+
+        // Doesn't return the current default if it isn't a system app.
+        {
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            final InputMethodInfo nonSystemIme = createFakeInputMethodInfo("NonSystemIme",
+                    "fake.voice0", false /* isSystem */);
+            methodMap.put(nonSystemIme.getId(), nonSystemIme);
+            assertNull(InputMethodInfoUtils.chooseSystemVoiceIme(methodMap,
+                    nonSystemIme.getPackageName(), nonSystemIme.getId()));
+        }
+
+        // Returns null if the configured one isn't a system app.
+        {
+            final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+            final InputMethodInfo nonSystemIme = createFakeInputMethodInfo(
+                    "FakeDefaultAutoVoiceIme", "fake.voice0", false /* isSystem */);
+            methodMap.put(systemIme.getId(), systemIme);
+            methodMap.put(nonSystemIme.getId(), nonSystemIme);
+            assertNull(InputMethodInfoUtils.chooseSystemVoiceIme(methodMap,
+                    nonSystemIme.getPackageName(), ""));
         }
     }
 
@@ -798,7 +899,7 @@ public class InputMethodUtilsTest {
             final Locale systemLocale, String... expectedImeNames) {
         final Context context = createTargetContextWithLocales(new LocaleList(systemLocale));
         final String[] actualImeNames = getPackageNames(
-                InputMethodUtils.getDefaultEnabledImes(context, preinstalledImes));
+                InputMethodInfoUtils.getDefaultEnabledImes(context, preinstalledImes));
         assertEquals(expectedImeNames.length, actualImeNames.length);
         for (int i = 0; i < expectedImeNames.length; ++i) {
             assertEquals(expectedImeNames[i], actualImeNames[i]);
@@ -809,7 +910,7 @@ public class InputMethodUtilsTest {
             final Locale systemLocale, String... expectedImeNames) {
         final Context context = createTargetContextWithLocales(new LocaleList(systemLocale));
         final String[] actualImeNames = getPackageNames(
-                InputMethodUtils.getDefaultEnabledImes(context, preinstalledImes,
+                InputMethodInfoUtils.getDefaultEnabledImes(context, preinstalledImes,
                         true /* onlyMinimum */));
         assertEquals(expectedImeNames.length, actualImeNames.length);
         for (int i = 0; i < expectedImeNames.length; ++i) {
@@ -864,6 +965,25 @@ public class InputMethodUtilsTest {
     private static void verifyEquality(InputMethodSubtype expected, InputMethodSubtype actual) {
         assertEquals(expected, actual);
         assertEquals(expected.hashCode(), actual.hashCode());
+    }
+
+    private static InputMethodInfo createFakeInputMethodInfo(String packageName, String name,
+            boolean isSystem) {
+        final ResolveInfo ri = new ResolveInfo();
+        final ServiceInfo si = new ServiceInfo();
+        final ApplicationInfo ai = new ApplicationInfo();
+        ai.packageName = packageName;
+        ai.enabled = true;
+        if (isSystem) {
+            ai.flags |= ApplicationInfo.FLAG_SYSTEM;
+        }
+        si.applicationInfo = ai;
+        si.enabled = true;
+        si.packageName = packageName;
+        si.name = name;
+        si.exported = true;
+        ri.serviceInfo = si;
+        return new InputMethodInfo(ri, false, "", Collections.emptyList(), 1, true);
     }
 
     private static InputMethodInfo createFakeInputMethodInfo(String packageName, String name,
@@ -1103,5 +1223,173 @@ public class InputMethodUtilsTest {
         assertTrue(InputMethodUtils.isSoftInputModeStateVisibleAllowed(
                 Build.VERSION_CODES.P,
                 StartInputFlags.VIEW_HAS_FOCUS | StartInputFlags.IS_TEXT_EDITOR));
+    }
+
+    @Test
+    public void testInputMethodSettings_SwitchCurrentUser() {
+        TestContext ownerUserContext = createMockContext(0 /* userId */);
+        final InputMethodInfo systemIme = createFakeInputMethodInfo(
+                "SystemIme", "fake.latin", true /* isSystem */);
+        final InputMethodInfo nonSystemIme = createFakeInputMethodInfo("NonSystemIme",
+                "fake.voice0", false /* isSystem */);
+        final ArrayMap<String, InputMethodInfo> methodMap = new ArrayMap<>();
+        methodMap.put(systemIme.getId(), systemIme);
+
+        // Init InputMethodSettings for the owner user (userId=0), verify calls can get the
+        // corresponding user's context, contentResolver and the resources configuration.
+        InputMethodUtils.InputMethodSettings settings = new InputMethodUtils.InputMethodSettings(
+                ownerUserContext, methodMap, 0 /* userId */, true);
+        assertEquals(0, settings.getCurrentUserId());
+
+        settings.isShowImeWithHardKeyboardEnabled();
+        verify(ownerUserContext.getContentResolver(), atLeastOnce()).getAttributionSource();
+
+        settings.getEnabledInputMethodSubtypeListLocked(nonSystemIme, true);
+        verify(ownerUserContext.getResources(), atLeastOnce()).getConfiguration();
+
+        // Calling switchCurrentUser to the secondary user (userId=10), verify calls can get the
+        // corresponding user's context, contentResolver and the resources configuration.
+        settings.switchCurrentUser(10 /* userId */, true);
+        assertEquals(10, settings.getCurrentUserId());
+
+        settings.isShowImeWithHardKeyboardEnabled();
+        verify(TestContext.getSecondaryUserContext().getContentResolver(),
+                atLeastOnce()).getAttributionSource();
+
+        settings.getEnabledInputMethodSubtypeListLocked(nonSystemIme, true);
+        verify(TestContext.getSecondaryUserContext().getResources(),
+                atLeastOnce()).getConfiguration();
+    }
+
+    private static IntArray createSubtypeHashCodeArrayFromStr(String subtypeHashCodesStr) {
+        final IntArray subtypes = new IntArray();
+        final TextUtils.SimpleStringSplitter imeSubtypeSplitter =
+                new TextUtils.SimpleStringSplitter(';');
+        if (TextUtils.isEmpty(subtypeHashCodesStr)) {
+            return subtypes;
+        }
+        imeSubtypeSplitter.setString(subtypeHashCodesStr);
+        while (imeSubtypeSplitter.hasNext()) {
+            subtypes.add(Integer.parseInt(imeSubtypeSplitter.next()));
+        }
+        return subtypes;
+    }
+
+    private static void verifyUpdateEnabledImeString(@NonNull String expectedEnabledImeStr,
+            @NonNull String initialEnabledImeStr, @NonNull String imeId,
+            @NonNull String enabledSubtypeHashCodesStr) {
+        assertEquals(expectedEnabledImeStr,
+                InputMethodUtils.InputMethodSettings.updateEnabledImeString(initialEnabledImeStr,
+                        imeId, createSubtypeHashCodeArrayFromStr(enabledSubtypeHashCodesStr)));
+    }
+
+    private static TestContext createMockContext(int userId) {
+        return new TestContext(InstrumentationRegistry.getInstrumentation()
+                .getTargetContext(), userId);
+    }
+
+    private static class TestContext extends ContextWrapper {
+        private int mUserId;
+        private ContentResolver mResolver;
+        private Resources mResources;
+
+        private static TestContext sSecondaryUserContext;
+
+        TestContext(@NonNull Context context, int userId) {
+            super(context);
+            mUserId = userId;
+            mResolver = mock(MockContentResolver.class);
+            when(mResolver.acquireProvider(Settings.Secure.CONTENT_URI)).thenReturn(
+                    mock(IContentProvider.class));
+            mResources = mock(Resources.class);
+
+            final Configuration configuration = new Configuration();
+            if (userId == 0) {
+                configuration.setLocale(LOCALE_EN_US);
+            } else {
+                configuration.setLocale(LOCALE_FR_CA);
+            }
+            doReturn(configuration).when(mResources).getConfiguration();
+        }
+
+        @Override
+        public Context createContextAsUser(UserHandle user, int flags) {
+            if (user.getIdentifier() != UserHandle.USER_SYSTEM) {
+                return sSecondaryUserContext = new TestContext(this, user.getIdentifier());
+            }
+            return this;
+        }
+
+        @Override
+        public int getUserId() {
+            return mUserId;
+        }
+
+        @Override
+        public ContentResolver getContentResolver() {
+            return mResolver;
+        }
+
+        @Override
+        public Resources getResources() {
+            return mResources;
+        }
+
+        static Context getSecondaryUserContext() {
+            return sSecondaryUserContext;
+        }
+    }
+
+    @Test
+    public void updateEnabledImeStringTest() {
+        // No change cases
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1",
+                "com.android/.ime1", "com.android/.ime1", "");
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1",
+                "com.android/.ime1", "com.android/.ime2", "");
+
+        // To enable subtypes
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1",
+                "com.android/.ime1", "com.android/.ime2", "");
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1;1",
+                "com.android/.ime1", "com.android/.ime1", "1");
+
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1;1;2;3",
+                "com.android/.ime1", "com.android/.ime1", "1;2;3");
+
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1;1;2;3:com.android/.ime2",
+                "com.android/.ime1:com.android/.ime2", "com.android/.ime1", "1;2;3");
+        verifyUpdateEnabledImeString(
+                "com.android/.ime0:com.android/.ime1;1;2;3",
+                "com.android/.ime0:com.android/.ime1", "com.android/.ime1", "1;2;3");
+        verifyUpdateEnabledImeString(
+                "com.android/.ime0:com.android/.ime1;1;2;3:com.android/.ime2",
+                "com.android/.ime0:com.android/.ime1:com.android/.ime2", "com.android/.ime1",
+                "1;2;3");
+
+        // To reset enabled subtypes
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1",
+                "com.android/.ime1;1", "com.android/.ime1", "");
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1",
+                "com.android/.ime1;1;2;3", "com.android/.ime1", "");
+        verifyUpdateEnabledImeString(
+                "com.android/.ime1:com.android/.ime2",
+                "com.android/.ime1;1;2;3:com.android/.ime2", "com.android/.ime1", "");
+
+        verifyUpdateEnabledImeString(
+                "com.android/.ime0:com.android/.ime1",
+                "com.android/.ime0:com.android/.ime1;1;2;3", "com.android/.ime1", "");
+        verifyUpdateEnabledImeString(
+                "com.android/.ime0:com.android/.ime1:com.android/.ime2",
+                "com.android/.ime0:com.android/.ime1;1;2;3:com.android/.ime2", "com.android/.ime1",
+                "");
     }
 }

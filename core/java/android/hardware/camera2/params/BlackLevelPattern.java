@@ -16,6 +16,9 @@
 
 package android.hardware.camera2.params;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -41,13 +44,16 @@ public final class BlackLevelPattern {
      * a 2x2 pattern corresponding to the color filter arrangement.  Offsets are
      * given in row-column scan order.</p>
      *
+     * <p>This constructor is public to allow for easier application testing by
+     * creating custom object instances. It's not necessary to construct these
+     * objects during normal use of the camera API.</p>
+     *
      * @param offsets an array containing a 2x2 pattern of offsets.
      *
      * @throws IllegalArgumentException if the given array has an incorrect length.
      * @throws NullPointerException if the given array is null.
-     * @hide
      */
-    public BlackLevelPattern(int[] offsets) {
+    public BlackLevelPattern(@NonNull int[] offsets) {
         if (offsets == null) {
             throw new NullPointerException("Null offsets array passed to constructor");
         }
@@ -107,7 +113,7 @@ public final class BlackLevelPattern {
      * @return {@code true} if the objects were equal, {@code false} otherwise
      */
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (obj == null) {
             return false;
         } else if (this == obj) {

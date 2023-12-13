@@ -16,9 +16,12 @@
 
 package android.app;
 
+import android.app.backup.BackupRestoreEventLogger;
 import android.app.backup.IBackupCallback;
 import android.app.backup.IBackupManager;
 import android.os.ParcelFileDescriptor;
+
+import com.android.internal.infra.AndroidFuture;
  
 /**
  * Interface presented by applications being asked to participate in the
@@ -42,11 +45,7 @@ oneway interface IBackupAgent {
      * @param newState Read-write file, empty when onBackup() is called,
      *        where the new state blob is to be recorded.
      *
-     * @param quota Quota reported by the transport for this backup operation (in bytes).
-     *
-     * @param token Opaque token identifying this transaction.  This must
-     *        be echoed back to the backup service binder once the new
-     *        data has been written to the data and newState files.
+     * @param quotaBytes Quota reported by the transport for this backup operation (in bytes).
      *
      * @param callbackBinder Binder on which to indicate operation completion.
      *
@@ -106,7 +105,7 @@ oneway interface IBackupAgent {
      *        The data must be formatted correctly for the resulting archive to be
      *        legitimate, so that will be tightly controlled by the available API.
      *
-     * @param quota Quota reported by the transport for this backup operation (in bytes).
+     * @param quotaBytes Quota reported by the transport for this backup operation (in bytes).
      *
      * @param token Opaque token identifying this transaction.  This must
      *        be echoed back to the backup service binder once the agent is
@@ -197,4 +196,25 @@ oneway interface IBackupAgent {
      * @param message The message to be passed to the agent's application in an exception.
      */
     void fail(String message);
+
+    /**
+     * Provides the logging results that were accumulated in the BackupAgent during a backup or
+     * restore operation. This method should be called after the agent completes its backup or
+     * restore.
+     *
+     * @param resultsFuture a future that is completed with the logging results.
+     */
+    void getLoggerResults(
+            in AndroidFuture<List<BackupRestoreEventLogger.DataTypeResult>> resultsFuture);
+
+    /**
+    * Provides the operation type (backup or restore) the agent is created for. See
+    * {@link android.app.backup.BackupAnnotations.OperationType}.
+    */
+    void getOperationType(in AndroidFuture<int> operationTypeFuture);
+
+    /**
+     * Clears the logs accumulated by the BackupAgent during a backup or restore operation.
+     */
+    void clearBackupRestoreEventLogger();
 }

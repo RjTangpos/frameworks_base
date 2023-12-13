@@ -37,7 +37,6 @@
 #include "idmap2/Result.h"
 #include "idmap2/SysTrace.h"
 #include "idmap2/XmlParser.h"
-#include "idmap2/ZipFile.h"
 #include "utils/String16.h"
 #include "utils/String8.h"
 
@@ -52,10 +51,10 @@ using android::base::StringPrintf;
 using android::idmap2::CommandLineOptions;
 using android::idmap2::Error;
 using android::idmap2::IdmapHeader;
+using android::idmap2::OverlayResourceContainer;
 using android::idmap2::ResourceId;
 using android::idmap2::Result;
 using android::idmap2::Unit;
-using android::idmap2::utils::ExtractOverlayManifestInfo;
 
 namespace {
 
@@ -175,7 +174,7 @@ Result<Unit> Lookup(const std::vector<std::string>& args) {
     return Error("failed to parse config");
   }
 
-  std::vector<std::unique_ptr<const ApkAssets>> apk_assets;
+  std::vector<AssetManager2::ApkAssetsPtr> apk_assets;
   std::string target_path;
   std::string target_package_name;
   for (size_t i = 0; i < idmap_paths.size(); i++) {
@@ -188,51 +187,51 @@ Result<Unit> Lookup(const std::vector<std::string>& args) {
     }
 
     if (i == 0) {
-      target_path = idmap_header->GetTargetPath().to_string();
+      target_path = idmap_header->GetTargetPath();
       auto target_apk = ApkAssets::Load(target_path);
       if (!target_apk) {
         return Error("failed to read target apk from %s", target_path.c_str());
       }
       apk_assets.push_back(std::move(target_apk));
 
-      auto manifest_info = ExtractOverlayManifestInfo(idmap_header->GetOverlayPath().to_string(),
-                                                      true /* assert_overlay */);
+      auto overlay = OverlayResourceContainer::FromPath(idmap_header->GetOverlayPath());
+      if (!overlay) {
+        return overlay.GetError();
+      }
+
+      auto manifest_info = (*overlay)->FindOverlayInfo(idmap_header->GetOverlayName());
       if (!manifest_info) {
         return manifest_info.GetError();
       }
+
       target_package_name = (*manifest_info).target_package;
     } else if (target_path != idmap_header->GetTargetPath()) {
       return Error("different target APKs (expected target APK %s but %s has target APK %s)",
-                   target_path.c_str(), idmap_path.c_str(),
-                   idmap_header->GetTargetPath().to_string().c_str());
+                   target_path.c_str(), idmap_path.c_str(), idmap_header->GetTargetPath().c_str());
     }
 
     auto overlay_apk = ApkAssets::LoadOverlay(idmap_path);
     if (!overlay_apk) {
-      return Error("failed to read overlay apk from %s",
-                   idmap_header->GetOverlayPath().to_string().c_str());
+      return Error("failed to read overlay apk from %s", idmap_header->GetOverlayPath().c_str());
     }
     apk_assets.push_back(std::move(overlay_apk));
   }
 
-  // AssetManager2::SetApkAssets requires raw ApkAssets pointers, not unique_ptrs
-  std::vector<const ApkAssets*> raw_pointer_apk_assets;
-  std::transform(apk_assets.cbegin(), apk_assets.cend(), std::back_inserter(raw_pointer_apk_assets),
-                 [](const auto& p) -> const ApkAssets* { return p.get(); });
-  AssetManager2 am;
-  am.SetApkAssets(raw_pointer_apk_assets);
-  am.SetConfiguration(config);
+  {
+    // Make sure |apk_assets| vector outlives the asset manager as it doesn't own the assets.
+    AssetManager2 am(apk_assets, config);
 
-  const Result<ResourceId> resid = ParseResReference(am, resid_str, target_package_name);
-  if (!resid) {
-    return Error(resid.GetError(), "failed to parse resource ID");
-  }
+    const Result<ResourceId> resid = ParseResReference(am, resid_str, target_package_name);
+    if (!resid) {
+      return Error(resid.GetError(), "failed to parse resource ID");
+    }
 
-  const Result<std::string> value = GetValue(&am, *resid);
-  if (!value) {
-    return Error(value.GetError(), "resource 0x%08x not found", *resid);
+    const Result<std::string> value = GetValue(&am, *resid);
+    if (!value) {
+      return Error(value.GetError(), "resource 0x%08x not found", *resid);
+    }
+    std::cout << *value << std::endl;
   }
-  std::cout << *value << std::endl;
 
   return Unit{};
 }

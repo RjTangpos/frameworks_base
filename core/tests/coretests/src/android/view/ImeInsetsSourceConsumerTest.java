@@ -16,13 +16,15 @@
 
 package android.view;
 
-import static android.view.ImeInsetsSourceConsumer.areEditorsSimilar;
-import static android.view.InsetsState.ITYPE_IME;
+import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
+import static android.view.InsetsSource.ID_IME;
 import static android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
+import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
 
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -31,15 +33,12 @@ import android.content.Context;
 import android.graphics.Insets;
 import android.graphics.Point;
 import android.graphics.Rect;
-import android.os.Bundle;
 import android.platform.test.annotations.Presubmit;
 import android.view.WindowManager.BadTokenException;
 import android.view.WindowManager.LayoutParams;
-import android.view.inputmethod.EditorInfo;
 import android.widget.TextView;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
-import androidx.test.filters.FlakyTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.Before;
@@ -48,8 +47,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 
-import java.util.ArrayList;
-
 /**
  * Test {@link InsetsSourceConsumer} with IME type.
  *
@@ -57,12 +54,11 @@ import java.util.ArrayList;
  *  atest FrameworksCoreTests:ImeInsetsSourceConsumerTest
  */
 @Presubmit
-@FlakyTest(detail = "Promote once confirmed non-flaky")
 @RunWith(AndroidJUnit4.class)
 public class ImeInsetsSourceConsumerTest {
 
     Context mContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
-    ImeInsetsSourceConsumer mImeConsumer;
+    InsetsSourceConsumer mImeConsumer;
     @Spy InsetsController mController;
     SurfaceControl mLeash;
 
@@ -81,32 +77,33 @@ public class ImeInsetsSourceConsumerTest {
             mController = Mockito.spy(new InsetsController(
                     new ViewRootInsetsControllerHost(viewRootImpl)));
             final Rect rect = new Rect(5, 5, 5, 5);
+            mController.getState().setDisplayCutout(new DisplayCutout(
+                    Insets.of(10, 10, 10, 10), rect, rect, rect, rect));
             mController.calculateInsets(
                     false,
-                    false,
-                    new DisplayCutout(
-                            Insets.of(10, 10, 10, 10), rect, rect, rect, rect),
+                    TYPE_APPLICATION, ACTIVITY_TYPE_UNDEFINED,
                     SOFT_INPUT_ADJUST_RESIZE, 0, 0);
-            mImeConsumer = (ImeInsetsSourceConsumer) mController.getSourceConsumer(ITYPE_IME);
+            mImeConsumer = mController.getImeSourceConsumer();
         });
     }
 
     @Test
     public void testImeVisibility() {
-        final InsetsSourceControl ime = new InsetsSourceControl(ITYPE_IME, mLeash, new Point());
+        final InsetsSourceControl ime = new InsetsSourceControl(ID_IME, WindowInsets.Type.ime(),
+                mLeash, false, new Point(), Insets.NONE);
         mController.onControlsChanged(new InsetsSourceControl[] { ime });
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             // test if setVisibility can show IME
-            mImeConsumer.onWindowFocusGained();
-            mImeConsumer.applyImeVisibility(true);
+            mImeConsumer.onWindowFocusGained(true);
+            mController.show(WindowInsets.Type.ime(), true /* fromIme */, null /* statsToken */);
             mController.cancelExistingAnimations();
-            assertTrue(mController.getSourceConsumer(ime.getType()).isRequestedVisible());
+            assertTrue((mController.getRequestedVisibleTypes() & WindowInsets.Type.ime()) != 0);
 
             // test if setVisibility can hide IME
-            mImeConsumer.applyImeVisibility(false);
+            mController.hide(WindowInsets.Type.ime(), true /* fromIme */, null /* statsToken */);
             mController.cancelExistingAnimations();
-            assertFalse(mController.getSourceConsumer(ime.getType()).isRequestedVisible());
+            assertFalse((mController.getRequestedVisibleTypes() & WindowInsets.Type.ime()) != 0);
         });
     }
 
@@ -117,63 +114,78 @@ public class ImeInsetsSourceConsumerTest {
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             // Request IME visible before control is available.
-            mImeConsumer.onWindowFocusGained();
-            mImeConsumer.applyImeVisibility(true /* setVisible */);
+            mImeConsumer.onWindowFocusGained(true);
+            mController.show(WindowInsets.Type.ime(), true /* fromIme */, null /* statsToken */);
 
             // set control and verify visibility is applied.
-            InsetsSourceControl control = new InsetsSourceControl(ITYPE_IME, mLeash, new Point());
+            InsetsSourceControl control = new InsetsSourceControl(ID_IME,
+                    WindowInsets.Type.ime(), mLeash, false, new Point(), Insets.NONE);
             mController.onControlsChanged(new InsetsSourceControl[] { control });
             // IME show animation should be triggered when control becomes available.
             verify(mController).applyAnimation(
-                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(true) /* fromIme */);
+                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(true) /* fromIme */,
+                    any() /* statsToken */);
             verify(mController, never()).applyAnimation(
-                    eq(WindowInsets.Type.ime()), eq(false) /* show */, eq(true) /* fromIme */);
+                    eq(WindowInsets.Type.ime()), eq(false) /* show */, eq(true) /* fromIme */,
+                    any() /* statsToken */);
         });
     }
 
     @Test
-    public void testAreEditorsSimilar() {
-        EditorInfo info1 = new EditorInfo();
-        info1.privateImeOptions = "dummy";
-        EditorInfo info2 = new EditorInfo();
+    public void testImeGetAndClearSkipAnimationOnce_expectSkip() {
+        // Expect IME animation will skipped when the IME is visible at first place.
+        verifyImeGetAndClearSkipAnimationOnce(true /* hasWindowFocus */, true /* hasViewFocus */,
+                true /* expectSkipAnim */);
+    }
 
-        assertFalse(areEditorsSimilar(info1, info2));
+    @Test
+    public void testImeGetAndClearSkipAnimationOnce_expectNoSkip() {
+        // Expect IME animation will not skipped if previously no view focused when gained the
+        // window focus and requesting the IME visible next time.
+        verifyImeGetAndClearSkipAnimationOnce(true /* hasWindowFocus */, false /* hasViewFocus */,
+                false /* expectSkipAnim */);
+    }
 
-        info1.privateImeOptions = null;
-        assertTrue(areEditorsSimilar(info1, info2));
+    private void verifyImeGetAndClearSkipAnimationOnce(boolean hasWindowFocus, boolean hasViewFocus,
+            boolean expectSkipAnim) {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            // Request IME visible before control is available.
+            mImeConsumer.onWindowFocusGained(hasWindowFocus);
+            final boolean imeVisible = hasWindowFocus && hasViewFocus;
+            if (imeVisible) {
+                mController.show(WindowInsets.Type.ime(), true /* fromIme */,
+                        null /* statsToken */);
+            }
 
-        info1.inputType = info2.inputType = 3;
-        info1.imeOptions = info2.imeOptions = 0x4;
-        info1.packageName = info2.packageName = "dummy.package";
-        assertTrue(areEditorsSimilar(info1, info2));
+            // set control and verify visibility is applied.
+            InsetsSourceControl control = Mockito.spy(new InsetsSourceControl(ID_IME,
+                    WindowInsets.Type.ime(), mLeash, false, new Point(), Insets.NONE));
+            // Simulate IME source control set this flag when the target has starting window.
+            control.setSkipAnimationOnce(true);
 
-        Bundle extras1 = new Bundle();
-        extras1.putByteArray("key1", "value1".getBytes());
-        extras1.putChar("key2", 'c');
-        Bundle extras2 = new Bundle();
-        extras2.putByteArray("key1", "value1".getBytes());
-        extras2.putChar("key2", 'c');
-        info1.extras = extras1;
-        info2.extras = extras2;
-        assertTrue(areEditorsSimilar(info1, info2));
+            if (imeVisible) {
+                // Verify IME applyAnimation should be triggered when control becomes available,
+                // and expect skip animation state after getAndClearSkipAnimationOnce invoked.
+                mController.onControlsChanged(new InsetsSourceControl[]{ control });
+                verify(control).getAndClearSkipAnimationOnce();
+                verify(mController).applyAnimation(eq(WindowInsets.Type.ime()),
+                        eq(true) /* show */, eq(false) /* fromIme */,
+                        eq(expectSkipAnim) /* skipAnim */, eq(null) /* statsToken */);
+            }
 
-        Bundle extraBundle = new Bundle();
-        ArrayList<Integer> list = new ArrayList<>();
-        list.add(2);
-        list.add(5);
-        extraBundle.putByteArray("key1", "value1".getBytes());
-        extraBundle.putChar("key2", 'c');
-        extraBundle.putIntegerArrayList("key3", list);
-
-        extras1.putAll(extraBundle);
-        extras2.putAll(extraBundle);
-        assertTrue(areEditorsSimilar(info1, info2));
-
-        extras2.putChar("key2", 'd');
-        assertFalse(areEditorsSimilar(info1, info2));
-
-        extras2.putChar("key2", 'c');
-        extras2.putInt("key4", 1);
-        assertFalse(areEditorsSimilar(info1, info2));
+            // If previously hasViewFocus is false, verify when requesting the IME visible next
+            // time will not skip animation.
+            if (!hasViewFocus) {
+                mController.show(WindowInsets.Type.ime(), true /* fromIme */,
+                        null /* statsToken */);
+                mController.onControlsChanged(new InsetsSourceControl[]{ control });
+                // Verify IME show animation should be triggered when control becomes available and
+                // the animation will be skipped by getAndClearSkipAnimationOnce invoked.
+                verify(control).getAndClearSkipAnimationOnce();
+                verify(mController).applyAnimation(eq(WindowInsets.Type.ime()),
+                        eq(true) /* show */, eq(true) /* fromIme */,
+                        eq(false) /* skipAnim */, eq(null) /* statsToken */);
+            }
+        });
     }
 }

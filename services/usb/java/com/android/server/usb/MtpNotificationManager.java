@@ -91,11 +91,12 @@ class MtpNotificationManager {
         intent.putExtra(UsbManager.EXTRA_DEVICE, device);
         intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY | Intent.FLAG_RECEIVER_FOREGROUND);
 
+        // Simple notification clicks are immutable
         final PendingIntent openIntent = PendingIntent.getBroadcastAsUser(
                 mContext,
                 device.getDeviceId(),
                 intent,
-                PendingIntent.FLAG_UPDATE_CURRENT,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE,
                 UserHandle.SYSTEM);
         builder.setContentIntent(openIntent);
 
@@ -116,7 +117,7 @@ class MtpNotificationManager {
         @Override
         public void onReceive(Context context, Intent intent) {
             final UsbDevice device =
-                    intent.getExtras().<UsbDevice>getParcelable(UsbManager.EXTRA_DEVICE);
+                    intent.getExtras().<UsbDevice>getParcelable(UsbManager.EXTRA_DEVICE, android.hardware.usb.UsbDevice.class);
             if (device == null) {
                 return;
             }

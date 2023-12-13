@@ -35,8 +35,8 @@ import android.os.RemoteException;
 import androidx.test.core.app.ApplicationProvider;
 
 import com.android.internal.R;
-import com.android.server.location.ComprehensiveCountryDetector;
-import com.android.server.location.CustomCountryDetectorTestClass;
+import com.android.server.location.countrydetector.ComprehensiveCountryDetector;
+import com.android.server.location.countrydetector.CustomCountryDetectorTestClass;
 
 import com.google.common.truth.Expect;
 
@@ -53,7 +53,7 @@ import org.mockito.junit.MockitoJUnitRunner;
 public class CountryDetectorServiceTest {
 
     private static final String VALID_CUSTOM_TEST_CLASS =
-            "com.android.server.location.CustomCountryDetectorTestClass";
+            "com.android.server.location.countrydetector.CustomCountryDetectorTestClass";
     private static final String INVALID_CUSTOM_TEST_CLASS =
             "com.android.server.location.MissingCountryDetectorTestClass";
 
@@ -179,8 +179,9 @@ public class CountryDetectorServiceTest {
         mCountryDetectorService.systemRunning();
         mCountryDetectorService.addCountryListener(countryListenerA);
         mCountryDetectorService.addCountryListener(countryListenerB);
-        expect.that(countryListenerA.isNotified()).isFalse();
-        expect.that(countryListenerB.isNotified()).isFalse();
+        //Immediate Callback Info support at ag/20470367
+        expect.that(countryListenerA.isNotified()).isTrue();
+        expect.that(countryListenerB.isNotified()).isTrue();
         mCountryDetectorService.notifyReceivers(country);
 
         expect.that(countryListenerA.isNotified()).isTrue();

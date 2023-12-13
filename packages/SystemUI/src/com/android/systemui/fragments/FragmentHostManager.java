@@ -28,6 +28,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Parcelable;
+import android.os.Trace;
 import android.util.ArrayMap;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -35,16 +36,19 @@ import android.view.View;
 import androidx.annotation.NonNull;
 
 import com.android.settingslib.applications.InterestingConfigChanges;
-import com.android.systemui.Dependency;
 import com.android.systemui.plugins.Plugin;
 import com.android.systemui.util.leak.LeakDetector;
 
+import dagger.assisted.Assisted;
+import dagger.assisted.AssistedFactory;
+import dagger.assisted.AssistedInject;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
+
+import javax.inject.Provider;
 
 public class FragmentHostManager {
 
@@ -52,22 +56,32 @@ public class FragmentHostManager {
     private final Context mContext;
     private final HashMap<String, ArrayList<FragmentListener>> mListeners = new HashMap<>();
     private final View mRootView;
+    private final LeakDetector mLeakDetector;
     private final InterestingConfigChanges mConfigChanges = new InterestingConfigChanges(
             ActivityInfo.CONFIG_FONT_SCALE | ActivityInfo.CONFIG_LOCALE
-                | ActivityInfo.CONFIG_SCREEN_LAYOUT | ActivityInfo.CONFIG_ASSETS_PATHS
-                | ActivityInfo.CONFIG_UI_MODE);
+                    | ActivityInfo.CONFIG_ASSETS_PATHS);
     private final FragmentService mManager;
     private final ExtensionFragmentManager mPlugins = new ExtensionFragmentManager();
 
     private FragmentController mFragments;
     private FragmentLifecycleCallbacks mLifecycleCallbacks;
 
-    FragmentHostManager(FragmentService manager, View rootView) {
+    @AssistedInject
+    FragmentHostManager(
+            @Assisted View rootView,
+            FragmentService manager,
+            LeakDetector leakDetector) {
         mContext = rootView.getContext();
         mManager = manager;
         mRootView = rootView;
+        mLeakDetector = leakDetector;
         mConfigChanges.applyNewConfig(mContext.getResources());
         createFragmentHost(null);
+    }
+
+    @AssistedFactory
+    public interface Factory {
+        FragmentHostManager create(View rootView);
     }
 
     private void createFragmentHost(Parcelable savedState) {
@@ -87,7 +101,7 @@ public class FragmentHostManager {
 
             @Override
             public void onFragmentDestroyed(FragmentManager fm, Fragment f) {
-                Dependency.get(LeakDetector.class).trackGarbage(f);
+                mLeakDetector.trackGarbage(f);
             }
         };
         mFragments.getFragmentManager().registerFragmentLifecycleCallbacks(mLifecycleCallbacks,
@@ -110,7 +124,18 @@ public class FragmentHostManager {
         return p;
     }
 
-    public FragmentHostManager addTagListener(String tag, FragmentListener listener) {
+    /**
+     * Add a {@link FragmentListener} for a given tag
+     *
+     * @param tag string identifier for the fragment
+     * @param listener the listener to register
+     *
+     * @return this
+     */
+    public FragmentHostManager addTagListener(
+            @NonNull String tag,
+            @NonNull FragmentListener listener
+    ) {
         ArrayList<FragmentListener> listeners = mListeners.get(tag);
         if (listeners == null) {
             listeners = new ArrayList<>();
@@ -201,24 +226,13 @@ public class FragmentHostManager {
         }
     }
 
-    public static FragmentHostManager get(View view) {
-        try {
-            return Dependency.get(FragmentService.class).getFragmentHostManager(view);
-        } catch (ClassCastException e) {
-            // TODO: Some auto handling here?
-            throw e;
-        }
-    }
-
-    public static void removeAndDestroy(View view) {
-        Dependency.get(FragmentService.class).removeAndDestroy(view);
-    }
-
     public void reloadFragments() {
+        Trace.beginSection("FrargmentHostManager#reloadFragments");
         // Save the old state.
         Parcelable p = destroyFragmentHost();
         // Generate a new fragment host and restore its state.
         createFragmentHost(p);
+        Trace.endSection();
     }
 
     class HostCallbacks extends FragmentHostCallback<FragmentHostManager> {
@@ -309,25 +323,17 @@ public class FragmentHostManager {
             return instantiateWithInjections(context, className, arguments);
         }
 
-        private Fragment instantiateWithInjections(Context context, String className,
-                Bundle args) {
-            Method method = mManager.getInjectionMap().get(className);
-            if (method != null) {
-                try {
-                    Fragment f = (Fragment) method.invoke(mManager.getFragmentCreator());
-                    // Setup the args, taken from Fragment#instantiate.
-                    if (args != null) {
-                        args.setClassLoader(f.getClass().getClassLoader());
-                        f.setArguments(args);
-                    }
-                    return f;
-                } catch (IllegalAccessException e) {
-                    throw new Fragment.InstantiationException("Unable to instantiate " + className,
-                            e);
-                } catch (InvocationTargetException e) {
-                    throw new Fragment.InstantiationException("Unable to instantiate " + className,
-                            e);
+        private Fragment instantiateWithInjections(Context context, String className, Bundle args) {
+            Provider<? extends Fragment> fragmentProvider =
+                    mManager.getInjectionMap().get(className);
+            if (fragmentProvider != null) {
+                Fragment f = fragmentProvider.get();
+                // Setup the args, taken from Fragment#instantiate.
+                if (args != null) {
+                    args.setClassLoader(f.getClass().getClassLoader());
+                    f.setArguments(args);
                 }
+                return f;
             }
             return Fragment.instantiate(context, className, args);
         }

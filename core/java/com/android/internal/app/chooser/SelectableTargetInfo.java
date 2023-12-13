@@ -37,8 +37,8 @@ import android.service.chooser.ChooserTarget;
 import android.text.SpannableStringBuilder;
 import android.util.Log;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.app.ChooserActivity;
-import com.android.internal.app.ChooserFlags;
 import com.android.internal.app.ResolverActivity;
 import com.android.internal.app.ResolverListAdapter.ActivityInfoPresentationGetter;
 import com.android.internal.app.SimpleIconFactory;
@@ -60,11 +60,15 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
     private final String mDisplayLabel;
     private final PackageManager mPm;
     private final SelectableTargetInfoCommunicator mSelectableTargetInfoCommunicator;
+    @GuardedBy("this")
+    private ShortcutInfo mShortcutInfo;
     private Drawable mBadgeIcon = null;
     private CharSequence mBadgeContentDescription;
+    @GuardedBy("this")
     private Drawable mDisplayIcon;
     private final Intent mFillInIntent;
     private final int mFillInFlags;
+    private final boolean mIsPinned;
     private final float mModifiedScore;
     private boolean mIsSuspended = false;
 
@@ -78,6 +82,8 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         mModifiedScore = modifiedScore;
         mPm = mContext.getPackageManager();
         mSelectableTargetInfoCommunicator = selectableTargetInfoComunicator;
+        mShortcutInfo = shortcutInfo;
+        mIsPinned = shortcutInfo != null && shortcutInfo.isPinned();
         if (sourceInfo != null) {
             final ResolveInfo ri = sourceInfo.getResolveInfo();
             if (ri != null) {
@@ -91,8 +97,6 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
                 }
             }
         }
-        // TODO(b/121287224): do this in the background thread, and only for selected targets
-        mDisplayIcon = getChooserTargetIconDrawable(chooserTarget, shortcutInfo);
 
         if (sourceInfo != null) {
             mBackupResolveInfo = null;
@@ -117,10 +121,14 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         mChooserTarget = other.mChooserTarget;
         mBadgeIcon = other.mBadgeIcon;
         mBadgeContentDescription = other.mBadgeContentDescription;
-        mDisplayIcon = other.mDisplayIcon;
+        synchronized (other) {
+            mShortcutInfo = other.mShortcutInfo;
+            mDisplayIcon = other.mDisplayIcon;
+        }
         mFillInIntent = fillInIntent;
         mFillInFlags = flags;
         mModifiedScore = other.mModifiedScore;
+        mIsPinned = other.mIsPinned;
 
         mDisplayLabel = sanitizeDisplayLabel(mChooserTarget.getTitle());
     }
@@ -139,6 +147,27 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         return mSourceInfo;
     }
 
+    /**
+     * Load display icon, if needed.
+     */
+    public boolean loadIcon() {
+        ShortcutInfo shortcutInfo;
+        Drawable icon;
+        synchronized (this) {
+            shortcutInfo = mShortcutInfo;
+            icon = mDisplayIcon;
+        }
+        boolean shouldLoadIcon = icon == null && shortcutInfo != null;
+        if (shouldLoadIcon) {
+            icon = getChooserTargetIconDrawable(mChooserTarget, shortcutInfo);
+            synchronized (this) {
+                mDisplayIcon = icon;
+                mShortcutInfo = null;
+            }
+        }
+        return shouldLoadIcon;
+    }
+
     private Drawable getChooserTargetIconDrawable(ChooserTarget target,
             @Nullable ShortcutInfo shortcutInfo) {
         Drawable directShareIcon = null;
@@ -147,7 +176,7 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         final Icon icon = target.getIcon();
         if (icon != null) {
             directShareIcon = icon.loadDrawable(mContext);
-        } else if (ChooserFlags.USE_SHORTCUT_MANAGER_FOR_DIRECT_TARGETS && shortcutInfo != null) {
+        } else if (shortcutInfo != null) {
             LauncherApps launcherApps = (LauncherApps) mContext.getSystemService(
                     Context.LAUNCHER_APPS_SERVICE);
             directShareIcon = launcherApps.getShortcutIconDrawable(shortcutInfo, 0);
@@ -166,7 +195,7 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
 
         // Now fetch app icon and raster with no badging even in work profile
         Bitmap appIcon = mSelectableTargetInfoCommunicator.makePresentationGetter(info)
-                .getIconBitmap(UserHandle.getUserHandleForUid(UserHandle.myUserId()));
+                .getIconBitmap(null);
 
         // Raster target drawable with appIcon as a badge
         SimpleIconFactory sif = SimpleIconFactory.obtain(mContext);
@@ -230,6 +259,7 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         }
         intent.setComponent(mChooserTarget.getComponentName());
         intent.putExtras(mChooserTarget.getIntentExtras());
+        TargetInfo.prepareIntentForCrossProfileLaunch(intent, userId);
 
         // Important: we will ignore the target security checks in ActivityManager
         // if and only if the ChooserTarget's target package is the same package
@@ -242,7 +272,8 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         final boolean ignoreTargetSecurity = mSourceInfo != null
                 && mSourceInfo.getResolvedComponentName().getPackageName()
                 .equals(mChooserTarget.getComponentName().getPackageName());
-        return activity.startAsCallerImpl(intent, options, ignoreTargetSecurity, userId);
+        activity.startActivityAsCaller(intent, options, ignoreTargetSecurity, userId);
+        return true;
     }
 
     @Override
@@ -267,8 +298,15 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
     }
 
     @Override
-    public Drawable getDisplayIcon(Context context) {
+    public synchronized Drawable getDisplayIcon(Context context) {
         return mDisplayIcon;
+    }
+
+    /**
+     * @return true if display icon is available
+     */
+    public synchronized boolean hasDisplayIcon() {
+        return mDisplayIcon != null;
     }
 
     public ChooserTarget getChooserTarget() {
@@ -292,7 +330,7 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
 
     @Override
     public boolean isPinned() {
-        return mSourceInfo != null && mSourceInfo.isPinned();
+        return mIsPinned;
     }
 
     /**

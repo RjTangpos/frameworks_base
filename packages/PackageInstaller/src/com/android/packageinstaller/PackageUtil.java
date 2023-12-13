@@ -17,23 +17,36 @@
 
 package com.android.packageinstaller;
 
-import android.annotation.NonNull;
-import android.annotation.Nullable;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.Dialog;
+import android.app.DialogFragment;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.res.AssetManager;
 import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.os.Bundle;
+import android.os.Parcel;
+import android.os.Parcelable;
 import android.os.UserHandle;
 import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+
+import java.io.Closeable;
 import java.io.File;
+import java.io.IOException;
 
 /**
  * This is a utility class for defining some utility methods and constants
@@ -107,13 +120,60 @@ public class PackageUtil {
                 icon);
     }
 
-    static public class AppSnippet {
+    static final class AppSnippet implements Parcelable {
         @NonNull public CharSequence label;
         @Nullable public Drawable icon;
         public AppSnippet(@NonNull CharSequence label, @Nullable Drawable icon) {
             this.label = label;
             this.icon = icon;
         }
+
+        private AppSnippet(Parcel in) {
+            label = in.readString();
+            Bitmap bmp = in.readParcelable(getClass().getClassLoader(), Bitmap.class);
+            icon = new BitmapDrawable(Resources.getSystem(), bmp);
+        }
+
+        @Override
+        public String toString() {
+            return "AppSnippet[" + label + (icon != null ? "(has" : "(no ") + " icon)]";
+        }
+
+        @Override
+        public int describeContents() {
+            return 0;
+        }
+
+        @Override
+        public void writeToParcel(@NonNull Parcel dest, int flags) {
+            dest.writeString(label.toString());
+            Bitmap bmp = getBitmapFromDrawable(icon);
+            dest.writeParcelable(bmp, 0);
+        }
+
+        private Bitmap getBitmapFromDrawable(Drawable drawable) {
+            // Create an empty bitmap with the dimensions of our drawable
+            final Bitmap bmp = Bitmap.createBitmap(drawable.getIntrinsicWidth(),
+                    drawable.getIntrinsicHeight(),
+                    Bitmap.Config.ARGB_8888);
+            // Associate it with a canvas. This canvas will draw the icon on the bitmap
+            final Canvas canvas = new Canvas(bmp);
+            // Draw the drawable in the canvas. The canvas will ultimately paint the drawable in the
+            // bitmap held within
+            drawable.draw(canvas);
+
+            return bmp;
+        }
+
+        public static final Parcelable.Creator<AppSnippet> CREATOR = new Parcelable.Creator<>() {
+            public AppSnippet createFromParcel(Parcel in) {
+                return new AppSnippet(in);
+            }
+
+            public AppSnippet[] newArray(int size) {
+                return new AppSnippet[size];
+            }
+        };
     }
 
     /**
@@ -126,16 +186,15 @@ public class PackageUtil {
     public static AppSnippet getAppSnippet(
             Activity pContext, ApplicationInfo appInfo, File sourceFile) {
         final String archiveFilePath = sourceFile.getAbsolutePath();
-        Resources pRes = pContext.getResources();
-        AssetManager assmgr = new AssetManager();
-        assmgr.addAssetPath(archiveFilePath);
-        Resources res = new Resources(assmgr, pRes.getDisplayMetrics(), pRes.getConfiguration());
+        PackageManager pm = pContext.getPackageManager();
+        appInfo.publicSourceDir = archiveFilePath;
+
         CharSequence label = null;
         // Try to load the label from the package's resources. If an app has not explicitly
         // specified any label, just use the package name.
         if (appInfo.labelRes != 0) {
             try {
-                label = res.getText(appInfo.labelRes);
+                label = appInfo.loadLabel(pm);
             } catch (Resources.NotFoundException e) {
             }
         }
@@ -149,7 +208,7 @@ public class PackageUtil {
         try {
             if (appInfo.icon != 0) {
                 try {
-                    icon = res.getDrawable(appInfo.icon);
+                    icon = appInfo.loadIcon(pm);
                 } catch (Resources.NotFoundException e) {
                 }
             }
@@ -185,5 +244,52 @@ public class PackageUtil {
             }
         }
         return targetSdkVersion;
+    }
+
+
+    /**
+     * Quietly close a closeable resource (e.g. a stream or file). The input may already
+     * be closed and it may even be null.
+     */
+    static void safeClose(Closeable resource) {
+        if (resource != null) {
+            try {
+                resource.close();
+            } catch (IOException ioe) {
+                // Catch and discard the error
+            }
+        }
+    }
+
+    /**
+     * A simple error dialog showing a message
+     */
+    public static class SimpleErrorDialog extends DialogFragment {
+        private static final String MESSAGE_KEY =
+                SimpleErrorDialog.class.getName() + "MESSAGE_KEY";
+
+        static SimpleErrorDialog newInstance(@StringRes int message) {
+            SimpleErrorDialog dialog = new SimpleErrorDialog();
+
+            Bundle args = new Bundle();
+            args.putInt(MESSAGE_KEY, message);
+            dialog.setArguments(args);
+
+            return dialog;
+        }
+
+        @Override
+        public Dialog onCreateDialog(Bundle savedInstanceState) {
+            return new AlertDialog.Builder(getActivity())
+                    .setMessage(getArguments().getInt(MESSAGE_KEY))
+                    .setPositiveButton(R.string.ok, (dialog, which) -> getActivity().finish())
+                    .create();
+        }
+
+        @Override
+        public void onCancel(DialogInterface dialog) {
+            getActivity().setResult(Activity.RESULT_CANCELED);
+            getActivity().finish();
+        }
     }
 }

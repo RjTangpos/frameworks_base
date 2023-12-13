@@ -25,20 +25,20 @@ import com.android.internal.logging.InstanceId
 import com.android.internal.logging.InstanceIdSequence
 import com.android.internal.logging.UiEventLogger
 import com.android.internal.util.FrameworkStatsLog
-import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.systemui.assist.AssistantInvocationEvent.Companion.deviceStateFromLegacyDeviceState
 import com.android.systemui.assist.AssistantInvocationEvent.Companion.eventFromLegacyInvocationType
+import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.settings.UserTracker
 import javax.inject.Inject
-import javax.inject.Singleton
 
 /** Class for reporting events related to Assistant sessions. */
-@Singleton
+@SysUISingleton
 open class AssistLogger @Inject constructor(
     protected val context: Context,
     protected val uiEventLogger: UiEventLogger,
     private val assistUtils: AssistUtils,
     private val phoneStateMonitor: PhoneStateMonitor,
-    private val assistHandleBehaviorController: AssistHandleBehaviorController
+    private val userTracker: UserTracker,
 ) {
 
     private val instanceIdSequence = InstanceIdSequence(INSTANCE_ID_MAX)
@@ -79,10 +79,10 @@ open class AssistLogger @Inject constructor(
                 FrameworkStatsLog.ASSISTANT_INVOCATION_REPORTED,
                 invocationEvent.id,
                 assistantUid,
-                assistComponentFinal.flattenToString(),
+                assistComponentFinal?.flattenToString() ?: "",
                 getOrCreateInstanceId().id,
                 deviceStateFinal,
-                assistHandleBehaviorController.areHandlesShowing())
+                false)
         reportAssistantInvocationExtraData()
     }
 
@@ -92,7 +92,7 @@ open class AssistLogger @Inject constructor(
         uiEventLogger.logWithInstanceId(
                 sessionEvent,
                 assistantUid,
-                assistantComponent.flattenToString(),
+                assistantComponent?.flattenToString(),
                 getOrCreateInstanceId())
 
         if (SESSION_END_EVENTS.contains(sessionEvent)) {
@@ -113,11 +113,15 @@ open class AssistLogger @Inject constructor(
         currentInstanceId = null
     }
 
-    protected fun getAssistantComponentForCurrentUser(): ComponentName {
-        return assistUtils.getAssistComponentForUser(KeyguardUpdateMonitor.getCurrentUser())
+    protected fun getAssistantComponentForCurrentUser(): ComponentName? {
+        return assistUtils.getAssistComponentForUser(userTracker.userId)
     }
 
-    protected fun getAssistantUid(assistantComponent: ComponentName): Int {
+    protected fun getAssistantUid(assistantComponent: ComponentName?): Int {
+        if (assistantComponent == null) {
+            return 0
+        }
+
         var assistantUid = 0
         try {
             assistantUid = context.packageManager.getApplicationInfo(

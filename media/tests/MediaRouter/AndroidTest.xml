@@ -6,11 +6,13 @@
     <target_preparer class="com.android.tradefed.targetprep.PushFilePreparer"/>
     <target_preparer class="com.android.tradefed.targetprep.RunCommandTargetPreparer"/>
     <option name="test-suite-tag" value="apct"/>
+    <option name="test-suite-tag" value="apct-instrumentation" />
+
     <option name="test-tag" value="MediaRouterTest"/>
 
     <test class="com.android.tradefed.testtype.AndroidJUnitTest">
         <option name="package" value="com.android.mediaroutertest"/>
-        <option name="runner" value="android.support.test.runner.AndroidJUnitRunner" />
+        <option name="runner" value="androidx.test.runner.AndroidJUnitRunner" />
         <option name="hidden-api-checks" value="false"/>
     </test>
 </configuration>

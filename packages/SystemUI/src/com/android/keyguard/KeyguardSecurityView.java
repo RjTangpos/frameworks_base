@@ -18,11 +18,9 @@ package com.android.keyguard;
 import android.content.res.ColorStateList;
 import android.view.MotionEvent;
 
-import com.android.internal.widget.LockPatternUtils;
-
 public interface KeyguardSecurityView {
-    static public final int SCREEN_ON = 1;
-    static public final int VIEW_REVEALED = 2;
+    int SCREEN_ON = 1;
+    int VIEW_REVEALED = 2;
 
     int PROMPT_REASON_NONE = 0;
 
@@ -63,16 +61,52 @@ public interface KeyguardSecurityView {
     int PROMPT_REASON_NON_STRONG_BIOMETRIC_TIMEOUT = 7;
 
     /**
-     * Interface back to keyguard to tell it when security
-     * @param callback
+     * Some auth is required because the trustagent expired either from timeout or manually by the
+     * user
      */
-    void setKeyguardCallback(KeyguardSecurityCallback callback);
+    int PROMPT_REASON_TRUSTAGENT_EXPIRED = 8;
 
     /**
-     * Set {@link LockPatternUtils} object. Useful for providing a mock interface.
-     * @param utils
+     * Prompt that is shown when there is an incorrect primary authentication input.
      */
-    void setLockPatternUtils(LockPatternUtils utils);
+    int PROMPT_REASON_INCORRECT_PRIMARY_AUTH_INPUT = 9;
+
+    /**
+     * Prompt that is shown when there is an incorrect face biometric input.
+     */
+    int PROMPT_REASON_INCORRECT_FACE_INPUT = 10;
+
+    /**
+     * Prompt that is shown when there is an incorrect fingerprint biometric input.
+     */
+    int PROMPT_REASON_INCORRECT_FINGERPRINT_INPUT = 11;
+
+    /**
+     * Prompt that is shown when face authentication is in locked out state.
+     */
+    int PROMPT_REASON_FACE_LOCKED_OUT = 12;
+
+    /**
+     * Prompt that is shown when fingerprint authentication is in locked out state.
+     */
+    int PROMPT_REASON_FINGERPRINT_LOCKED_OUT = 13;
+
+    /**
+     * Default prompt that is shown on the bouncer.
+     */
+    int PROMPT_REASON_DEFAULT = 14;
+
+    /**
+     * Prompt that is shown when primary authentication is in locked out state after too many
+     * attempts
+     */
+    int PROMPT_REASON_PRIMARY_AUTH_LOCKED_OUT = 15;
+
+    /**
+     * Strong auth is required because the device has just booted because of an automatic
+     * mainline update.
+     */
+    int PROMPT_REASON_RESTART_FOR_MAINLINE_UPDATE = 16;
 
     /**
      * Reset the view and prepare to take input. This should do things like clearing the
@@ -101,12 +135,6 @@ public interface KeyguardSecurityView {
     boolean needsInput();
 
     /**
-     * Get {@link KeyguardSecurityCallback} for the given object
-     * @return KeyguardSecurityCallback
-     */
-    KeyguardSecurityCallback getCallback();
-
-    /**
      * Show a string explaining why the security view needs to be solved.
      *
      * @param reason a flag indicating which string should be shown, see {@link #PROMPT_REASON_NONE}
@@ -120,13 +148,7 @@ public interface KeyguardSecurityView {
      * @param message the message to show
      * @param colorState the color to use
      */
-    void showMessage(CharSequence message, ColorStateList colorState);
-
-    /**
-     * Instruct the view to show usability hints, if any.
-     *
-     */
-    void showUsabilityHint();
+    void showMessage(CharSequence message, ColorStateList colorState, boolean animated);
 
     /**
      * Starts the animation which should run when the security view appears.

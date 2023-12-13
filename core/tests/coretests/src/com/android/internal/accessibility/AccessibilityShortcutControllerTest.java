@@ -21,6 +21,12 @@ import static android.provider.Settings.Secure.ACCESSIBILITY_SHORTCUT_ON_LOCK_SC
 import static android.provider.Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE;
 import static android.view.accessibility.AccessibilityManager.ACCESSIBILITY_SHORTCUT_KEY;
 
+import static com.android.internal.accessibility.AccessibilityShortcutController.ACCESSIBILITY_HEARING_AIDS_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.COLOR_INVERSION_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.DALTONIZER_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.ONE_HANDED_COMPONENT_NAME;
+import static com.android.internal.accessibility.AccessibilityShortcutController.REDUCE_BRIGHT_COLORS_COMPONENT_NAME;
+
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
@@ -68,6 +74,7 @@ import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.IAccessibilityManager;
 import android.widget.Toast;
 
+import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.R;
@@ -88,7 +95,6 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-
 
 @RunWith(AndroidJUnit4.class)
 public class AccessibilityShortcutControllerTest {
@@ -148,7 +154,8 @@ public class AccessibilityShortcutControllerTest {
 
         // Use the extra level of indirection in the object to mock framework objects
         AccessibilityManager accessibilityManager =
-                new AccessibilityManager(mHandler, mAccessibilityManagerService, 0);
+                new AccessibilityManager(InstrumentationRegistry.getContext(), mHandler,
+                        mAccessibilityManagerService, 0, true);
         when(mFrameworkObjectProvider.getAccessibilityManagerInstance(mContext))
                 .thenReturn(accessibilityManager);
         when(mContext.getSystemService(Context.ACCESSIBILITY_SERVICE))
@@ -201,6 +208,17 @@ public class AccessibilityShortcutControllerTest {
         when(mAlertDialog.getWindow()).thenReturn(window);
 
         when(mTextToSpeech.getVoice()).thenReturn(mVoice);
+
+        // Clears the sFrameworkShortcutFeaturesMap field which was not properly initialized
+        // during testing.
+        try {
+            Field field = AccessibilityShortcutController.class.getDeclaredField(
+                    "sFrameworkShortcutFeaturesMap");
+            field.setAccessible(true);
+            field.set(window, null);
+        } catch (Exception e) {
+            throw new RuntimeException("Unable to set sFrameworkShortcutFeaturesMap", e);
+        }
     }
 
     @AfterClass
@@ -426,11 +444,10 @@ public class AccessibilityShortcutControllerTest {
     }
 
     @Test
-    public void getFrameworkFeatureMap_shouldBeNonNullAndUnmodifiable() {
-        Map<ComponentName, AccessibilityShortcutController.ToggleableFrameworkFeatureInfo>
+    public void getFrameworkFeatureMap_shouldBeUnmodifiable() {
+        final Map<ComponentName, AccessibilityShortcutController.FrameworkFeatureInfo>
                 frameworkFeatureMap =
                 AccessibilityShortcutController.getFrameworkShortcutFeaturesMap();
-        assertTrue("Framework features not supported", frameworkFeatureMap.size() > 0);
 
         try {
             frameworkFeatureMap.clear();
@@ -438,6 +455,40 @@ public class AccessibilityShortcutControllerTest {
         } catch (UnsupportedOperationException e) {
             // Expected
         }
+    }
+
+    @Test
+    public void getFrameworkFeatureMap_containsExpectedDefaultKeys() {
+        final Map<ComponentName, AccessibilityShortcutController.FrameworkFeatureInfo>
+                frameworkFeatureMap =
+                AccessibilityShortcutController.getFrameworkShortcutFeaturesMap();
+
+        assertTrue(frameworkFeatureMap.containsKey(COLOR_INVERSION_COMPONENT_NAME));
+        assertTrue(frameworkFeatureMap.containsKey(DALTONIZER_COMPONENT_NAME));
+        assertTrue(frameworkFeatureMap.containsKey(REDUCE_BRIGHT_COLORS_COMPONENT_NAME));
+        assertTrue(frameworkFeatureMap.containsKey(ACCESSIBILITY_HEARING_AIDS_COMPONENT_NAME));
+    }
+
+    @Test
+    public void getFrameworkFeatureMap_oneHandedModeEnabled_containsExpectedKey() {
+        TestUtils.setOneHandedModeEnabled(this, /* enabled= */ true);
+
+        final Map<ComponentName, AccessibilityShortcutController.FrameworkFeatureInfo>
+                frameworkFeatureMap =
+                AccessibilityShortcutController.getFrameworkShortcutFeaturesMap();
+
+        assertTrue(frameworkFeatureMap.containsKey(ONE_HANDED_COMPONENT_NAME));
+    }
+
+    @Test
+    public void getFrameworkFeatureMap_oneHandedModeDisabled_containsExpectedKey() {
+        TestUtils.setOneHandedModeEnabled(this, /* enabled= */ false);
+
+        final Map<ComponentName, AccessibilityShortcutController.FrameworkFeatureInfo>
+                frameworkFeatureMap =
+                AccessibilityShortcutController.getFrameworkShortcutFeaturesMap();
+
+        assertFalse(frameworkFeatureMap.containsKey(ONE_HANDED_COMPONENT_NAME));
     }
 
     @Test

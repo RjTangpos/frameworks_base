@@ -16,6 +16,8 @@
 
 package com.android.systemui.screenshot;
 
+import static com.android.systemui.screenshot.ScreenshotNotificationSmartActionsProvider.ScreenshotSmartActionType.REGULAR_SMART_ACTIONS;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -41,8 +43,8 @@ import android.testing.AndroidTestingRunner;
 
 import androidx.test.filters.SmallTest;
 
-import com.android.systemui.SystemUIFactory;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.screenshot.ScreenshotController.SavedImageData.ActionTransition;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -68,7 +70,7 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
     public void setup() {
         mSmartActionsProvider = mock(
                 ScreenshotNotificationSmartActionsProvider.class);
-        mScreenshotSmartActions = new ScreenshotSmartActions();
+        mScreenshotSmartActions = new ScreenshotSmartActions(() -> mSmartActionsProvider);
         mHandler = mock(Handler.class);
     }
 
@@ -81,12 +83,13 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
         when(bitmap.getConfig()).thenReturn(Bitmap.Config.HARDWARE);
         ScreenshotNotificationSmartActionsProvider smartActionsProvider = mock(
                 ScreenshotNotificationSmartActionsProvider.class);
-        when(smartActionsProvider.getActions(any(), any(), any(), any(), any()))
+        when(smartActionsProvider.getActions(any(), any(), any(), any(), any(), any()))
             .thenThrow(RuntimeException.class);
         CompletableFuture<List<Notification.Action>> smartActionsFuture =
                 mScreenshotSmartActions.getSmartActionsFuture(
                         "", Uri.parse("content://authority/data"), bitmap, smartActionsProvider,
-                        true, UserHandle.getUserHandleForUid(UserHandle.myUserId()));
+                        REGULAR_SMART_ACTIONS,
+                        true, UserHandle.of(UserHandle.myUserId()));
         assertNotNull(smartActionsFuture);
         List<Notification.Action> smartActions = smartActionsFuture.get(5, TimeUnit.MILLISECONDS);
         assertEquals(Collections.emptyList(), smartActions);
@@ -103,7 +106,7 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
         when(smartActionsFuture.get(timeoutMs, TimeUnit.MILLISECONDS)).thenThrow(
                 RuntimeException.class);
         List<Notification.Action> actions = mScreenshotSmartActions.getSmartActions(
-                "", smartActionsFuture, timeoutMs, mSmartActionsProvider);
+                "", smartActionsFuture, timeoutMs, mSmartActionsProvider, REGULAR_SMART_ACTIONS);
         assertEquals(Collections.emptyList(), actions);
     }
 
@@ -126,8 +129,9 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
         CompletableFuture<List<Notification.Action>> smartActionsFuture =
                 mScreenshotSmartActions.getSmartActionsFuture(
                         "", Uri.parse("content://autority/data"), bitmap, mSmartActionsProvider,
-                        true, UserHandle.getUserHandleForUid(UserHandle.myUserId()));
-        verify(mSmartActionsProvider, never()).getActions(any(), any(), any(), any(), any());
+                        REGULAR_SMART_ACTIONS,
+                        true, UserHandle.of(UserHandle.myUserId()));
+        verify(mSmartActionsProvider, never()).getActions(any(), any(), any(), any(), any(), any());
         assertNotNull(smartActionsFuture);
         List<Notification.Action> smartActions = smartActionsFuture.get(5, TimeUnit.MILLISECONDS);
         assertEquals(Collections.emptyList(), smartActions);
@@ -139,9 +143,11 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
         Bitmap bitmap = mock(Bitmap.class);
         when(bitmap.getConfig()).thenReturn(Bitmap.Config.HARDWARE);
         mScreenshotSmartActions.getSmartActionsFuture(
-                "", Uri.parse("content://autority/data"), bitmap, mSmartActionsProvider, true,
-                UserHandle.getUserHandleForUid(UserHandle.myUserId()));
-        verify(mSmartActionsProvider, times(1)).getActions(any(), any(), any(), any(), any());
+                "", Uri.parse("content://autority/data"), bitmap, mSmartActionsProvider,
+                REGULAR_SMART_ACTIONS, true,
+                UserHandle.of(UserHandle.myUserId()));
+        verify(mSmartActionsProvider, times(1)).getActions(
+                any(), any(), any(), any(), any(), any());
     }
 
     // Tests for a hardware bitmap, a completed future is returned.
@@ -151,12 +157,11 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
         Bitmap bitmap = mock(Bitmap.class);
         when(bitmap.getConfig()).thenReturn(Bitmap.Config.HARDWARE);
         ScreenshotNotificationSmartActionsProvider actionsProvider =
-                SystemUIFactory.getInstance().createScreenshotNotificationSmartActionsProvider(
-                        mContext, null, mHandler);
+                new ScreenshotNotificationSmartActionsProvider();
         CompletableFuture<List<Notification.Action>> smartActionsFuture =
                 mScreenshotSmartActions.getSmartActionsFuture("", null, bitmap,
-                        actionsProvider,
-                        true, UserHandle.getUserHandleForUid(UserHandle.myUserId()));
+                        actionsProvider, REGULAR_SMART_ACTIONS,
+                        true, UserHandle.of(UserHandle.myUserId()));
         assertNotNull(smartActionsFuture);
         List<Notification.Action> smartActions = smartActionsFuture.get(5, TimeUnit.MILLISECONDS);
         assertEquals(smartActions.size(), 0);
@@ -169,23 +174,24 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
             Looper.prepare();
         }
 
-        GlobalScreenshot.SaveImageInBackgroundData
-                data = new GlobalScreenshot.SaveImageInBackgroundData();
+        ScreenshotController.SaveImageInBackgroundData
+                data = new ScreenshotController.SaveImageInBackgroundData();
         data.image = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
         data.finisher = null;
         data.mActionsReadyListener = null;
         SaveImageInBackgroundTask task =
-                new SaveImageInBackgroundTask(mContext, mScreenshotSmartActions, data);
+                new SaveImageInBackgroundTask(mContext, null, null, mScreenshotSmartActions, data,
+                        ActionTransition::new, mSmartActionsProvider);
 
         Notification.Action shareAction = task.createShareAction(mContext, mContext.getResources(),
-                Uri.parse("Screenshot_123.png"));
+                Uri.parse("Screenshot_123.png"), true).get().action;
 
         Intent intent = shareAction.actionIntent.getIntent();
         assertNotNull(intent);
         Bundle bundle = intent.getExtras();
-        assertTrue(bundle.containsKey(GlobalScreenshot.EXTRA_ID));
-        assertTrue(bundle.containsKey(GlobalScreenshot.EXTRA_SMART_ACTIONS_ENABLED));
-        assertEquals(GlobalScreenshot.ACTION_TYPE_SHARE, shareAction.title);
+        assertTrue(bundle.containsKey(ScreenshotController.EXTRA_ID));
+        assertTrue(bundle.containsKey(ScreenshotController.EXTRA_SMART_ACTIONS_ENABLED));
+        assertEquals(ScreenshotController.ACTION_TYPE_SHARE, shareAction.title);
         assertEquals(Intent.ACTION_SEND, intent.getAction());
     }
 
@@ -196,23 +202,24 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
             Looper.prepare();
         }
 
-        GlobalScreenshot.SaveImageInBackgroundData
-                data = new GlobalScreenshot.SaveImageInBackgroundData();
+        ScreenshotController.SaveImageInBackgroundData
+                data = new ScreenshotController.SaveImageInBackgroundData();
         data.image = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
         data.finisher = null;
         data.mActionsReadyListener = null;
         SaveImageInBackgroundTask task =
-                new SaveImageInBackgroundTask(mContext, mScreenshotSmartActions, data);
+                new SaveImageInBackgroundTask(mContext, null, null, mScreenshotSmartActions, data,
+                        ActionTransition::new, mSmartActionsProvider);
 
         Notification.Action editAction = task.createEditAction(mContext, mContext.getResources(),
-                Uri.parse("Screenshot_123.png"));
+                Uri.parse("Screenshot_123.png"), true).get().action;
 
         Intent intent = editAction.actionIntent.getIntent();
         assertNotNull(intent);
         Bundle bundle = intent.getExtras();
-        assertTrue(bundle.containsKey(GlobalScreenshot.EXTRA_ID));
-        assertTrue(bundle.containsKey(GlobalScreenshot.EXTRA_SMART_ACTIONS_ENABLED));
-        assertEquals(GlobalScreenshot.ACTION_TYPE_EDIT, editAction.title);
+        assertTrue(bundle.containsKey(ScreenshotController.EXTRA_ID));
+        assertTrue(bundle.containsKey(ScreenshotController.EXTRA_SMART_ACTIONS_ENABLED));
+        assertEquals(ScreenshotController.ACTION_TYPE_EDIT, editAction.title);
         assertEquals(Intent.ACTION_EDIT, intent.getAction());
     }
 
@@ -223,24 +230,25 @@ public class ScreenshotNotificationSmartActionsTest extends SysuiTestCase {
             Looper.prepare();
         }
 
-        GlobalScreenshot.SaveImageInBackgroundData
-                data = new GlobalScreenshot.SaveImageInBackgroundData();
+        ScreenshotController.SaveImageInBackgroundData
+                data = new ScreenshotController.SaveImageInBackgroundData();
         data.image = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
         data.finisher = null;
         data.mActionsReadyListener = null;
         SaveImageInBackgroundTask task =
-                new SaveImageInBackgroundTask(mContext, mScreenshotSmartActions, data);
+                new SaveImageInBackgroundTask(mContext, null, null, mScreenshotSmartActions, data,
+                        ActionTransition::new, mSmartActionsProvider);
 
         Notification.Action deleteAction = task.createDeleteAction(mContext,
                 mContext.getResources(),
-                Uri.parse("Screenshot_123.png"));
+                Uri.parse("Screenshot_123.png"), true);
 
         Intent intent = deleteAction.actionIntent.getIntent();
         assertNotNull(intent);
         Bundle bundle = intent.getExtras();
-        assertTrue(bundle.containsKey(GlobalScreenshot.EXTRA_ID));
-        assertTrue(bundle.containsKey(GlobalScreenshot.EXTRA_SMART_ACTIONS_ENABLED));
-        assertEquals(deleteAction.title, GlobalScreenshot.ACTION_TYPE_DELETE);
+        assertTrue(bundle.containsKey(ScreenshotController.EXTRA_ID));
+        assertTrue(bundle.containsKey(ScreenshotController.EXTRA_SMART_ACTIONS_ENABLED));
+        assertEquals(deleteAction.title, ScreenshotController.ACTION_TYPE_DELETE);
         assertNull(intent.getAction());
     }
 }

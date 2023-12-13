@@ -17,7 +17,7 @@
 package com.android.internal.telephony;
 
 import android.telephony.BarringInfo;
-import android.telephony.CallAttributes;
+import android.telephony.CallState;
 import android.telephony.CellIdentity;
 import android.telephony.CellInfo;
 import android.telephony.DataConnectionRealTimeInfo;
@@ -31,6 +31,7 @@ import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
 import android.telephony.emergency.EmergencyNumber;
 import android.telephony.ims.ImsReasonInfo;
+import android.telephony.ims.MediaQualityStatus;
 
 /**
  * {@hide}
@@ -43,7 +44,8 @@ oneway interface IPhoneStateListener {
 
     // Uses CellIdentity which is Parcelable here; will convert to CellLocation in client.
     void onCellLocationChanged(in CellIdentity location);
-    void onCallStateChanged(int state, String incomingNumber);
+    void onLegacyCallStateChanged(int state, String incomingNumber);
+    void onCallStateChanged(int state);
     void onDataConnectionStateChanged(int state, int networkType);
     void onDataActivity(int direction);
     void onSignalStrengthsChanged(in SignalStrength signalStrength);
@@ -61,7 +63,8 @@ oneway interface IPhoneStateListener {
     void onPhoneCapabilityChanged(in PhoneCapability capability);
     void onActiveDataSubIdChanged(in int subId);
     void onRadioPowerStateChanged(in int state);
-    void onCallAttributesChanged(in CallAttributes callAttributes);
+    void onCallStatesChanged(in List<CallState> callStateList);
+    @SuppressWarnings(value={"untyped-collection"})
     void onEmergencyNumberListChanged(in Map emergencyNumberList);
     void onOutgoingEmergencyCall(in EmergencyNumber placedEmergencyNumber, int subscriptionId);
     void onOutgoingEmergencySms(in EmergencyNumber sentEmergencyNumber, int subscriptionId);
@@ -74,4 +77,7 @@ oneway interface IPhoneStateListener {
     void onDataEnabledChanged(boolean enabled, int reason);
     void onAllowedNetworkTypesChanged(in int reason, in long allowedNetworkType);
     void onLinkCapacityEstimateChanged(in List<LinkCapacityEstimate> linkCapacityEstimateList);
+    void onMediaQualityStatusChanged(in MediaQualityStatus mediaQualityStatus);
+    void onCallBackModeStarted(int type);
+    void onCallBackModeStopped(int type, int reason);
 }

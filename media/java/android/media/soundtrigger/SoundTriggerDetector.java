@@ -25,6 +25,7 @@ import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.hardware.soundtrigger.IRecognitionStatusCallback;
 import android.hardware.soundtrigger.SoundTrigger;
+import android.hardware.soundtrigger.SoundTrigger.GenericSoundModel;
 import android.hardware.soundtrigger.SoundTrigger.ModuleProperties;
 import android.hardware.soundtrigger.SoundTrigger.RecognitionConfig;
 import android.media.AudioFormat;
@@ -36,7 +37,7 @@ import android.os.ParcelUuid;
 import android.os.RemoteException;
 import android.util.Slog;
 
-import com.android.internal.app.ISoundTriggerService;
+import com.android.internal.app.ISoundTriggerSession;
 
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
@@ -49,9 +50,11 @@ import java.util.UUID;
  * not voice-based. The voice-based recognition models should utilize the {@link
  * VoiceInteractionService} instead. Access to this class is protected by a permission
  * granted only to system or privileged apps.
+ * @deprecated use {@link SoundTriggerManager} directly
  *
  * @hide
  */
+@Deprecated
 @SystemApi
 public final class SoundTriggerDetector {
     private static final boolean DBG = false;
@@ -65,8 +68,8 @@ public final class SoundTriggerDetector {
 
     private final Object mLock = new Object();
 
-    private final ISoundTriggerService mSoundTriggerService;
-    private final UUID mSoundModelId;
+    private final ISoundTriggerSession mSoundTriggerSession;
+    private final GenericSoundModel mSoundModel;
     private final Callback mCallback;
     private final Handler mHandler;
     private final RecognitionCallback mRecognitionCallback;
@@ -79,7 +82,8 @@ public final class SoundTriggerDetector {
                 RECOGNITION_FLAG_CAPTURE_TRIGGER_AUDIO,
                 RECOGNITION_FLAG_ALLOW_MULTIPLE_TRIGGERS,
                 RECOGNITION_FLAG_ENABLE_AUDIO_ECHO_CANCELLATION,
-                    RECOGNITION_FLAG_ENABLE_AUDIO_NOISE_SUPPRESSION,
+                RECOGNITION_FLAG_ENABLE_AUDIO_NOISE_SUPPRESSION,
+                RECOGNITION_FLAG_RUN_IN_BATTERY_SAVER,
             })
     public @interface RecognitionFlags {}
 
@@ -131,6 +135,14 @@ public final class SoundTriggerDetector {
      * applied.
      */
     public static final int RECOGNITION_FLAG_ENABLE_AUDIO_NOISE_SUPPRESSION = 0x8;
+
+    /**
+     * Recognition flag for {@link #startRecognition(int)} that indicates whether the recognition
+     * should continue after battery saver mode is enabled.
+     * When this flag is specified, the caller will be checked for
+     * {@link android.Manifest.permission#SOUND_TRIGGER_RUN_IN_BATTERY_SAVER} permission granted.
+     */
+    public static final int RECOGNITION_FLAG_RUN_IN_BATTERY_SAVER = 0x10;
 
     /**
      * Additional payload for {@link Callback#onDetected}.
@@ -267,10 +279,11 @@ public final class SoundTriggerDetector {
      * This class should be constructed by the {@link SoundTriggerManager}.
      * @hide
      */
-    SoundTriggerDetector(ISoundTriggerService soundTriggerService, UUID soundModelId,
+    SoundTriggerDetector(ISoundTriggerSession soundTriggerSession,
+            @NonNull GenericSoundModel soundModel,
             @NonNull Callback callback, @Nullable Handler handler) {
-        mSoundTriggerService = soundTriggerService;
-        mSoundModelId = soundModelId;
+        mSoundTriggerSession = soundTriggerSession;
+        mSoundModel = soundModel;
         mCallback = callback;
         if (handler == null) {
             mHandler = new MyHandler();
@@ -283,8 +296,10 @@ public final class SoundTriggerDetector {
     /**
      * Starts recognition on the associated sound model. Result is indicated via the
      * {@link Callback}.
+     * @deprecated use {@link SoundTriggerManager} directly
      * @return Indicates whether the call succeeded or not.
      */
+    @Deprecated
     @RequiresPermission(android.Manifest.permission.MANAGE_SOUND_TRIGGER)
     public boolean startRecognition(@RecognitionFlags int recognitionFlags) {
         if (DBG) {
@@ -296,6 +311,8 @@ public final class SoundTriggerDetector {
         boolean allowMultipleTriggers =
                 (recognitionFlags & RECOGNITION_FLAG_ALLOW_MULTIPLE_TRIGGERS) != 0;
 
+        boolean runInBatterySaver = (recognitionFlags & RECOGNITION_FLAG_RUN_IN_BATTERY_SAVER) != 0;
+
         int audioCapabilities = 0;
         if ((recognitionFlags & RECOGNITION_FLAG_ENABLE_AUDIO_ECHO_CANCELLATION) != 0) {
             audioCapabilities |= SoundTrigger.ModuleProperties.AUDIO_CAPABILITY_ECHO_CANCELLATION;
@@ -306,9 +323,10 @@ public final class SoundTriggerDetector {
 
         int status;
         try {
-            status = mSoundTriggerService.startRecognition(new ParcelUuid(mSoundModelId),
+            status = mSoundTriggerSession.startRecognition(mSoundModel,
                     mRecognitionCallback, new RecognitionConfig(captureTriggerAudio,
-                        allowMultipleTriggers, null, null, audioCapabilities));
+                            allowMultipleTriggers, null, null, audioCapabilities),
+                    runInBatterySaver);
         } catch (RemoteException e) {
             return false;
         }
@@ -317,12 +335,14 @@ public final class SoundTriggerDetector {
 
     /**
      * Stops recognition for the associated model.
+     * @deprecated use {@link SoundTriggerManager} directly
      */
+    @Deprecated
     @RequiresPermission(android.Manifest.permission.MANAGE_SOUND_TRIGGER)
     public boolean stopRecognition() {
         int status = STATUS_OK;
         try {
-            status = mSoundTriggerService.stopRecognition(new ParcelUuid(mSoundModelId),
+            status = mSoundTriggerSession.stopRecognition(new ParcelUuid(mSoundModel.getUuid()),
                     mRecognitionCallback);
         } catch (RemoteException e) {
             return false;
@@ -371,15 +391,6 @@ public final class SoundTriggerDetector {
          * @hide
          */
         @Override
-        public void onError(int status) {
-            Slog.d(TAG, "onError()" + status);
-            mHandler.sendEmptyMessage(MSG_DETECTION_ERROR);
-        }
-
-        /**
-         * @hide
-         */
-        @Override
         public void onRecognitionPaused() {
             Slog.d(TAG, "onRecognitionPaused()");
             mHandler.sendEmptyMessage(MSG_DETECTION_PAUSE);
@@ -392,6 +403,42 @@ public final class SoundTriggerDetector {
         public void onRecognitionResumed() {
             Slog.d(TAG, "onRecognitionResumed()");
             mHandler.sendEmptyMessage(MSG_DETECTION_RESUME);
+        }
+
+        /**
+         * @hide
+         */
+        @Override
+        public void onPreempted() {
+            Slog.d(TAG, "onPreempted()");
+            mHandler.sendEmptyMessage(MSG_DETECTION_ERROR);
+        }
+
+        /**
+         * @hide
+         */
+        @Override
+        public void onModuleDied() {
+            Slog.d(TAG, "onModuleDied()");
+            mHandler.sendEmptyMessage(MSG_DETECTION_ERROR);
+        }
+
+        /**
+         * @hide
+         */
+        @Override
+        public void onResumeFailed(int status) {
+            Slog.d(TAG, "onResumeFailed()" + status);
+            mHandler.sendEmptyMessage(MSG_DETECTION_ERROR);
+        }
+
+        /**
+         * @hide
+         */
+        @Override
+        public void onPauseFailed(int status) {
+            Slog.d(TAG, "onPauseFailed()" + status);
+            mHandler.sendEmptyMessage(MSG_DETECTION_ERROR);
         }
     }
 

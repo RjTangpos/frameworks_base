@@ -20,47 +20,58 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.content.res.Resources;
-import android.util.Log;
 import android.util.MathUtils;
 import android.view.View;
 import android.view.ViewGroup;
 
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.policy.SystemBarUtils;
+import com.android.keyguard.BouncerPanelExpansionCalculator;
 import com.android.systemui.R;
+import com.android.systemui.animation.ShadeInterpolation;
+import com.android.systemui.shade.transition.LargeScreenShadeInterpolator;
 import com.android.systemui.statusbar.EmptyShadeView;
 import com.android.systemui.statusbar.NotificationShelf;
-import com.android.systemui.statusbar.notification.NotificationUtils;
+import com.android.systemui.statusbar.notification.SourceType;
 import com.android.systemui.statusbar.notification.row.ActivatableNotificationView;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.row.ExpandableView;
 import com.android.systemui.statusbar.notification.row.FooterView;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 
 /**
- * The Algorithm of the {@link com.android.systemui.statusbar.notification.stack
- * .NotificationStackScrollLayout} which can be queried for {@link com.android.systemui.statusbar
- * .stack.StackScrollState}
+ * The Algorithm of the
+ * {@link com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout} which can
+ * be queried for {@link StackScrollAlgorithmState}
  */
 public class StackScrollAlgorithm {
 
-    static final boolean ANCHOR_SCROLLING = false;
+    public static final float START_FRACTION = 0.5f;
 
-    private static final String LOG_TAG = "StackScrollAlgorithm";
+    private static final String TAG = "StackScrollAlgorithm";
+    private static final Boolean DEBUG = false;
+    private static final SourceType STACK_SCROLL_ALGO = SourceType.from("StackScrollAlgorithm");
+
     private final ViewGroup mHostView;
-
-    private int mPaddingBetweenElements;
-    private int mIncreasedPaddingBetweenElements;
-    private int mGapHeight;
+    private float mPaddingBetweenElements;
+    private float mGapHeight;
+    private float mGapHeightOnLockscreen;
     private int mCollapsedSize;
+    private boolean mEnableNotificationClipping;
 
     private StackScrollAlgorithmState mTempAlgorithmState = new StackScrollAlgorithmState();
     private boolean mIsExpanded;
     private boolean mClipNotificationScrollToTop;
-    private int mStatusBarHeight;
-    private float mHeadsUpInset;
+    @VisibleForTesting
+    float mHeadsUpInset;
     private int mPinnedZTranslationExtra;
+    private float mNotificationScrimPadding;
+    private int mMarginBottom;
+    private float mQuickQsOffsetHeight;
+    private float mSmallCornerRadius;
+    private float mLargeCornerRadius;
 
     public StackScrollAlgorithm(
             Context context,
@@ -70,50 +81,167 @@ public class StackScrollAlgorithm {
     }
 
     public void initView(Context context) {
-        initConstants(context);
+        updateResources(context);
     }
 
-    private void initConstants(Context context) {
+    private void updateResources(Context context) {
         Resources res = context.getResources();
         mPaddingBetweenElements = res.getDimensionPixelSize(
                 R.dimen.notification_divider_height);
-        mIncreasedPaddingBetweenElements =
-                res.getDimensionPixelSize(R.dimen.notification_divider_height_increased);
         mCollapsedSize = res.getDimensionPixelSize(R.dimen.notification_min_height);
-        mStatusBarHeight = res.getDimensionPixelSize(R.dimen.status_bar_height);
+        mEnableNotificationClipping = res.getBoolean(R.bool.notification_enable_clipping);
         mClipNotificationScrollToTop = res.getBoolean(R.bool.config_clipNotificationScrollToTop);
-        mHeadsUpInset = mStatusBarHeight + res.getDimensionPixelSize(
+        int statusBarHeight = SystemBarUtils.getStatusBarHeight(context);
+        mHeadsUpInset = statusBarHeight + res.getDimensionPixelSize(
                 R.dimen.heads_up_status_bar_padding);
         mPinnedZTranslationExtra = res.getDimensionPixelSize(
                 R.dimen.heads_up_pinned_elevation);
         mGapHeight = res.getDimensionPixelSize(R.dimen.notification_section_divider_height);
+        mGapHeightOnLockscreen = res.getDimensionPixelSize(
+                R.dimen.notification_section_divider_height_lockscreen);
+        mNotificationScrimPadding = res.getDimensionPixelSize(R.dimen.notification_side_paddings);
+        mMarginBottom = res.getDimensionPixelSize(R.dimen.notification_panel_margin_bottom);
+        mQuickQsOffsetHeight = SystemBarUtils.getQuickQsOffsetHeight(context);
+        mSmallCornerRadius = res.getDimension(R.dimen.notification_corner_radius_small);
+        mLargeCornerRadius = res.getDimension(R.dimen.notification_corner_radius);
     }
 
     /**
      * Updates the state of all children in the hostview based on this algorithm.
      */
-    public void resetViewStates(AmbientState ambientState) {
+    public void resetViewStates(AmbientState ambientState, int speedBumpIndex) {
         // The state of the local variables are saved in an algorithmState to easily subdivide it
         // into multiple phases.
         StackScrollAlgorithmState algorithmState = mTempAlgorithmState;
 
         // First we reset the view states to their default values.
         resetChildViewStates();
-
-        initAlgorithmState(mHostView, algorithmState, ambientState);
-
+        initAlgorithmState(algorithmState, ambientState);
         updatePositionsForState(algorithmState, ambientState);
-
         updateZValuesForState(algorithmState, ambientState);
-
         updateHeadsUpStates(algorithmState, ambientState);
         updatePulsingStates(algorithmState, ambientState);
 
-        updateDimmedActivatedHideSensitive(ambientState, algorithmState);
+        updateDimmedAndHideSensitive(ambientState, algorithmState);
         updateClipping(algorithmState, ambientState);
-        updateSpeedBumpState(algorithmState, ambientState);
-        updateShelfState(ambientState);
-        getNotificationChildrenStates(algorithmState, ambientState);
+        updateSpeedBumpState(algorithmState, speedBumpIndex);
+        updateShelfState(algorithmState, ambientState);
+        updateAlphaState(algorithmState, ambientState);
+        getNotificationChildrenStates(algorithmState);
+    }
+
+    private void updateAlphaState(StackScrollAlgorithmState algorithmState,
+                                  AmbientState ambientState) {
+        for (ExpandableView view : algorithmState.visibleChildren) {
+            final ViewState viewState = view.getViewState();
+            final boolean isHunGoingToShade = ambientState.isShadeExpanded()
+                    && view == ambientState.getTrackedHeadsUpRow();
+
+            if (isHunGoingToShade) {
+                // Keep 100% opacity for heads up notification going to shade.
+                viewState.setAlpha(1f);
+            } else if (ambientState.isOnKeyguard()) {
+                // Adjust alpha for wakeup to lockscreen.
+                viewState.setAlpha(1f - ambientState.getHideAmount());
+            } else if (ambientState.isExpansionChanging()) {
+                // Adjust alpha for shade open & close.
+                float expansion = ambientState.getExpansionFraction();
+                if (ambientState.isBouncerInTransit()) {
+                    viewState.setAlpha(
+                            BouncerPanelExpansionCalculator.aboutToShowBouncerProgress(expansion));
+                } else if (view instanceof FooterView) {
+                    viewState.setAlpha(interpolateFooterAlpha(ambientState));
+                } else {
+                    viewState.setAlpha(interpolateNotificationContentAlpha(ambientState));
+                }
+            }
+
+            // For EmptyShadeView if on keyguard, we need to control the alpha to create
+            // a nice transition when the user is dragging down the notification panel.
+            if (view instanceof EmptyShadeView && ambientState.isOnKeyguard()) {
+                final float fractionToShade = ambientState.getFractionToShade();
+                viewState.setAlpha(ShadeInterpolation.getContentAlpha(fractionToShade));
+            }
+
+            NotificationShelf shelf = ambientState.getShelf();
+            if (shelf != null) {
+                final ViewState shelfState = shelf.getViewState();
+
+                // After the shelf has updated its yTranslation, explicitly set alpha=0 for view
+                // below shelf to skip rendering them in the hardware layer. We do not set them
+                // invisible because that runs invalidate & onDraw when these views return onscreen,
+                // which is more expensive.
+                if (shelfState.hidden) {
+                    // When the shelf is hidden, it won't clip views, so we don't hide rows
+                    continue;
+                }
+
+                final float shelfTop = shelfState.getYTranslation();
+                final float viewTop = viewState.getYTranslation();
+                if (viewTop >= shelfTop) {
+                    viewState.setAlpha(0);
+                }
+            }
+        }
+    }
+
+    private float interpolateFooterAlpha(AmbientState ambientState) {
+        float expansion = ambientState.getExpansionFraction();
+        if (ambientState.isSmallScreen()) {
+            return ShadeInterpolation.getContentAlpha(expansion);
+        }
+        LargeScreenShadeInterpolator interpolator = ambientState.getLargeScreenShadeInterpolator();
+        return interpolator.getNotificationFooterAlpha(expansion);
+    }
+
+    private float interpolateNotificationContentAlpha(AmbientState ambientState) {
+        float expansion = ambientState.getExpansionFraction();
+        if (ambientState.isSmallScreen()) {
+            return ShadeInterpolation.getContentAlpha(expansion);
+        }
+        LargeScreenShadeInterpolator interpolator = ambientState.getLargeScreenShadeInterpolator();
+        return interpolator.getNotificationContentAlpha(expansion);
+    }
+
+    /**
+     * How expanded or collapsed notifications are when pulling down the shade.
+     *
+     * @param ambientState Current ambient state.
+     * @return 0 when fully collapsed, 1 when expanded.
+     */
+    public float getNotificationSquishinessFraction(AmbientState ambientState) {
+        return getExpansionFractionWithoutShelf(mTempAlgorithmState, ambientState);
+    }
+
+    public static void log(String s) {
+        if (DEBUG) {
+            android.util.Log.i(TAG, s);
+        }
+    }
+
+    public static void logView(View view, String s) {
+        String viewString = "";
+        if (view instanceof ExpandableNotificationRow) {
+            ExpandableNotificationRow row = ((ExpandableNotificationRow) view);
+            if (row.getEntry() == null) {
+                viewString = "ExpandableNotificationRow has null NotificationEntry";
+            } else {
+                viewString = row.getEntry().getSbn().getId() + "";
+            }
+        } else if (view == null) {
+            viewString = "View is null";
+        } else if (view instanceof SectionHeaderView) {
+            viewString = "SectionHeaderView";
+        } else if (view instanceof FooterView) {
+            viewString = "FooterView";
+        } else if (view instanceof MediaContainerView) {
+            viewString = "MediaContainerView";
+        } else if (view instanceof EmptyShadeView) {
+            viewString = "EmptyShadeView";
+        } else {
+            viewString = view.toString();
+        }
+        log(viewString + " " + s);
     }
 
     private void resetChildViewStates() {
@@ -124,22 +252,21 @@ public class StackScrollAlgorithm {
         }
     }
 
-    private void getNotificationChildrenStates(StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState) {
+    private void getNotificationChildrenStates(StackScrollAlgorithmState algorithmState) {
         int childCount = algorithmState.visibleChildren.size();
         for (int i = 0; i < childCount; i++) {
             ExpandableView v = algorithmState.visibleChildren.get(i);
             if (v instanceof ExpandableNotificationRow) {
                 ExpandableNotificationRow row = (ExpandableNotificationRow) v;
-                row.updateChildrenStates(ambientState);
+                row.updateChildrenStates();
             }
         }
     }
 
     private void updateSpeedBumpState(StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState) {
+                                      int speedBumpIndex) {
         int childCount = algorithmState.visibleChildren.size();
-        int belowSpeedBump = ambientState.getSpeedBumpIndex();
+        int belowSpeedBump = speedBumpIndex;
         for (int i = 0; i < childCount; i++) {
             ExpandableView child = algorithmState.visibleChildren.get(i);
             ExpandableViewState childViewState = child.getViewState();
@@ -151,40 +278,50 @@ public class StackScrollAlgorithm {
 
     }
 
-    private void updateShelfState(AmbientState ambientState) {
+    private void updateShelfState(
+            StackScrollAlgorithmState algorithmState,
+            AmbientState ambientState) {
+
         NotificationShelf shelf = ambientState.getShelf();
-        if (shelf != null) {
-            shelf.updateState(ambientState);
+        if (shelf == null) {
+            return;
         }
+
+        shelf.updateState(algorithmState, ambientState);
     }
 
     private void updateClipping(StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState) {
-        float drawStart = !ambientState.isOnKeyguard() ? ambientState.getTopPadding()
-                + ambientState.getStackTranslation() + ambientState.getExpandAnimationTopChange()
-                : 0;
+                                AmbientState ambientState) {
+        float drawStart = ambientState.isOnKeyguard() ? 0
+                : ambientState.getStackY() - ambientState.getScrollY();
         float clipStart = 0;
         int childCount = algorithmState.visibleChildren.size();
         boolean firstHeadsUp = true;
+        float firstHeadsUpEnd = 0;
         for (int i = 0; i < childCount; i++) {
             ExpandableView child = algorithmState.visibleChildren.get(i);
             ExpandableViewState state = child.getViewState();
             if (!child.mustStayOnScreen() || state.headsUpIsVisible) {
                 clipStart = Math.max(drawStart, clipStart);
             }
-            float newYTranslation = state.yTranslation;
+            float newYTranslation = state.getYTranslation();
             float newHeight = state.height;
             float newNotificationEnd = newYTranslation + newHeight;
-            boolean isHeadsUp = (child instanceof ExpandableNotificationRow)
-                    && ((ExpandableNotificationRow) child).isPinned();
+            boolean isHeadsUp = (child instanceof ExpandableNotificationRow) && child.isPinned();
             if (mClipNotificationScrollToTop
-                    && (!state.inShelf || (isHeadsUp && !firstHeadsUp))
-                    && newYTranslation < clipStart) {
-                // The previous view is overlapping on top, clip!
-                float overlapAmount = clipStart - newYTranslation;
-                state.clipTopAmount = (int) overlapAmount;
+                    && !firstHeadsUp
+                    && (isHeadsUp || child.isHeadsUpAnimatingAway())
+                    && newNotificationEnd > firstHeadsUpEnd
+                    && !ambientState.isShadeExpanded()) {
+                // The bottom of this view is peeking out from under the previous view.
+                // Clip the part that is peeking out.
+                float overlapAmount = newNotificationEnd - firstHeadsUpEnd;
+                state.clipBottomAmount = mEnableNotificationClipping ? (int) overlapAmount : 0;
             } else {
-                state.clipTopAmount = 0;
+                state.clipBottomAmount = 0;
+            }
+            if (firstHeadsUp) {
+                firstHeadsUpEnd = newNotificationEnd;
             }
             if (isHeadsUp) {
                 firstHeadsUp = false;
@@ -197,108 +334,44 @@ public class StackScrollAlgorithm {
         }
     }
 
-    /**
-     * Updates the dimmed, activated and hiding sensitive states of the children.
-     */
-    private void updateDimmedActivatedHideSensitive(AmbientState ambientState,
+    /** Updates the dimmed and hiding sensitive states of the children. */
+    private void updateDimmedAndHideSensitive(AmbientState ambientState,
             StackScrollAlgorithmState algorithmState) {
         boolean dimmed = ambientState.isDimmed();
         boolean hideSensitive = ambientState.isHideSensitive();
-        View activatedChild = ambientState.getActivatedChild();
         int childCount = algorithmState.visibleChildren.size();
         for (int i = 0; i < childCount; i++) {
             ExpandableView child = algorithmState.visibleChildren.get(i);
             ExpandableViewState childViewState = child.getViewState();
             childViewState.dimmed = dimmed;
             childViewState.hideSensitive = hideSensitive;
-            boolean isActivatedChild = activatedChild == child;
-            if (dimmed && isActivatedChild) {
-                childViewState.zTranslation += 2.0f * ambientState.getZDistanceBetweenElements();
-            }
         }
     }
 
     /**
      * Initialize the algorithm state like updating the visible children.
      */
-    private void initAlgorithmState(ViewGroup hostView, StackScrollAlgorithmState state,
-            AmbientState ambientState) {
-        float bottomOverScroll = ambientState.getOverScrollAmount(false /* onTop */);
-
-        int scrollY = ambientState.getScrollY();
-
-        // Due to the overScroller, the stackscroller can have negative scroll state. This is
-        // already accounted for by the top padding and doesn't need an additional adaption
-        scrollY = Math.max(0, scrollY);
-        state.scrollY = (int) (scrollY + bottomOverScroll);
-
-        if (ANCHOR_SCROLLING) {
-            state.anchorViewY = (int) (ambientState.getAnchorViewY() - bottomOverScroll);
-        }
+    private void initAlgorithmState(StackScrollAlgorithmState state, AmbientState ambientState) {
+        state.scrollY = ambientState.getScrollY();
+        state.mCurrentYPosition = -state.scrollY;
+        state.mCurrentExpandedYPosition = -state.scrollY;
 
         //now init the visible children and update paddings
-        int childCount = hostView.getChildCount();
+        int childCount = mHostView.getChildCount();
         state.visibleChildren.clear();
         state.visibleChildren.ensureCapacity(childCount);
-        state.paddingMap.clear();
         int notGoneIndex = 0;
-        ExpandableView lastView = null;
-        int firstHiddenIndex = ambientState.isDozing()
-                ? (ambientState.hasPulsingNotifications() ? 1 : 0)
-                : childCount;
-
-        // The goal here is to fill the padding map, by iterating over how much padding each child
-        // needs. The map is thereby reused, by first filling it with the padding amount and when
-        // iterating over it again, it's filled with the actual resolved value.
-
         for (int i = 0; i < childCount; i++) {
-            if (ANCHOR_SCROLLING) {
-                if (i == ambientState.getAnchorViewIndex()) {
-                    state.anchorViewIndex = state.visibleChildren.size();
-                }
-            }
-            ExpandableView v = (ExpandableView) hostView.getChildAt(i);
+            ExpandableView v = (ExpandableView) mHostView.getChildAt(i);
             if (v.getVisibility() != View.GONE) {
                 if (v == ambientState.getShelf()) {
                     continue;
                 }
-                if (i >= firstHiddenIndex) {
-                    // we need normal padding now, to be in sync with what the stack calculates
-                    lastView = null;
-                }
                 notGoneIndex = updateNotGoneIndex(state, notGoneIndex, v);
-                float increasedPadding = v.getIncreasedPaddingAmount();
-                if (increasedPadding != 0.0f) {
-                    state.paddingMap.put(v, increasedPadding);
-                    if (lastView != null) {
-                        Float prevValue = state.paddingMap.get(lastView);
-                        float newValue = getPaddingForValue(increasedPadding);
-                        if (prevValue != null) {
-                            float prevPadding = getPaddingForValue(prevValue);
-                            if (increasedPadding > 0) {
-                                newValue = NotificationUtils.interpolate(
-                                        prevPadding,
-                                        newValue,
-                                        increasedPadding);
-                            } else if (prevValue > 0) {
-                                newValue = NotificationUtils.interpolate(
-                                        newValue,
-                                        prevPadding,
-                                        prevValue);
-                            }
-                        }
-                        state.paddingMap.put(lastView, newValue);
-                    }
-                } else if (lastView != null) {
-
-                    // Let's now resolve the value to an actual padding
-                    float newValue = getPaddingForValue(state.paddingMap.get(lastView));
-                    state.paddingMap.put(lastView, newValue);
-                }
                 if (v instanceof ExpandableNotificationRow) {
                     ExpandableNotificationRow row = (ExpandableNotificationRow) v;
 
-                    // handle the notgoneIndex for the children as well
+                    // handle the notGoneIndex for the children as well
                     List<ExpandableNotificationRow> children = row.getAttachedChildren();
                     if (row.isSummaryWithChildren() && children != null) {
                         for (ExpandableNotificationRow childRow : children) {
@@ -310,40 +383,64 @@ public class StackScrollAlgorithm {
                         }
                     }
                 }
-                lastView = v;
             }
         }
-        ExpandableNotificationRow expandingNotification = ambientState.getExpandingNotification();
-        state.indexOfExpandingNotification = expandingNotification != null
-                ? expandingNotification.isChildInGroup()
-                ? state.visibleChildren.indexOf(expandingNotification.getNotificationParent())
-                : state.visibleChildren.indexOf(expandingNotification)
-                : -1;
-    }
 
-    private float getPaddingForValue(Float increasedPadding) {
-        if (increasedPadding == null) {
-            return mPaddingBetweenElements;
-        } else if (increasedPadding >= 0.0f) {
-            return NotificationUtils.interpolate(
-                    mPaddingBetweenElements,
-                    mIncreasedPaddingBetweenElements,
-                    increasedPadding);
-        } else {
-            return NotificationUtils.interpolate(
-                    0,
-                    mPaddingBetweenElements,
-                    1.0f + increasedPadding);
+        // Save the index of first view in shelf from when shade is fully
+        // expanded. Consider updating these states in updateContentView instead so that we don't
+        // have to recalculate in every frame.
+        float currentY = -ambientState.getScrollY();
+        if (!ambientState.isOnKeyguard()
+                || (ambientState.isBypassEnabled() && ambientState.isPulseExpanding())) {
+            // add top padding at the start as long as we're not on the lock screen
+            currentY += mNotificationScrimPadding;
+        }
+        state.firstViewInShelf = null;
+        for (int i = 0; i < state.visibleChildren.size(); i++) {
+            final ExpandableView view = state.visibleChildren.get(i);
+
+            final boolean applyGapHeight = childNeedsGapHeight(
+                    ambientState.getSectionProvider(), i,
+                    view, getPreviousView(i, state));
+            if (applyGapHeight) {
+                currentY += getGapForLocation(
+                        ambientState.getFractionToShade(), ambientState.isOnKeyguard());
+            }
+
+            if (ambientState.getShelf() != null) {
+                final float shelfStart = ambientState.getStackEndHeight()
+                        - ambientState.getShelf().getIntrinsicHeight()
+                        - mPaddingBetweenElements;
+                if (currentY >= shelfStart
+                        && !(view instanceof FooterView)
+                        && state.firstViewInShelf == null) {
+                    state.firstViewInShelf = view;
+                }
+            }
+            currentY = currentY
+                    + getMaxAllowedChildHeight(view)
+                    + mPaddingBetweenElements;
         }
     }
 
     private int updateNotGoneIndex(StackScrollAlgorithmState state, int notGoneIndex,
-            ExpandableView v) {
+                                   ExpandableView v) {
         ExpandableViewState viewState = v.getViewState();
         viewState.notGoneIndex = notGoneIndex;
         state.visibleChildren.add(v);
         notGoneIndex++;
         return notGoneIndex;
+    }
+
+    private ExpandableView getPreviousView(int i, StackScrollAlgorithmState algorithmState) {
+        return i > 0 ? algorithmState.visibleChildren.get(i - 1) : null;
+    }
+
+    /**
+     * Update the position of QS Frame.
+     */
+    public void updateQSFrameTop(int qsHeight) {
+        // Intentionally empty for sub-classes in other device form factors to override
     }
 
     /**
@@ -352,178 +449,261 @@ public class StackScrollAlgorithm {
      * @param algorithmState The state in which the current pass of the algorithm is currently in
      * @param ambientState   The current ambient state
      */
-    private void updatePositionsForState(StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState) {
-        if (ANCHOR_SCROLLING) {
-            float currentYPosition = algorithmState.anchorViewY;
-            int childCount = algorithmState.visibleChildren.size();
-            for (int i = algorithmState.anchorViewIndex; i < childCount; i++) {
-                currentYPosition = updateChild(i, algorithmState, ambientState, currentYPosition,
-                        false /* reverse */);
-            }
-            currentYPosition = algorithmState.anchorViewY;
-            for (int i = algorithmState.anchorViewIndex - 1; i >= 0; i--) {
-                currentYPosition = updateChild(i, algorithmState, ambientState, currentYPosition,
-                        true /* reverse */);
-            }
-        } else {
-            // The y coordinate of the current child.
-            float currentYPosition = -algorithmState.scrollY;
-            int childCount = algorithmState.visibleChildren.size();
-            for (int i = 0; i < childCount; i++) {
-                currentYPosition = updateChild(i, algorithmState, ambientState, currentYPosition,
-                        false /* reverse */);
-            }
+    protected void updatePositionsForState(StackScrollAlgorithmState algorithmState,
+                                           AmbientState ambientState) {
+        if (!ambientState.isOnKeyguard()
+                || (ambientState.isBypassEnabled() && ambientState.isPulseExpanding())) {
+            algorithmState.mCurrentYPosition += mNotificationScrimPadding;
+            algorithmState.mCurrentExpandedYPosition += mNotificationScrimPadding;
+        }
+
+        int childCount = algorithmState.visibleChildren.size();
+        for (int i = 0; i < childCount; i++) {
+            updateChild(i, algorithmState, ambientState);
+        }
+    }
+
+    private void setLocation(ExpandableViewState expandableViewState, float currentYPosition,
+                             int i) {
+        expandableViewState.location = ExpandableViewState.LOCATION_MAIN_AREA;
+        if (currentYPosition <= 0) {
+            expandableViewState.location = ExpandableViewState.LOCATION_HIDDEN_TOP;
         }
     }
 
     /**
+     * @return Fraction to apply to view height and gap between views.
+     * Does not include shelf height even if shelf is showing.
+     */
+    protected float getExpansionFractionWithoutShelf(
+            StackScrollAlgorithmState algorithmState,
+            AmbientState ambientState) {
+
+        final boolean showingShelf = ambientState.getShelf() != null
+                && algorithmState.firstViewInShelf != null;
+
+        final float shelfHeight = showingShelf ? ambientState.getShelf().getIntrinsicHeight() : 0f;
+        final float scrimPadding = ambientState.isOnKeyguard()
+                && (!ambientState.isBypassEnabled() || !ambientState.isPulseExpanding())
+                ? 0 : mNotificationScrimPadding;
+
+        final float stackHeight = ambientState.getStackHeight() - shelfHeight - scrimPadding;
+        final float stackEndHeight = ambientState.getStackEndHeight() - shelfHeight - scrimPadding;
+        if (stackEndHeight == 0f) {
+            // This should not happen, since even when the shade is empty we show EmptyShadeView
+            // but check just in case, so we don't return infinity or NaN.
+            return 0f;
+        }
+        return stackHeight / stackEndHeight;
+    }
+
+    private boolean hasNonClearableNotifs(StackScrollAlgorithmState algorithmState) {
+        for (int i = 0; i < algorithmState.visibleChildren.size(); i++) {
+            View child = algorithmState.visibleChildren.get(i);
+            if (!(child instanceof ExpandableNotificationRow)) {
+                continue;
+            }
+            final ExpandableNotificationRow row = (ExpandableNotificationRow) child;
+            if (!row.canViewBeCleared()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @VisibleForTesting
+    void maybeUpdateHeadsUpIsVisible(
+            ExpandableViewState viewState,
+            boolean isShadeExpanded,
+            boolean mustStayOnScreen,
+            boolean topVisible,
+            float viewEnd,
+            float hunMax) {
+        if (isShadeExpanded && mustStayOnScreen && topVisible) {
+            viewState.headsUpIsVisible = viewEnd < hunMax;
+        }
+    }
+
+    // TODO(b/172289889) polish shade open from HUN
+
+    /**
      * Populates the {@link ExpandableViewState} for a single child.
      *
-     * @param i                The index of the child in
-     * {@link StackScrollAlgorithmState#visibleChildren}.
-     * @param algorithmState   The overall output state of the algorithm.
-     * @param ambientState     The input state provided to the algorithm.
-     * @param currentYPosition The Y position of the current pass of the algorithm.  For a forward
-     *                         pass, this should be the top of the child; for a reverse pass, the
-     *                         bottom of the child.
-     * @param reverse          Whether we're laying out children in the reverse direction (Y
-     *                         positions
-     *                         decreasing) instead of the forward direction (Y positions
-     *                         increasing).
-     * @return The Y position after laying out the child.  This will be the {@code currentYPosition}
-     * for the next call to this method, after adjusting for any gaps between children.
+     * @param i              The index of the child in
+     *                       {@link StackScrollAlgorithmState#visibleChildren}.
+     * @param algorithmState The overall output state of the algorithm.
+     * @param ambientState   The input state provided to the algorithm.
      */
-    protected float updateChild(
+    protected void updateChild(
             int i,
             StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState,
-            float currentYPosition,
-            boolean reverse) {
-        ExpandableView child = algorithmState.visibleChildren.get(i);
-        ExpandableView previousChild = i > 0 ? algorithmState.visibleChildren.get(i - 1) : null;
+            AmbientState ambientState) {
+
+        ExpandableView view = algorithmState.visibleChildren.get(i);
+        ExpandableViewState viewState = view.getViewState();
+        viewState.location = ExpandableViewState.LOCATION_UNKNOWN;
+
+        float expansionFraction = getExpansionFractionWithoutShelf(
+                algorithmState, ambientState);
+
+        // Add gap between sections.
         final boolean applyGapHeight =
                 childNeedsGapHeight(
-                        ambientState.getSectionProvider(), algorithmState.anchorViewIndex, i,
-                        child, previousChild);
-        ExpandableViewState childViewState = child.getViewState();
-        childViewState.location = ExpandableViewState.LOCATION_UNKNOWN;
-
-        if (applyGapHeight && !reverse) {
-            currentYPosition += mGapHeight;
+                        ambientState.getSectionProvider(), i,
+                        view, getPreviousView(i, algorithmState));
+        if (applyGapHeight) {
+            final float gap = getGapForLocation(
+                    ambientState.getFractionToShade(), ambientState.isOnKeyguard());
+            algorithmState.mCurrentYPosition += expansionFraction * gap;
+            algorithmState.mCurrentExpandedYPosition += gap;
         }
 
-        int paddingAfterChild = getPaddingAfterChild(algorithmState, child);
-        int childHeight = getMaxAllowedChildHeight(child);
-        if (reverse) {
-            childViewState.yTranslation = currentYPosition - (childHeight + paddingAfterChild);
-            if (currentYPosition <= 0) {
-                childViewState.location = ExpandableViewState.LOCATION_HIDDEN_TOP;
+        // Must set viewState.yTranslation _before_ use.
+        // Incoming views have yTranslation=0 by default.
+        viewState.setYTranslation(algorithmState.mCurrentYPosition);
+
+        float viewEnd = viewState.getYTranslation() + viewState.height + ambientState.getStackY();
+        maybeUpdateHeadsUpIsVisible(viewState, ambientState.isShadeExpanded(),
+                view.mustStayOnScreen(), /* topVisible */ viewState.getYTranslation() >= 0,
+                viewEnd, /* hunMax */ ambientState.getMaxHeadsUpTranslation()
+        );
+        if (view instanceof FooterView) {
+            final boolean shadeClosed = !ambientState.isShadeExpanded();
+            final boolean isShelfShowing = algorithmState.firstViewInShelf != null;
+            if (shadeClosed) {
+                viewState.hidden = true;
+            } else {
+                final float footerEnd = algorithmState.mCurrentExpandedYPosition
+                        + view.getIntrinsicHeight();
+                final boolean noSpaceForFooter = footerEnd > ambientState.getStackEndHeight();
+                ((FooterView.FooterViewState) viewState).hideContent =
+                        isShelfShowing || noSpaceForFooter
+                                || (ambientState.isClearAllInProgress()
+                                && !hasNonClearableNotifs(algorithmState));
             }
         } else {
-            childViewState.yTranslation = currentYPosition;
-        }
-        boolean isFooterView = child instanceof FooterView;
-        boolean isEmptyShadeView = child instanceof EmptyShadeView;
-
-        childViewState.location = ExpandableViewState.LOCATION_MAIN_AREA;
-        float inset = ambientState.getTopPadding() + ambientState.getStackTranslation();
-        if (i <= algorithmState.getIndexOfExpandingNotification()) {
-            inset += ambientState.getExpandAnimationTopChange();
-        }
-        if (child.mustStayOnScreen() && childViewState.yTranslation >= 0) {
-            // Even if we're not scrolled away we're in view and we're also not in the
-            // shelf. We can relax the constraints and let us scroll off the top!
-            float end = childViewState.yTranslation + childViewState.height + inset;
-            childViewState.headsUpIsVisible = end < ambientState.getMaxHeadsUpTranslation();
-        }
-        if (isFooterView) {
-            childViewState.yTranslation = Math.min(childViewState.yTranslation,
-                    ambientState.getInnerHeight() - childHeight);
-        } else if (isEmptyShadeView) {
-            childViewState.yTranslation = ambientState.getInnerHeight() - childHeight
-                    + ambientState.getStackTranslation() * 0.25f;
-        } else if (child != ambientState.getTrackedHeadsUpRow()) {
-            clampPositionToShelf(child, childViewState, ambientState);
-        }
-
-        if (reverse) {
-            currentYPosition = childViewState.yTranslation;
-            if (applyGapHeight) {
-                currentYPosition -= mGapHeight;
+            if (view instanceof EmptyShadeView) {
+                float fullHeight = ambientState.getLayoutMaxHeight() + mMarginBottom
+                        - ambientState.getStackY();
+                viewState.setYTranslation((fullHeight - getMaxAllowedChildHeight(view)) / 2f);
+            } else if (view != ambientState.getTrackedHeadsUpRow()) {
+                if (ambientState.isExpansionChanging()) {
+                    // We later update shelf state, then hide views below the shelf.
+                    viewState.hidden = false;
+                    viewState.inShelf = algorithmState.firstViewInShelf != null
+                            && i >= algorithmState.visibleChildren.indexOf(
+                            algorithmState.firstViewInShelf);
+                } else if (ambientState.getShelf() != null) {
+                    // When pulsing (incoming notification on AOD), innerHeight is 0; clamp all
+                    // to shelf start, thereby hiding all notifications (except the first one, which
+                    // we later unhide in updatePulsingState)
+                    // TODO(b/192348384): merge InnerHeight with StackHeight
+                    // Note: Bypass pulse looks different, but when it is not expanding, we need
+                    //  to use the innerHeight which doesn't update continuously, otherwise we show
+                    //  more notifications than we should during this special transitional states.
+                    boolean bypassPulseNotExpanding = ambientState.isBypassEnabled()
+                            && ambientState.isOnKeyguard() && !ambientState.isPulseExpanding();
+                    final float stackBottom = !ambientState.isShadeExpanded()
+                            || ambientState.getDozeAmount() == 1f
+                            || bypassPulseNotExpanding
+                            ? ambientState.getInnerHeight()
+                            : ambientState.getStackHeight();
+                    final float shelfStart = stackBottom
+                            - ambientState.getShelf().getIntrinsicHeight()
+                            - mPaddingBetweenElements;
+                    updateViewWithShelf(view, viewState, shelfStart);
+                }
             }
-        } else {
-            currentYPosition = childViewState.yTranslation + childHeight + paddingAfterChild;
-            if (currentYPosition <= 0) {
-                childViewState.location = ExpandableViewState.LOCATION_HIDDEN_TOP;
+            viewState.height = getMaxAllowedChildHeight(view);
+            if (!view.isPinned() && !view.isHeadsUpAnimatingAway()
+                    && !ambientState.isPulsingRow(view)) {
+                // The expansion fraction should not affect HUNs or pulsing notifications.
+                viewState.height *= expansionFraction;
             }
         }
-        if (childViewState.location == ExpandableViewState.LOCATION_UNKNOWN) {
-            Log.wtf(LOG_TAG, "Failed to assign location for child " + i);
-        }
 
-        childViewState.yTranslation += inset;
-        return currentYPosition;
+        algorithmState.mCurrentYPosition +=
+                expansionFraction * (getMaxAllowedChildHeight(view) + mPaddingBetweenElements);
+        algorithmState.mCurrentExpandedYPosition += view.getIntrinsicHeight()
+                + mPaddingBetweenElements;
+
+        setLocation(view.getViewState(), algorithmState.mCurrentYPosition, i);
+        viewState.setYTranslation(viewState.getYTranslation() + ambientState.getStackY());
+    }
+
+    @VisibleForTesting
+    void updateViewWithShelf(ExpandableView view, ExpandableViewState viewState, float shelfStart) {
+        viewState.setYTranslation(Math.min(viewState.getYTranslation(), shelfStart));
+        if (viewState.getYTranslation() >= shelfStart) {
+            viewState.hidden = !view.isExpandAnimationRunning()
+                    && !view.hasExpandingChild();
+            viewState.inShelf = true;
+            // Notifications in the shelf cannot be visible HUNs.
+            viewState.headsUpIsVisible = false;
+        }
     }
 
     /**
      * Get the gap height needed for before a view
      *
      * @param sectionProvider the sectionProvider used to understand the sections
-     * @param anchorViewIndex the anchorView index when anchor scrolling, can be 0 if not
-     * @param visibleIndex the visible index of this view in the list
-     * @param child the child asked about
-     * @param previousChild the child right before it or null if none
+     * @param visibleIndex    the visible index of this view in the list
+     * @param child           the child asked about
+     * @param previousChild   the child right before it or null if none
      * @return the size of the gap needed or 0 if none is needed
      */
     public float getGapHeightForChild(
             SectionProvider sectionProvider,
-            int anchorViewIndex,
             int visibleIndex,
             View child,
-            View previousChild) {
+            View previousChild,
+            float fractionToShade,
+            boolean onKeyguard) {
 
-        if (childNeedsGapHeight(sectionProvider, anchorViewIndex, visibleIndex, child,
+        if (childNeedsGapHeight(sectionProvider, visibleIndex, child,
                 previousChild)) {
-            return mGapHeight;
+            return getGapForLocation(fractionToShade, onKeyguard);
         } else {
             return 0;
         }
+    }
+
+    @VisibleForTesting
+    float getGapForLocation(float fractionToShade, boolean onKeyguard) {
+        if (fractionToShade > 0f) {
+            return MathUtils.lerp(mGapHeightOnLockscreen, mGapHeight, fractionToShade);
+        }
+        if (onKeyguard) {
+            return mGapHeightOnLockscreen;
+        }
+        return mGapHeight;
     }
 
     /**
      * Does a given child need a gap, i.e spacing before a view?
      *
      * @param sectionProvider the sectionProvider used to understand the sections
-     * @param anchorViewIndex the anchorView index when anchor scrolling, can be 0 if not
-     * @param visibleIndex the visible index of this view in the list
-     * @param child the child asked about
-     * @param previousChild the child right before it or null if none
+     * @param visibleIndex    the visible index of this view in the list
+     * @param child           the child asked about
+     * @param previousChild   the child right before it or null if none
      * @return if the child needs a gap height
      */
     private boolean childNeedsGapHeight(
             SectionProvider sectionProvider,
-            int anchorViewIndex,
             int visibleIndex,
             View child,
             View previousChild) {
-
-        boolean needsGapHeight = sectionProvider.beginsSection(child, previousChild)
-                && visibleIndex > 0;
-        if (ANCHOR_SCROLLING) {
-            needsGapHeight &= visibleIndex != anchorViewIndex;
-        }
-        return needsGapHeight;
+        return sectionProvider.beginsSection(child, previousChild)
+                && visibleIndex > 0
+                && !(previousChild instanceof SectionHeaderView)
+                && !(child instanceof FooterView);
     }
 
-    protected int getPaddingAfterChild(StackScrollAlgorithmState algorithmState,
-            ExpandableView child) {
-        return algorithmState.getPaddingAfterChild(child);
-    }
-
-    private void updatePulsingStates(StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState) {
+    @VisibleForTesting
+    void updatePulsingStates(StackScrollAlgorithmState algorithmState,
+                                     AmbientState ambientState) {
         int childCount = algorithmState.visibleChildren.size();
+        ExpandableNotificationRow pulsingRow = null;
         for (int i = 0; i < childCount; i++) {
             View child = algorithmState.visibleChildren.get(i);
             if (!(child instanceof ExpandableNotificationRow)) {
@@ -535,22 +715,36 @@ public class StackScrollAlgorithm {
             }
             ExpandableViewState viewState = row.getViewState();
             viewState.hidden = false;
+            pulsingRow = row;
+        }
+
+        // Set AmbientState#pulsingRow to the current pulsing row when on AOD.
+        // Set AmbientState#pulsingRow=null when on lockscreen, since AmbientState#pulsingRow
+        // is only used for skipping the unfurl animation for (the notification that was already
+        // showing at full height on AOD) during the AOD=>lockscreen transition, where
+        // dozeAmount=[1f, 0f). We also need to reset the pulsingRow once it is no longer used
+        // because it will interfere with future unfurling animations - for example, during the
+        // LS=>AOD animation, the pulsingRow may stay at full height when it should squish with the
+        // rest of the stack.
+        if (ambientState.getDozeAmount() == 0.0f || ambientState.getDozeAmount() == 1.0f) {
+            ambientState.setPulsingRow(pulsingRow);
         }
     }
 
     private void updateHeadsUpStates(StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState) {
+                                     AmbientState ambientState) {
         int childCount = algorithmState.visibleChildren.size();
 
         // Move the tracked heads up into position during the appear animation, by interpolating
         // between the HUN inset (where it will appear as a HUN) and the end position in the shade
+        float headsUpTranslation = mHeadsUpInset - ambientState.getStackTopMargin();
         ExpandableNotificationRow trackedHeadsUpRow = ambientState.getTrackedHeadsUpRow();
         if (trackedHeadsUpRow != null) {
             ExpandableViewState childState = trackedHeadsUpRow.getViewState();
             if (childState != null) {
-                float endPosition = childState.yTranslation - ambientState.getStackTranslation();
-                childState.yTranslation = MathUtils.lerp(
-                        mHeadsUpInset, endPosition, ambientState.getAppearFraction());
+                float endPos = childState.getYTranslation() - ambientState.getStackTranslation();
+                childState.setYTranslation(MathUtils.lerp(
+                        headsUpTranslation, endPos, ambientState.getAppearFraction()));
             }
         }
 
@@ -561,7 +755,7 @@ public class StackScrollAlgorithm {
                 continue;
             }
             ExpandableNotificationRow row = (ExpandableNotificationRow) child;
-            if (!row.isHeadsUp()) {
+            if (!(row.isHeadsUp() || row.isHeadsUpAnimatingAway())) {
                 continue;
             }
             ExpandableViewState childState = row.getViewState();
@@ -570,12 +764,14 @@ public class StackScrollAlgorithm {
                 childState.location = ExpandableViewState.LOCATION_FIRST_HUN;
             }
             boolean isTopEntry = topHeadsUpEntry == row;
-            float unmodifiedEndLocation = childState.yTranslation + childState.height;
+            float unmodifiedEndLocation = childState.getYTranslation() + childState.height;
             if (mIsExpanded) {
-                if (row.mustStayOnScreen() && !childState.headsUpIsVisible
-                        && !row.showingPulsing()) {
+                if (shouldHunBeVisibleWhenScrolled(row.mustStayOnScreen(),
+                        childState.headsUpIsVisible, row.showingPulsing(),
+                        ambientState.isOnKeyguard(), row.getEntry().isStickyAndNotDemoted())) {
                     // Ensure that the heads up is always visible even when scrolled off
-                    clampHunToTop(ambientState, row, childState);
+                    clampHunToTop(mQuickQsOffsetHeight, ambientState.getStackTranslation(),
+                            row.getCollapsedHeight(), childState);
                     if (isTopEntry && row.isAboveShelf()) {
                         // the first hun can't get off screen.
                         clampHunToMaxTranslation(ambientState, row, childState);
@@ -584,18 +780,19 @@ public class StackScrollAlgorithm {
                 }
             }
             if (row.isPinned()) {
-                childState.yTranslation = Math.max(childState.yTranslation, mHeadsUpInset);
+                // Make sure row yTranslation is at maximum the HUN yTranslation,
+                // which accounts for AmbientState.stackTopMargin in split-shade.
+                childState.setYTranslation(
+                        Math.max(childState.getYTranslation(), headsUpTranslation));
                 childState.height = Math.max(row.getIntrinsicHeight(), childState.height);
                 childState.hidden = false;
                 ExpandableViewState topState =
                         topHeadsUpEntry == null ? null : topHeadsUpEntry.getViewState();
                 if (topState != null && !isTopEntry && (!mIsExpanded
-                        || unmodifiedEndLocation > topState.yTranslation + topState.height)) {
+                        || unmodifiedEndLocation > topState.getYTranslation() + topState.height)) {
                     // Ensure that a headsUp doesn't vertically extend further than the heads-up at
                     // the top most z-position
                     childState.height = row.getIntrinsicHeight();
-                    childState.yTranslation = Math.min(topState.yTranslation + topState.height
-                            - childState.height, childState.yTranslation);
                 }
 
                 // heads up notification show and this row is the top entry of heads up
@@ -603,70 +800,87 @@ public class StackScrollAlgorithm {
                 // To check if the row need to do translation according to scroll Y
                 // heads up show full of row's content and any scroll y indicate that the
                 // translationY need to move up the HUN.
-                // TODO: fix this check for anchor scrolling.
                 if (!mIsExpanded && isTopEntry && ambientState.getScrollY() > 0) {
-                    childState.yTranslation -= ambientState.getScrollY();
+                    childState.setYTranslation(
+                            childState.getYTranslation() - ambientState.getScrollY());
                 }
             }
             if (row.isHeadsUpAnimatingAway()) {
+                // Make sure row yTranslation is at maximum the HUN yTranslation,
+                // which accounts for AmbientState.stackTopMargin in split-shade.
+                childState.setYTranslation(
+                        Math.max(childState.getYTranslation(), headsUpTranslation));
+                // keep it visible for the animation
                 childState.hidden = false;
             }
         }
     }
 
-    private void clampHunToTop(AmbientState ambientState, ExpandableNotificationRow row,
-            ExpandableViewState childState) {
-        float newTranslation = Math.max(ambientState.getTopPadding()
-                + ambientState.getStackTranslation(), childState.yTranslation);
-        childState.height = (int) Math.max(childState.height - (newTranslation
-                - childState.yTranslation), row.getCollapsedHeight());
-        childState.yTranslation = newTranslation;
+    @VisibleForTesting
+    boolean shouldHunBeVisibleWhenScrolled(boolean mustStayOnScreen, boolean headsUpIsVisible,
+            boolean showingPulsing, boolean isOnKeyguard, boolean headsUpOnKeyguard) {
+        return mustStayOnScreen && !headsUpIsVisible
+                        && !showingPulsing
+                        && (!isOnKeyguard || headsUpOnKeyguard);
     }
 
+     /**
+     * When shade is open and we are scrolled to the bottom of notifications,
+     * clamp incoming HUN in its collapsed form, right below qs offset.
+     * Transition pinned collapsed HUN to full height when scrolling back up.
+     */
+    @VisibleForTesting
+    void clampHunToTop(float quickQsOffsetHeight, float stackTranslation, float collapsedHeight,
+                       ExpandableViewState viewState) {
+
+        final float newTranslation = Math.max(quickQsOffsetHeight + stackTranslation,
+                viewState.getYTranslation());
+
+        // Transition from collapsed pinned state to fully expanded state
+        // when the pinned HUN approaches its actual location (when scrolling back to top).
+        final float distToRealY = newTranslation - viewState.getYTranslation();
+        viewState.height = (int) Math.max(viewState.height - distToRealY, collapsedHeight);
+        viewState.setYTranslation(newTranslation);
+    }
+
+    // Pin HUN to bottom of expanded QS
+    // while the rest of notifications are scrolled offscreen.
     private void clampHunToMaxTranslation(AmbientState ambientState, ExpandableNotificationRow row,
-            ExpandableViewState childState) {
-        float newTranslation;
+                                          ExpandableViewState childState) {
         float maxHeadsUpTranslation = ambientState.getMaxHeadsUpTranslation();
-        float maxShelfPosition = ambientState.getInnerHeight() + ambientState.getTopPadding()
+        final float maxShelfPosition = ambientState.getInnerHeight() + ambientState.getTopPadding()
                 + ambientState.getStackTranslation();
         maxHeadsUpTranslation = Math.min(maxHeadsUpTranslation, maxShelfPosition);
-        float bottomPosition = maxHeadsUpTranslation - row.getCollapsedHeight();
-        newTranslation = Math.min(childState.yTranslation, bottomPosition);
+
+        final float bottomPosition = maxHeadsUpTranslation - row.getCollapsedHeight();
+        final float newTranslation = Math.min(childState.getYTranslation(), bottomPosition);
         childState.height = (int) Math.min(childState.height, maxHeadsUpTranslation
                 - newTranslation);
-        childState.yTranslation = newTranslation;
+        childState.setYTranslation(newTranslation);
+
+        // Animate pinned HUN bottom corners to and from original roundness.
+        final float originalCornerRadius =
+                row.isLastInSection() ? 1f : (mSmallCornerRadius / mLargeCornerRadius);
+        final float bottomValue = computeCornerRoundnessForPinnedHun(mHostView.getHeight(),
+                ambientState.getStackY(), getMaxAllowedChildHeight(row), originalCornerRadius);
+        row.requestBottomRoundness(bottomValue, STACK_SCROLL_ALGO);
+        row.addOnDetachResetRoundness(STACK_SCROLL_ALGO);
     }
 
-    /**
-     * Clamp the height of the child down such that its end is at most on the beginning of
-     * the shelf.
-     *
-     * @param childViewState the view state of the child
-     * @param ambientState   the ambient state
-     */
-    private void clampPositionToShelf(ExpandableView child,
-            ExpandableViewState childViewState,
-            AmbientState ambientState) {
-        if (ambientState.getShelf() == null) {
-            return;
-        }
+    @VisibleForTesting
+    float computeCornerRoundnessForPinnedHun(float hostViewHeight, float stackY,
+                                             float viewMaxHeight, float originalCornerRadius) {
 
-        ExpandableNotificationRow trackedHeadsUpRow = ambientState.getTrackedHeadsUpRow();
-        boolean isBeforeTrackedHeadsUp = trackedHeadsUpRow != null
-                && mHostView.indexOfChild(child) < mHostView.indexOfChild(trackedHeadsUpRow);
+        // Compute y where corner roundness should be in its original unpinned state.
+        // We use view max height because the pinned collapsed HUN expands to max height
+        // when it becomes unpinned.
+        final float originalRoundnessY = hostViewHeight - viewMaxHeight;
 
-        int shelfStart = ambientState.getInnerHeight()
-                - ambientState.getShelf().getIntrinsicHeight();
-        if (ambientState.isAppearing() && !child.isAboveShelf() && !isBeforeTrackedHeadsUp) {
-            // Don't show none heads-up notifications while in appearing phase.
-            childViewState.yTranslation = Math.max(childViewState.yTranslation, shelfStart);
-        }
-        childViewState.yTranslation = Math.min(childViewState.yTranslation, shelfStart);
-        if (childViewState.yTranslation >= shelfStart) {
-            childViewState.hidden = !child.isExpandAnimationRunning() && !child.hasExpandingChild();
-            childViewState.inShelf = true;
-            childViewState.headsUpIsVisible = false;
-        }
+        final float distToOriginalRoundness = Math.max(0f, stackY - originalRoundnessY);
+        final float progressToPinnedRoundness = Math.min(1f,
+                distToOriginalRoundness / viewMaxHeight);
+
+        return MathUtils.lerp(originalCornerRadius, 1f, progressToPinnedRoundness);
     }
 
     protected int getMaxAllowedChildHeight(View child) {
@@ -685,7 +899,7 @@ public class StackScrollAlgorithm {
      * @param ambientState   The ambient state of the algorithm
      */
     private void updateZValuesForState(StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState) {
+                                       AmbientState ambientState) {
         int childCount = algorithmState.visibleChildren.size();
         float childrenOnTop = 0.0f;
 
@@ -705,54 +919,82 @@ public class StackScrollAlgorithm {
         }
     }
 
+    /**
+     * Calculate and update the Z positions for a given child. We currently only give shadows to
+     * HUNs to distinguish a HUN from its surroundings.
+     *
+     * @param isTopHun      Whether the child is a top HUN. A top HUN means a HUN that shows on the
+     *                      vertically top of screen. Top HUNs should have drop shadows
+     * @param childrenOnTop It is greater than 0 when there's an existing HUN that is elevated
+     * @return childrenOnTop The decimal part represents the fraction of the elevated HUN's height
+     *                      that overlaps with QQS Panel. The integer part represents the count of
+     *                      previous HUNs whose Z positions are greater than 0.
+     */
     protected float updateChildZValue(int i, float childrenOnTop,
-            StackScrollAlgorithmState algorithmState,
-            AmbientState ambientState,
-            boolean shouldElevateHun) {
+                                      StackScrollAlgorithmState algorithmState,
+                                      AmbientState ambientState,
+                                      boolean isTopHun) {
         ExpandableView child = algorithmState.visibleChildren.get(i);
         ExpandableViewState childViewState = child.getViewState();
-        int zDistanceBetweenElements = ambientState.getZDistanceBetweenElements();
         float baseZ = ambientState.getBaseZHeight();
+
         if (child.mustStayOnScreen() && !childViewState.headsUpIsVisible
                 && !ambientState.isDozingAndNotPulsing(child)
-                && childViewState.yTranslation < ambientState.getTopPadding()
+                && childViewState.getYTranslation() < ambientState.getTopPadding()
                 + ambientState.getStackTranslation()) {
+
             if (childrenOnTop != 0.0f) {
+                // To elevate the later HUN over previous HUN when multiple HUNs exist
                 childrenOnTop++;
             } else {
+                // Handles HUN shadow when Shade is opened, and AmbientState.mScrollY > 0
+                // Calculate the HUN's z-value based on its overlapping fraction with QQS Panel.
+                // When scrolling down shade to make HUN back to in-position in Notification Panel,
+                // The overlapping fraction goes to 0, and shadows hides gradually.
                 float overlap = ambientState.getTopPadding()
-                        + ambientState.getStackTranslation() - childViewState.yTranslation;
-                childrenOnTop += Math.min(1.0f, overlap / childViewState.height);
+                        + ambientState.getStackTranslation() - childViewState.getYTranslation();
+                // To prevent over-shadow during HUN entry
+                childrenOnTop += Math.min(
+                        1.0f,
+                        overlap / childViewState.height
+                );
             }
-            childViewState.zTranslation = baseZ
-                    + childrenOnTop * zDistanceBetweenElements;
-        } else if (shouldElevateHun) {
+            childViewState.setZTranslation(baseZ
+                    + childrenOnTop * mPinnedZTranslationExtra);
+        } else if (isTopHun) {
             // In case this is a new view that has never been measured before, we don't want to
-            // elevate if we are currently expanded more then the notification
+            // elevate if we are currently expanded more than the notification
             int shelfHeight = ambientState.getShelf() == null ? 0 :
                     ambientState.getShelf().getIntrinsicHeight();
             float shelfStart = ambientState.getInnerHeight()
                     - shelfHeight + ambientState.getTopPadding()
                     + ambientState.getStackTranslation();
-            float notificationEnd = childViewState.yTranslation + child.getIntrinsicHeight()
+            float notificationEnd = childViewState.getYTranslation() + child.getIntrinsicHeight()
                     + mPaddingBetweenElements;
             if (shelfStart > notificationEnd) {
-                childViewState.zTranslation = baseZ;
+                // When the notification doesn't overlap with Notification Shelf, there's no shadow
+                childViewState.setZTranslation(baseZ);
             } else {
+                // Give shadow to the notification if it overlaps with Notification Shelf
                 float factor = (notificationEnd - shelfStart) / shelfHeight;
+                if (Float.isNaN(factor)) { // Avoid problems when the above is 0/0.
+                    factor = 1.0f;
+                }
                 factor = Math.min(factor, 1.0f);
-                childViewState.zTranslation = baseZ + factor * zDistanceBetweenElements;
+                childViewState.setZTranslation(baseZ + factor * mPinnedZTranslationExtra);
             }
         } else {
-            childViewState.zTranslation = baseZ;
+            childViewState.setZTranslation(baseZ);
         }
 
-        // We need to scrim the notification more from its surrounding content when we are pinned,
-        // and we therefore elevate it higher.
-        // We can use the headerVisibleAmount for this, since the value nicely goes from 0 to 1 when
-        // expanding after which we have a normal elevation again.
-        childViewState.zTranslation += (1.0f - child.getHeaderVisibleAmount())
-                * mPinnedZTranslationExtra;
+        // While HUN is showing and Shade is closed: headerVisibleAmount stays 0, shadow stays.
+        // During HUN-to-Shade (eg. dragging down HUN to open Shade): headerVisibleAmount goes
+        // gradually from 0 to 1, shadow hides gradually.
+        // Header visibility is a deprecated concept, we are using headerVisibleAmount only because
+        // this value nicely goes from 0 to 1 during the HUN-to-Shade process.
+
+        childViewState.setZTranslation(childViewState.getZTranslation()
+                + (1.0f - child.getHeaderVisibleAmount()) * mPinnedZTranslationExtra);
         return childrenOnTop;
     }
 
@@ -760,44 +1002,34 @@ public class StackScrollAlgorithm {
         this.mIsExpanded = isExpanded;
     }
 
-    public class StackScrollAlgorithmState {
+    public static class StackScrollAlgorithmState {
 
         /**
          * The scroll position of the algorithm (absolute scrolling).
          */
         public int scrollY;
 
-        /** The index of the anchor view (anchor scrolling). */
-        public int anchorViewIndex;
-
         /**
-         * The Y position, relative to the top of the screen, of the anchor view (anchor scrolling).
+         * First view in shelf.
          */
-        public int anchorViewY;
+        public ExpandableView firstViewInShelf;
 
         /**
          * The children from the host view which are not gone.
          */
-        public final ArrayList<ExpandableView> visibleChildren = new ArrayList<ExpandableView>();
+        public final ArrayList<ExpandableView> visibleChildren = new ArrayList<>();
 
         /**
-         * The padding after each child measured in pixels.
+         * Y position of the current view during updating children
+         * with expansion factor applied.
          */
-        public final HashMap<ExpandableView, Float> paddingMap = new HashMap<>();
-        private int indexOfExpandingNotification;
+        private float mCurrentYPosition;
 
-        public int getPaddingAfterChild(ExpandableView child) {
-            Float padding = paddingMap.get(child);
-            if (padding == null) {
-                // Should only happen for the last view
-                return mPaddingBetweenElements;
-            }
-            return (int) padding.floatValue();
-        }
-
-        public int getIndexOfExpandingNotification() {
-            return indexOfExpandingNotification;
-        }
+        /**
+         * Y position of the current view during updating children
+         * without applying the expansion factor.
+         */
+        private float mCurrentExpandedYPosition;
     }
 
     /**
@@ -810,5 +1042,15 @@ public class StackScrollAlgorithm {
          * notifications section. False if sections are not enabled.
          */
         boolean beginsSection(@NonNull View view, @Nullable View previous);
+    }
+
+    /**
+     * Interface for telling the StackScrollAlgorithm information about the bypass state
+     */
+    public interface BypassController {
+        /**
+         * True if bypass is enabled.  Note that this is always false if face auth is not enabled.
+         */
+        boolean isBypassEnabled();
     }
 }

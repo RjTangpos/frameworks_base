@@ -22,9 +22,10 @@ import static android.app.NotificationManager.BUBBLE_PREFERENCE_SELECTED;
 import static android.app.NotificationManager.IMPORTANCE_DEFAULT;
 import static android.app.NotificationManager.IMPORTANCE_LOW;
 import static android.app.NotificationManager.IMPORTANCE_UNSPECIFIED;
-import static android.provider.Settings.Global.NOTIFICATION_BUBBLES;
+import static android.app.NotificationManager.Policy.CONVERSATION_SENDERS_ANYONE;
+import static android.app.NotificationManager.Policy.CONVERSATION_SENDERS_IMPORTANT;
 
-import static com.android.systemui.Interpolators.FAST_OUT_SLOW_IN;
+import static com.android.app.animation.Interpolators.FAST_OUT_SLOW_IN;
 
 import static java.lang.annotation.RetentionPolicy.SOURCE;
 
@@ -35,7 +36,6 @@ import android.app.INotificationManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationChannelGroup;
-import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -44,10 +44,11 @@ import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.os.UserHandle;
-import android.provider.Settings;
+import android.os.UserManager;
 import android.service.notification.StatusBarNotification;
 import android.text.TextUtils;
 import android.transition.ChangeBounds;
@@ -56,7 +57,6 @@ import android.transition.TransitionManager;
 import android.transition.TransitionSet;
 import android.util.AttributeSet;
 import android.util.Log;
-import android.view.LayoutInflater;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.ImageView;
@@ -65,19 +65,18 @@ import android.widget.TextView;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.settingslib.notification.ConversationIconFactory;
-import com.android.systemui.Prefs;
 import com.android.systemui.R;
-import com.android.systemui.bubbles.BubbleController;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.people.widget.PeopleSpaceWidgetManager;
+import com.android.systemui.shade.ShadeController;
 import com.android.systemui.statusbar.notification.NotificationChannelHelper;
-import com.android.systemui.statusbar.notification.VisualStabilityManager;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.stack.StackStateAnimator;
+import com.android.systemui.wmshell.BubblesManager;
 
 import java.lang.annotation.Retention;
-
-import javax.inject.Provider;
+import java.util.Optional;
 
 /**
  * The guts of a conversation notification revealed when performing a long press.
@@ -86,15 +85,16 @@ public class NotificationConversationInfo extends LinearLayout implements
         NotificationGuts.GutsContent {
     private static final String TAG = "ConversationGuts";
 
-
     private INotificationManager mINotificationManager;
     private ShortcutManager mShortcutManager;
     private PackageManager mPm;
+    private PeopleSpaceWidgetManager mPeopleSpaceWidgetManager;
     private ConversationIconFactory mIconFactory;
-    private VisualStabilityManager mVisualStabilityManager;
+    private OnUserInteractionCallback mOnUserInteractionCallback;
     private Handler mMainHandler;
     private Handler mBgHandler;
-    private BubbleController mBubbleController;
+    private Optional<BubblesManager> mBubblesManagerOptional;
+    private ShadeController mShadeController;
     private String mPackageName;
     private String mAppName;
     private int mAppUid;
@@ -105,7 +105,6 @@ public class NotificationConversationInfo extends LinearLayout implements
     private StatusBarNotification mSbn;
     @Nullable private Notification.BubbleMetadata mBubbleMetadata;
     private Context mUserContext;
-    private Provider<PriorityOnboardingDialogController.Builder> mBuilderProvider;
     private boolean mIsDeviceProvisioned;
     private int mAppBubble;
 
@@ -116,10 +115,11 @@ public class NotificationConversationInfo extends LinearLayout implements
     private @Action int mSelectedAction = -1;
     private boolean mPressedApply;
 
-    private OnSnoozeClickListener mOnSnoozeClickListener;
     private OnSettingsClickListener mOnSettingsClickListener;
     private NotificationGuts mGutsContainer;
     private OnConversationSettingsClickListener mOnConversationSettingsClickListener;
+
+    private UserManager mUm;
 
     @VisibleForTesting
     boolean mSkipPost = false;
@@ -135,22 +135,6 @@ public class NotificationConversationInfo extends LinearLayout implements
     static final int ACTION_SNOOZE = 3;
     static final int ACTION_MUTE = 4;
     static final int ACTION_SETTINGS = 5;
-
-    // TODO: b/152050825
-    /*
-    private OnClickListener mOnHomeClick = v -> {
-        mSelectedAction = ACTION_HOME;
-        mShortcutManager.requestPinShortcut(mShortcutInfo, null);
-        mShadeController.animateCollapsePanels();
-        mGutsContainer.closeControls(v, true);
-    };
-
-    private OnClickListener mOnSnoozeClick = v -> {
-        mSelectedAction = ACTION_SNOOZE;
-        mOnSnoozeClickListener.onClick(v, 1);
-        mGutsContainer.closeControls(v, true);
-    };
-    */
 
     private OnClickListener mOnFavoriteClick = v -> {
         setSelectedAction(ACTION_FAVORITE);
@@ -169,11 +153,16 @@ public class NotificationConversationInfo extends LinearLayout implements
 
     private OnClickListener mOnDone = v -> {
         mPressedApply = true;
-        // If the user selected Priority, maybe show the priority onboarding
-        if (mSelectedAction == ACTION_FAVORITE && shouldShowPriorityOnboarding()) {
-            showPriorityOnboarding();
+
+        // If the user selected Priority and the previous selection was not priority, show a
+        // People Tile add request.
+        if (mSelectedAction == ACTION_FAVORITE && getPriority() != mSelectedAction) {
+            mShadeController.animateCollapseShade();
+            if (mUm.isSameProfileGroup(UserHandle.USER_SYSTEM, mSbn.getNormalizedUserId())) {
+                mPeopleSpaceWidgetManager.requestPinAppWidget(mShortcutInfo, new Bundle());
+            }
         }
-        mGutsContainer.closeControls(v, true);
+        mGutsContainer.closeControls(v, /* save= */ true);
     };
 
     public NotificationConversationInfo(Context context, AttributeSet attrs) {
@@ -192,10 +181,6 @@ public class NotificationConversationInfo extends LinearLayout implements
         void onClick(View v, Intent intent);
     }
 
-    public interface OnSnoozeClickListener {
-        void onClick(View v, int hoursToSnooze);
-    }
-
     @VisibleForTesting
     void setSelectedAction(int selectedAction) {
         if (mSelectedAction == selectedAction) {
@@ -208,46 +193,47 @@ public class NotificationConversationInfo extends LinearLayout implements
     public void bindNotification(
             ShortcutManager shortcutManager,
             PackageManager pm,
+            UserManager um,
+            PeopleSpaceWidgetManager peopleSpaceWidgetManager,
             INotificationManager iNotificationManager,
-            VisualStabilityManager visualStabilityManager,
+            OnUserInteractionCallback onUserInteractionCallback,
             String pkg,
             NotificationChannel notificationChannel,
             NotificationEntry entry,
             Notification.BubbleMetadata bubbleMetadata,
             OnSettingsClickListener onSettingsClick,
-            OnSnoozeClickListener onSnoozeClickListener,
             ConversationIconFactory conversationIconFactory,
             Context userContext,
-            Provider<PriorityOnboardingDialogController.Builder> builderProvider,
             boolean isDeviceProvisioned,
             @Main Handler mainHandler,
             @Background Handler bgHandler,
             OnConversationSettingsClickListener onConversationSettingsClickListener,
-            BubbleController bubbleController) {
-        mSelectedAction = -1;
+            Optional<BubblesManager> bubblesManagerOptional,
+            ShadeController shadeController) {
         mINotificationManager = iNotificationManager;
-        mVisualStabilityManager = visualStabilityManager;
+        mPeopleSpaceWidgetManager = peopleSpaceWidgetManager;
+        mOnUserInteractionCallback = onUserInteractionCallback;
         mPackageName = pkg;
         mEntry = entry;
         mSbn = entry.getSbn();
         mPm = pm;
+        mUm = um;
         mAppName = mPackageName;
         mOnSettingsClickListener = onSettingsClick;
         mNotificationChannel = notificationChannel;
         mAppUid = mSbn.getUid();
         mDelegatePkg = mSbn.getOpPkg();
         mIsDeviceProvisioned = isDeviceProvisioned;
-        mOnSnoozeClickListener = onSnoozeClickListener;
         mOnConversationSettingsClickListener = onConversationSettingsClickListener;
         mIconFactory = conversationIconFactory;
         mUserContext = userContext;
         mBubbleMetadata = bubbleMetadata;
-        mBubbleController = bubbleController;
-        mBuilderProvider = builderProvider;
+        mBubblesManagerOptional = bubblesManagerOptional;
+        mShadeController = shadeController;
         mMainHandler = mainHandler;
         mBgHandler = bgHandler;
         mShortcutManager = shortcutManager;
-        mShortcutInfo = entry.getRanking().getShortcutInfo();
+        mShortcutInfo = entry.getRanking().getConversationShortcutInfo();
         if (mShortcutInfo == null) {
             throw new IllegalArgumentException("Does not have required information");
         }
@@ -284,9 +270,14 @@ public class NotificationConversationInfo extends LinearLayout implements
         snooze.setOnClickListener(mOnSnoozeClick);
         */
 
-        if (mAppBubble == BUBBLE_PREFERENCE_ALL) {
-            ((TextView) findViewById(R.id.default_summary)).setText(getResources().getString(
+        TextView defaultSummaryTextView = findViewById(R.id.default_summary);
+        if (mAppBubble == BUBBLE_PREFERENCE_ALL
+                && BubblesManager.areBubblesEnabled(mContext, mSbn.getUser())) {
+            defaultSummaryTextView.setText(getResources().getString(
                     R.string.notification_channel_summary_default_with_bubbles, mAppName));
+        } else {
+            defaultSummaryTextView.setText(getResources().getString(
+                    R.string.notification_channel_summary_default));
         }
 
         findViewById(R.id.priority).setOnClickListener(mOnFavoriteClick);
@@ -297,7 +288,8 @@ public class NotificationConversationInfo extends LinearLayout implements
         settingsButton.setOnClickListener(getSettingsOnClickListener());
         settingsButton.setVisibility(settingsButton.hasOnClickListeners() ? VISIBLE : GONE);
 
-        updateToggleActions(getSelectedAction(), false);
+        updateToggleActions(mSelectedAction == -1 ? getPriority() : mSelectedAction,
+                false);
     }
 
     private void bindHeader() {
@@ -326,12 +318,37 @@ public class NotificationConversationInfo extends LinearLayout implements
         // bindName();
         bindPackage();
         bindIcon(mNotificationChannel.isImportantConversation());
+
+        mPriorityDescriptionView = findViewById(R.id.priority_summary);
+        if (willShowAsBubble() && willBypassDnd()) {
+            mPriorityDescriptionView.setText(R.string.notification_channel_summary_priority_all);
+        } else if (willShowAsBubble()) {
+            mPriorityDescriptionView.setText(R.string.notification_channel_summary_priority_bubble);
+        } else if (willBypassDnd()) {
+            mPriorityDescriptionView.setText(R.string.notification_channel_summary_priority_dnd);
+        } else {
+            mPriorityDescriptionView.setText(
+                    R.string.notification_channel_summary_priority_baseline);
+        }
     }
 
     private void bindIcon(boolean important) {
+        Drawable person =  mIconFactory.getBaseIconDrawable(mShortcutInfo);
+        if (person == null) {
+            person = mContext.getDrawable(R.drawable.ic_person).mutate();
+            TypedArray ta = mContext.obtainStyledAttributes(new int[]{android.R.attr.colorAccent});
+            int colorAccent = ta.getColor(0, 0);
+            ta.recycle();
+            person.setTint(colorAccent);
+        }
         ImageView image = findViewById(R.id.conversation_icon);
-        image.setImageDrawable(mIconFactory.getConversationDrawable(
-                mShortcutInfo, mPackageName, mAppUid, important));
+        image.setImageDrawable(person);
+
+        ImageView app = findViewById(R.id.conversation_icon_badge_icon);
+        app.setImageDrawable(mIconFactory.getAppBadge(
+                        mPackageName, UserHandle.getUserId(mSbn.getUid())));
+
+        findViewById(R.id.conversation_icon_badge_ring).setVisibility(important ? VISIBLE : GONE);
     }
 
     private void bindPackage() {
@@ -399,15 +416,12 @@ public class NotificationConversationInfo extends LinearLayout implements
     protected void onFinishInflate() {
         super.onFinishInflate();
 
-        mPriorityDescriptionView = findViewById(R.id.priority_summary);
         mDefaultDescriptionView = findViewById(R.id.default_summary);
         mSilentDescriptionView = findViewById(R.id.silence_summary);
     }
 
     @Override
-    public void onFinishedClosing() {
-        // TODO: do we need to do anything here?
-    }
+    public void onFinishedClosing() { }
 
     @Override
     public boolean needsFalsingProtection() {
@@ -487,7 +501,7 @@ public class NotificationConversationInfo extends LinearLayout implements
                 throw new IllegalArgumentException("Unrecognized behavior: " + mSelectedAction);
         }
 
-        boolean isAChange = getSelectedAction() != selectedAction;
+        boolean isAChange = getPriority() != selectedAction;
         TextView done = findViewById(R.id.done);
         done.setText(isAChange
                 ? R.string.inline_ok_button
@@ -498,6 +512,10 @@ public class NotificationConversationInfo extends LinearLayout implements
     }
 
     int getSelectedAction() {
+        return mSelectedAction;
+    }
+
+    private int getPriority() {
         if (mNotificationChannel.getImportance() <= IMPORTANCE_LOW
                 && mNotificationChannel.getImportance() > IMPORTANCE_UNSPECIFIED) {
             return ACTION_MUTE;
@@ -515,54 +533,26 @@ public class NotificationConversationInfo extends LinearLayout implements
                         mAppUid, mSelectedAction, mNotificationChannel));
         mEntry.markForUserTriggeredMovement(true);
         mMainHandler.postDelayed(
-                mVisualStabilityManager::temporarilyAllowReordering,
+                () -> mOnUserInteractionCallback.onImportanceChanged(mEntry),
                 StackStateAnimator.ANIMATION_DURATION_STANDARD);
     }
 
-    private boolean shouldShowPriorityOnboarding() {
-        return !Prefs.getBoolean(mUserContext, Prefs.Key.HAS_SEEN_PRIORITY_ONBOARDING, false);
-    }
-
-    private void showPriorityOnboarding() {
-        View onboardingView = LayoutInflater.from(mContext)
-                .inflate(R.layout.priority_onboarding_half_shell, null);
-
-        boolean ignoreDnd = false;
+    private boolean willBypassDnd() {
+        boolean bypassesDnd = false;
         try {
-            ignoreDnd = mINotificationManager
-                    .getConsolidatedNotificationPolicy().priorityConversationSenders ==
-                    NotificationManager.Policy.CONVERSATION_SENDERS_IMPORTANT;
+            int allowedSenders = mINotificationManager
+                    .getConsolidatedNotificationPolicy().priorityConversationSenders;
+            bypassesDnd =  allowedSenders == CONVERSATION_SENDERS_IMPORTANT
+                    || allowedSenders == CONVERSATION_SENDERS_ANYONE;
         } catch (RemoteException e) {
             Log.e(TAG, "Could not check conversation senders", e);
         }
+        return bypassesDnd;
+    }
 
-        boolean showAsBubble = mBubbleMetadata != null
-                && mBubbleMetadata.getAutoExpandBubble()
-                && Settings.Global.getInt(mContext.getContentResolver(),
-                        NOTIFICATION_BUBBLES, 0) == 1;
-
-        Drawable person =  mIconFactory.getBaseIconDrawable(mShortcutInfo);
-        if (person == null) {
-            person = mContext.getDrawable(R.drawable.ic_person).mutate();
-            TypedArray ta = mContext.obtainStyledAttributes(new int[]{android.R.attr.colorAccent});
-            int colorAccent = ta.getColor(0, 0);
-            ta.recycle();
-            person.setTint(colorAccent);
-        }
-
-        PriorityOnboardingDialogController controller = mBuilderProvider.get()
-                .setContext(mUserContext)
-                .setView(onboardingView)
-                .setIgnoresDnd(ignoreDnd)
-                .setShowsAsBubble(showAsBubble)
-                .setIcon(person)
-                .setBadge(mIconFactory.getAppBadge(
-                        mPackageName, UserHandle.getUserId(mSbn.getUid())))
-                .setOnSettingsClick(mOnConversationSettingsClickListener)
-                .build();
-
-        controller.init();
-        controller.show();
+    private boolean willShowAsBubble() {
+        return mBubbleMetadata != null
+                && BubblesManager.areBubblesEnabled(mContext, mSbn.getUser());
     }
 
     @Override
@@ -576,7 +566,7 @@ public class NotificationConversationInfo extends LinearLayout implements
     }
 
     @Override
-    public boolean shouldBeSaved() {
+    public boolean shouldBeSavedOnClose() {
         return mPressedApply;
     }
 
@@ -590,6 +580,12 @@ public class NotificationConversationInfo extends LinearLayout implements
         if (save && mSelectedAction > -1) {
             updateChannel();
         }
+
+        // Clear the selected importance when closing, so when when we open again,
+        // we starts from a clean state.
+        mSelectedAction = -1;
+        mPressedApply = false;
+
         return false;
     }
 
@@ -641,9 +637,10 @@ public class NotificationConversationInfo extends LinearLayout implements
                                 mINotificationManager.setBubblesAllowed(mAppPkg, mAppUid,
                                         BUBBLE_PREFERENCE_SELECTED);
                             }
-                            post(() -> {
-                                mBubbleController.onUserChangedImportance(mEntry);
-                            });
+                            if (mBubblesManagerOptional.isPresent()) {
+                                post(() -> mBubblesManagerOptional.get()
+                                        .onUserSetImportantConversation(mEntry));
+                            }
                         }
                         mChannelToUpdate.setImportance(Math.max(
                                 mChannelToUpdate.getOriginalImportance(), IMPORTANCE_DEFAULT));

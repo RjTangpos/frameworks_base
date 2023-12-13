@@ -16,6 +16,7 @@
 
 package android.net;
 
+import static android.app.ActivityManager.PROCESS_STATE_UNKNOWN;
 import static android.app.ActivityManager.procStateToString;
 import static android.content.pm.PackageManager.GET_SIGNATURES;
 
@@ -167,12 +168,17 @@ public class NetworkPolicyManager {
     public static final String FIREWALL_CHAIN_NAME_POWERSAVE = "powersave";
     /** @hide */
     public static final String FIREWALL_CHAIN_NAME_RESTRICTED = "restricted";
+    /** @hide */
+    public static final String FIREWALL_CHAIN_NAME_LOW_POWER_STANDBY = "low_power_standby";
 
     private static final boolean ALLOW_PLATFORM_APP_POLICY = true;
 
     /** @hide */
     public static final int FOREGROUND_THRESHOLD_STATE =
             ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE;
+
+    /** @hide */
+    public static final int TOP_THRESHOLD_STATE = ActivityManager.PROCESS_STATE_BOUND_TOP;
 
     /**
      * {@link Intent} extra that indicates which {@link NetworkTemplate} rule it
@@ -244,6 +250,20 @@ public class NetworkPolicyManager {
      * @hide
      */
     public static final int ALLOWED_REASON_RESTRICTED_MODE_PERMISSIONS = 1 << 4;
+    /**
+     * Flag to indicate that app is exempt from certain network restrictions because of it being
+     * in the bound top or top procstate.
+     *
+     * @hide
+     */
+    public static final int ALLOWED_REASON_TOP = 1 << 5;
+    /**
+     * Flag to indicate that app is exempt from low power standby restrictions because of it being
+     * allowlisted.
+     *
+     * @hide
+     */
+    public static final int ALLOWED_REASON_LOW_POWER_STANDBY_ALLOWLIST = 1 << 6;
     /**
      * Flag to indicate that app is exempt from certain metered network restrictions because user
      * explicitly exempted it.
@@ -456,8 +476,8 @@ public class NetworkPolicyManager {
      *
      * @param uid The UID whose status needs to be checked.
      * @return {@link ConnectivityManager#RESTRICT_BACKGROUND_STATUS_DISABLED},
-     *         {@link ConnectivityManager##RESTRICT_BACKGROUND_STATUS_ENABLED},
-     *         or {@link ConnectivityManager##RESTRICT_BACKGROUND_STATUS_WHITELISTED} to denote
+     *         {@link ConnectivityManager#RESTRICT_BACKGROUND_STATUS_ENABLED},
+     *         or {@link ConnectivityManager#RESTRICT_BACKGROUND_STATUS_WHITELISTED} to denote
      *         the current status of the UID.
      * @hide
      */
@@ -479,10 +499,11 @@ public class NetworkPolicyManager {
      * @param overrideMask the bitmask that specifies which of the overrides is being
      *            set or cleared.
      * @param overrideValue the override values to set or clear.
-     * @param networkTypes the network types this override applies to.
+     * @param networkTypes the network types this override applies to. If no
+     *            network types are specified, override values will be ignored.
      *            {@see TelephonyManager#getAllNetworkTypes()}
-     * @param timeoutMillis the timeout after which the requested override will
-     *            be automatically cleared, or {@code 0} to leave in the
+     * @param expirationDurationMillis the duration after which the requested override
+     *            will be automatically cleared, or {@code 0} to leave in the
      *            requested state until explicitly cleared, or the next reboot,
      *            whichever happens first
      * @param callingPackage the name of the package making the call.
@@ -490,11 +511,11 @@ public class NetworkPolicyManager {
      */
     public void setSubscriptionOverride(int subId, @SubscriptionOverrideMask int overrideMask,
             @SubscriptionOverrideMask int overrideValue,
-            @NonNull @Annotation.NetworkType int[] networkTypes, long timeoutMillis,
+            @NonNull @Annotation.NetworkType int[] networkTypes, long expirationDurationMillis,
             @NonNull String callingPackage) {
         try {
             mService.setSubscriptionOverride(subId, overrideMask, overrideValue, networkTypes,
-                    timeoutMillis, callingPackage);
+                    expirationDurationMillis, callingPackage);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -505,13 +526,16 @@ public class NetworkPolicyManager {
      *
      * @param subId the subscriber this relationship applies to.
      * @param plans the list of plans.
+     * @param expirationDurationMillis the duration after which the subscription plans
+     *            will be automatically cleared, or {@code 0} to leave the plans until
+     *            explicitly cleared, or the next reboot, whichever happens first
      * @param callingPackage the name of the package making the call
      * @hide
      */
     public void setSubscriptionPlans(int subId, @NonNull SubscriptionPlan[] plans,
-            @NonNull String callingPackage) {
+            long expirationDurationMillis, @NonNull String callingPackage) {
         try {
-            mService.setSubscriptionPlans(subId, plans, callingPackage);
+            mService.setSubscriptionPlans(subId, plans, expirationDurationMillis, callingPackage);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -522,12 +546,72 @@ public class NetworkPolicyManager {
      *
      * @param subId the subscriber to get the subscription plans for.
      * @param callingPackage the name of the package making the call.
+     * @return the active {@link SubscriptionPlan}s for the given subscription id, or
+     *         {@code null} if not found.
      * @hide
      */
-    @NonNull
+    @Nullable
     public SubscriptionPlan[] getSubscriptionPlans(int subId, @NonNull String callingPackage) {
         try {
             return mService.getSubscriptionPlans(subId, callingPackage);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Get subscription plan for the given networkTemplate.
+     *
+     * @param template the networkTemplate to get the subscription plan for.
+     * @return the active {@link SubscriptionPlan}s for the given template, or
+     *         {@code null} if not found.
+     * @hide
+     */
+    @Nullable
+    @RequiresPermission(anyOf = {
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+            android.Manifest.permission.NETWORK_STACK})
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public SubscriptionPlan getSubscriptionPlan(@NonNull NetworkTemplate template) {
+        try {
+            return mService.getSubscriptionPlan(template);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Notifies that the specified {@link NetworkStatsProvider} has reached its warning threshold
+     * which was set through {@link NetworkStatsProvider#onSetWarningAndLimit(String, long, long)}.
+     *
+     * @hide
+     */
+    @RequiresPermission(anyOf = {
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+            android.Manifest.permission.NETWORK_STACK})
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public void notifyStatsProviderWarningReached() {
+        try {
+            mService.notifyStatsProviderWarningOrLimitReached();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Notifies that the specified {@link NetworkStatsProvider} has reached its quota
+     * which was set through {@link NetworkStatsProvider#onSetLimit(String, long)} or
+     * {@link NetworkStatsProvider#onSetWarningAndLimit(String, long, long)}.
+     *
+     * @hide
+     */
+    @RequiresPermission(anyOf = {
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+            android.Manifest.permission.NETWORK_STACK})
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public void notifyStatsProviderLimitReached() {
+        try {
+            mService.notifyStatsProviderWarningOrLimitReached();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -558,31 +642,6 @@ public class NetworkPolicyManager {
     public boolean isUidNetworkingBlocked(int uid, boolean meteredNetwork) {
         try {
             return mService.isUidNetworkingBlocked(uid, meteredNetwork);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-    }
-
-    /**
-     * Figure out if networking is blocked for a given set of conditions.
-     *
-     * This is used by ConnectivityService via passing stale copies of conditions, so it must not
-     * take any locks.
-     *
-     * @param uid The target uid.
-     * @param uidRules The uid rules which are obtained from NetworkPolicyManagerService.
-     * @param isNetworkMetered True if the network is metered.
-     * @param isBackgroundRestricted True if data saver is enabled.
-     *
-     * @return true if networking is blocked for the UID under the specified conditions.
-     *
-     * @hide
-     */
-    public boolean checkUidNetworkingBlocked(int uid, int uidRules,
-            boolean isNetworkMetered, boolean isBackgroundRestricted) {
-        try {
-            return mService.checkUidNetworkingBlocked(uid, uidRules, isNetworkMetered,
-                    isBackgroundRestricted);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -711,6 +770,28 @@ public class NetworkPolicyManager {
     }
 
     /**
+     * Returns the default network capabilities
+     * ({@link ActivityManager#PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK
+     * ActivityManager.PROCESS_CAPABILITY_*}) of the specified process state.
+     * This <b>DOES NOT</b> return all default process capabilities for a proc state.
+     * @hide
+     */
+    public static int getDefaultProcessNetworkCapabilities(int procState) {
+        switch (procState) {
+            case ActivityManager.PROCESS_STATE_PERSISTENT:
+            case ActivityManager.PROCESS_STATE_PERSISTENT_UI:
+            case ActivityManager.PROCESS_STATE_TOP:
+            case ActivityManager.PROCESS_STATE_BOUND_TOP:
+            case ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE:
+            case ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE:
+                return ActivityManager.PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK
+                        | ActivityManager.PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK;
+            default:
+                return ActivityManager.PROCESS_CAPABILITY_NONE;
+        }
+    }
+
+    /**
      * Returns true if {@param procState} is considered foreground and as such will be allowed
      * to access network when the device is idle or in battery saver mode. Otherwise, false.
      * @hide
@@ -725,8 +806,19 @@ public class NetworkPolicyManager {
     /** @hide */
     public static boolean isProcStateAllowedWhileIdleOrPowerSaveMode(
             int procState, @ProcessCapability int capability) {
+        if (procState == PROCESS_STATE_UNKNOWN) {
+            return false;
+        }
         return procState <= FOREGROUND_THRESHOLD_STATE
-                || (capability & ActivityManager.PROCESS_CAPABILITY_NETWORK) != 0;
+                || (capability & ActivityManager.PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK) != 0;
+    }
+
+    /** @hide */
+    public static boolean isProcStateAllowedWhileInLowPowerStandby(@Nullable UidState uidState) {
+        if (uidState == null) {
+            return false;
+        }
+        return uidState.procState <= TOP_THRESHOLD_STATE;
     }
 
     /**
@@ -738,24 +830,34 @@ public class NetworkPolicyManager {
         if (uidState == null) {
             return false;
         }
-        return isProcStateAllowedWhileOnRestrictBackground(uidState.procState);
+        return isProcStateAllowedWhileOnRestrictBackground(uidState.procState, uidState.capability);
     }
 
     /** @hide */
-    public static boolean isProcStateAllowedWhileOnRestrictBackground(int procState) {
-        // Data saver and bg policy restrictions will only take procstate into account.
-        return procState <= FOREGROUND_THRESHOLD_STATE;
+    public static boolean isProcStateAllowedWhileOnRestrictBackground(int procState,
+            @ProcessCapability int capabilities) {
+        if (procState == PROCESS_STATE_UNKNOWN) {
+            return false;
+        }
+        return procState <= FOREGROUND_THRESHOLD_STATE
+                // This is meant to be a user-initiated job, and therefore gets similar network
+                // access to FGS.
+                || (procState <= ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND
+                        && (capabilities
+                              & ActivityManager.PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK) != 0);
     }
 
     /** @hide */
     public static final class UidState {
         public int uid;
         public int procState;
+        public long procStateSeq;
         public int capability;
 
-        public UidState(int uid, int procState, int capability) {
+        public UidState(int uid, int procState, long procStateSeq, int capability) {
             this.uid = uid;
             this.procState = procState;
+            this.procStateSeq = procStateSeq;
             this.capability = capability;
         }
 
@@ -764,6 +866,8 @@ public class NetworkPolicyManager {
             final StringBuilder sb = new StringBuilder();
             sb.append("{procState=");
             sb.append(procStateToString(procState));
+            sb.append(",seq=");
+            sb.append(procStateSeq);
             sb.append(",cap=");
             ActivityManager.printCapabilitiesSummary(sb, capability);
             sb.append("}");
@@ -791,10 +895,15 @@ public class NetworkPolicyManager {
      *                       blocked.
      * @hide
      */
-    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
     @NonNull
     public static String blockedReasonsToString(int blockedReasons) {
-        return DebugUtils.flagsToString(NetworkPolicyManager.class, "BLOCKED_", blockedReasons);
+        return DebugUtils.flagsToString(ConnectivityManager.class, "BLOCKED_", blockedReasons);
+    }
+
+    /** @hide */
+    @NonNull
+    public static String allowedReasonsToString(int allowedReasons) {
+        return DebugUtils.flagsToString(NetworkPolicyManager.class, "ALLOWED_", allowedReasons);
     }
 
     /**

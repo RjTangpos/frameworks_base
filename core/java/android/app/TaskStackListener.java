@@ -17,13 +17,11 @@
 package android.app;
 
 import android.app.ActivityManager.RunningTaskInfo;
-import android.app.ActivityManager.TaskSnapshot;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
-import android.os.Binder;
 import android.os.Build;
-import android.os.IBinder;
 import android.os.RemoteException;
+import android.window.TaskSnapshot;
 
 /**
  * Classes interested in observing only a subset of changes using ITaskStackListener can extend
@@ -33,8 +31,16 @@ import android.os.RemoteException;
  */
 public abstract class TaskStackListener extends ITaskStackListener.Stub {
 
+    /** Whether this listener and the callback dispatcher are in different processes. */
+    private boolean mIsRemote = true;
+
     @UnsupportedAppUsage
     public TaskStackListener() {
+    }
+
+    /** Indicates that this listener lives in system server. */
+    public void setIsLocal() {
+        mIsRemote = false;
     }
 
     @Override
@@ -44,7 +50,7 @@ public abstract class TaskStackListener extends ITaskStackListener.Stub {
 
     @Override
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    public void onActivityPinned(String packageName, int userId, int taskId, int stackId)
+    public void onActivityPinned(String packageName, int userId, int taskId, int rootTaskId)
             throws RemoteException {
     }
 
@@ -67,7 +73,7 @@ public abstract class TaskStackListener extends ITaskStackListener.Stub {
 
     @Override
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    public void onActivityDismissingDockedStack() throws RemoteException {
+    public void onActivityDismissingDockedTask() throws RemoteException {
     }
 
     @Override
@@ -148,37 +154,32 @@ public abstract class TaskStackListener extends ITaskStackListener.Stub {
     }
 
     @Override
+    public void onTaskProfileLocked(RunningTaskInfo taskInfo, int userId)
+            throws RemoteException {
+        onTaskProfileLocked(taskInfo);
+    }
+
+    /**
+     * @deprecated see {@link #onTaskProfileLocked(RunningTaskInfo, int)}
+     */
+    @Deprecated
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    public void onTaskProfileLocked(int taskId, int userId) throws RemoteException {
+    public void onTaskProfileLocked(RunningTaskInfo taskInfo)
+            throws RemoteException {
     }
 
     @Override
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void onTaskSnapshotChanged(int taskId, TaskSnapshot snapshot) throws RemoteException {
-        if (Binder.getCallingPid() != android.os.Process.myPid()
-                && snapshot != null && snapshot.getSnapshot() != null) {
+        if (mIsRemote && snapshot != null && snapshot.getHardwareBuffer() != null) {
             // Preemptively clear any reference to the buffer
-            snapshot.getSnapshot().destroy();
+            snapshot.getHardwareBuffer().close();
         }
-    }
-
-    @Override
-    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    public void onSizeCompatModeActivityChanged(int displayId, IBinder activityToken)
-            throws RemoteException {
     }
 
     @Override
     public void onBackPressedOnTaskRoot(RunningTaskInfo taskInfo)
             throws RemoteException {
-    }
-
-    @Override
-    public void onSingleTaskDisplayDrawn(int displayId) throws RemoteException {
-    }
-
-    @Override
-    public void onSingleTaskDisplayEmpty(int displayId) throws RemoteException {
     }
 
     @Override
@@ -203,5 +204,13 @@ public abstract class TaskStackListener extends ITaskStackListener.Stub {
 
     @Override
     public void onActivityRotation(int displayId) {
+    }
+
+    @Override
+    public void onTaskMovedToBack(RunningTaskInfo taskInfo) {
+    }
+
+    @Override
+    public void onLockTaskModeChanged(int mode) {
     }
 }

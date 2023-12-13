@@ -16,7 +16,6 @@
 
 package com.android.internal.statusbar;
 
-import android.annotation.NonNull;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -38,15 +37,17 @@ public final class RegisterStatusBarResult implements Parcelable {
     public final int mDisabledFlags2;                   // switch[6]
     public final IBinder mImeToken;
     public final boolean mNavbarColorManagedByIme;
-    public final boolean mAppFullscreen;
-    public final boolean mAppImmersive;
-    public final int[] mTransientBarTypes;
+    public final int mBehavior;
+    public final int mRequestedVisibleTypes;
+    public final String mPackageName;
+    public final int mTransientBarTypes;
+    public final LetterboxDetails[] mLetterboxDetails;
 
     public RegisterStatusBarResult(ArrayMap<String, StatusBarIcon> icons, int disabledFlags1,
             int appearance, AppearanceRegion[] appearanceRegions, int imeWindowVis,
             int imeBackDisposition, boolean showImeSwitcher, int disabledFlags2, IBinder imeToken,
-            boolean navbarColorManagedByIme, boolean appFullscreen, boolean appImmersive,
-            @NonNull int[] transientBarTypes) {
+            boolean navbarColorManagedByIme, int behavior, int requestedVisibleTypes,
+            String packageName, int transientBarTypes, LetterboxDetails[] letterboxDetails) {
         mIcons = new ArrayMap<>(icons);
         mDisabledFlags1 = disabledFlags1;
         mAppearance = appearance;
@@ -57,9 +58,11 @@ public final class RegisterStatusBarResult implements Parcelable {
         mDisabledFlags2 = disabledFlags2;
         mImeToken = imeToken;
         mNavbarColorManagedByIme = navbarColorManagedByIme;
-        mAppFullscreen = appFullscreen;
-        mAppImmersive = appImmersive;
+        mBehavior = behavior;
+        mRequestedVisibleTypes = requestedVisibleTypes;
+        mPackageName = packageName;
         mTransientBarTypes = transientBarTypes;
+        mLetterboxDetails = letterboxDetails;
     }
 
     @Override
@@ -79,9 +82,11 @@ public final class RegisterStatusBarResult implements Parcelable {
         dest.writeInt(mDisabledFlags2);
         dest.writeStrongBinder(mImeToken);
         dest.writeBoolean(mNavbarColorManagedByIme);
-        dest.writeBoolean(mAppFullscreen);
-        dest.writeBoolean(mAppImmersive);
-        dest.writeIntArray(mTransientBarTypes);
+        dest.writeInt(mBehavior);
+        dest.writeInt(mRequestedVisibleTypes);
+        dest.writeString(mPackageName);
+        dest.writeInt(mTransientBarTypes);
+        dest.writeParcelableArray(mLetterboxDetails, flags);
     }
 
     /**
@@ -103,13 +108,17 @@ public final class RegisterStatusBarResult implements Parcelable {
                     final int disabledFlags2 = source.readInt();
                     final IBinder imeToken = source.readStrongBinder();
                     final boolean navbarColorManagedByIme = source.readBoolean();
-                    final boolean appFullscreen = source.readBoolean();
-                    final boolean appImmersive = source.readBoolean();
-                    final int[] transientBarTypes = source.createIntArray();
+                    final int behavior = source.readInt();
+                    final int requestedVisibleTypes = source.readInt();
+                    final String packageName = source.readString();
+                    final int transientBarTypes = source.readInt();
+                    final LetterboxDetails[] letterboxDetails =
+                            source.readParcelableArray(null, LetterboxDetails.class);
                     return new RegisterStatusBarResult(icons, disabledFlags1, appearance,
                             appearanceRegions, imeWindowVis, imeBackDisposition, showImeSwitcher,
-                            disabledFlags2, imeToken, navbarColorManagedByIme, appFullscreen,
-                            appImmersive, transientBarTypes);
+                            disabledFlags2, imeToken, navbarColorManagedByIme, behavior,
+                            requestedVisibleTypes, packageName, transientBarTypes,
+                            letterboxDetails);
                 }
 
                 @Override

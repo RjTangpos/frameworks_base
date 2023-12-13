@@ -19,17 +19,20 @@ package com.android.server;
 import android.annotation.NonNull;
 import android.os.Build;
 import android.os.Process;
+import android.util.Dumpable;
 import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.util.ConcurrentUtils;
 import com.android.internal.util.Preconditions;
-import com.android.server.am.ActivityManagerService;
+import com.android.server.am.StackTracesDumpHelper;
 import com.android.server.utils.TimingsTraceAndSlog;
 
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -37,14 +40,14 @@ import java.util.concurrent.TimeUnit;
 /**
  * Thread pool used during initialization of system server.
  *
- * <p>System services can {@link #submit(Runnable)} tasks for execution during boot.
+ * <p>System services can {@link #submit(Runnable, String)} tasks for execution during boot.
  * The pool will be shut down after {@link SystemService#PHASE_BOOT_COMPLETED}.
  *
  * <p>New tasks <em>should not</em> be submitted afterwards.
  *
  * @hide
  */
-public class SystemServerInitThreadPool {
+public final class SystemServerInitThreadPool implements Dumpable {
     private static final String TAG = SystemServerInitThreadPool.class.getSimpleName();
     private static final int SHUTDOWN_TIMEOUT_MILLIS = 20000;
     private static final boolean IS_DEBUGGABLE = Build.IS_DEBUGGABLE;
@@ -53,6 +56,7 @@ public class SystemServerInitThreadPool {
     @GuardedBy("LOCK")
     private static SystemServerInitThreadPool sInstance;
 
+    private final int mSize; // used by dump() only
     private final ExecutorService mService;
 
     @GuardedBy("mPendingTasks")
@@ -62,9 +66,9 @@ public class SystemServerInitThreadPool {
     private boolean mShutDown;
 
     private SystemServerInitThreadPool() {
-        final int size = Runtime.getRuntime().availableProcessors();
-        Slog.i(TAG, "Creating instance with " + size + " threads");
-        mService = ConcurrentUtils.newFixedThreadPool(size,
+        mSize = Runtime.getRuntime().availableProcessors();
+        Slog.i(TAG, "Creating instance with " + mSize + " threads");
+        mService = ConcurrentUtils.newFixedThreadPool(mSize,
                 "system-server-init-thread", Process.THREAD_PRIORITY_FOREGROUND);
     }
 
@@ -123,11 +127,13 @@ public class SystemServerInitThreadPool {
      *
      * @throws IllegalStateException if it has been started already without being shut down yet.
      */
-    static void start() {
+    static SystemServerInitThreadPool start() {
+        SystemServerInitThreadPool instance;
         synchronized (LOCK) {
             Preconditions.checkState(sInstance == null, TAG + " already started");
-            sInstance = new SystemServerInitThreadPool();
+            instance = sInstance = new SystemServerInitThreadPool();
         }
+        return instance;
     }
 
     /**
@@ -182,12 +188,39 @@ public class SystemServerInitThreadPool {
     }
 
     /**
-     * A helper function to call ActivityManagerService.dumpStackTraces().
+     * A helper function to call StackTracesDumpHelper.dumpStackTraces().
      */
     private static void dumpStackTraces() {
         final ArrayList<Integer> pids = new ArrayList<>();
         pids.add(Process.myPid());
-        ActivityManagerService.dumpStackTraces(pids, null, null,
-                Watchdog.getInterestingNativePids(), null);
+        StackTracesDumpHelper.dumpStackTraces(pids,
+                /* processCpuTracker= */null, /* lastPids= */null,
+                CompletableFuture.completedFuture(Watchdog.getInterestingNativePids()),
+                /* logExceptionCreatingFile= */null, /* subject= */null,
+                /* criticalEventSection= */null, Runnable::run,
+                /* latencyTracker= */null);
+    }
+
+    @Override
+    public String getDumpableName() {
+        return SystemServerInitThreadPool.class.getSimpleName();
+    }
+
+    @Override
+    public void dump(PrintWriter pw, String[] args) {
+        synchronized (LOCK) {
+            pw.printf("has instance: %b\n", (sInstance != null));
+        }
+        pw.printf("number of threads: %d\n", mSize);
+        pw.printf("service: %s\n", mService);
+        synchronized (mPendingTasks) {
+            pw.printf("is shutdown: %b\n", mShutDown);
+            final int pendingTasks = mPendingTasks.size();
+            if (pendingTasks == 0) {
+                pw.println("no pending tasks");
+            } else {
+                pw.printf("%d pending tasks: %s\n", pendingTasks, mPendingTasks);
+            }
+        }
     }
 }

@@ -40,7 +40,9 @@ public class NotificationUiAdjustmentTest extends SysuiTestCase {
     @Test
     public void needReinflate_differentLength() {
         PendingIntent pendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent().setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
         Notification.Action action =
                 createActionBuilder("first", R.drawable.ic_corp_icon, pendingIntent).build();
         assertThat(NotificationUiAdjustment.needReinflate(
@@ -52,7 +54,9 @@ public class NotificationUiAdjustmentTest extends SysuiTestCase {
     @Test
     public void needReinflate_differentLabels() {
         PendingIntent pendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent().setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
         Notification.Action firstAction =
                 createActionBuilder("first", R.drawable.ic_corp_icon, pendingIntent).build();
         Notification.Action secondAction =
@@ -67,12 +71,14 @@ public class NotificationUiAdjustmentTest extends SysuiTestCase {
     @Test
     public void needReinflate_differentIcons() {
         PendingIntent pendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent().setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
         Notification.Action firstAction =
                 createActionBuilder("same", R.drawable.ic_corp_icon, pendingIntent).build();
         Notification.Action secondAction =
-                createActionBuilder("same", R.drawable.ic_account_circle, pendingIntent)
-                        .build();
+                createActionBuilder("same", com.android.settingslib.R.drawable.ic_account_circle,
+                        pendingIntent).build();
 
         assertThat(NotificationUiAdjustment.needReinflate(
                 createUiAdjustmentFromSmartActions("first", Collections.singletonList(firstAction)),
@@ -83,9 +89,14 @@ public class NotificationUiAdjustmentTest extends SysuiTestCase {
     @Test
     public void needReinflate_differentPendingIntent() {
         PendingIntent firstPendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(Intent.ACTION_VIEW), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent(Intent.ACTION_VIEW).setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
         PendingIntent secondPendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(Intent.ACTION_PROCESS_TEXT), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent(Intent.ACTION_PROCESS_TEXT)
+                                .setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
         Notification.Action firstAction =
                 createActionBuilder("same", R.drawable.ic_corp_icon, firstPendingIntent)
                         .build();
@@ -102,7 +113,9 @@ public class NotificationUiAdjustmentTest extends SysuiTestCase {
     @Test
     public void needReinflate_differentChoices() {
         PendingIntent pendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent().setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
 
         RemoteInput firstRemoteInput =
                 createRemoteInput("same", "same", new CharSequence[] {"first"});
@@ -127,7 +140,9 @@ public class NotificationUiAdjustmentTest extends SysuiTestCase {
     @Test
     public void needReinflate_differentRemoteInputLabel() {
         PendingIntent pendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent().setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
 
         RemoteInput firstRemoteInput =
                 createRemoteInput("same", "first", new CharSequence[] {"same"});
@@ -152,7 +167,9 @@ public class NotificationUiAdjustmentTest extends SysuiTestCase {
     @Test
     public void needReinflate_negative() {
         PendingIntent pendingIntent =
-                PendingIntent.getActivity(mContext, 0, new Intent(), 0);
+                PendingIntent.getActivity(mContext, 0,
+                        new Intent().setPackage(mContext.getPackageName()),
+                        PendingIntent.FLAG_MUTABLE);
         RemoteInput firstRemoteInput =
                 createRemoteInput("same", "same", new CharSequence[] {"same"});
         RemoteInput secondRemoteInput =

@@ -16,6 +16,7 @@
 
 package android.widget;
 
+import static android.os.Process.myUserHandle;
 import static android.view.ViewDebug.ExportedProperty;
 import static android.widget.RemoteViews.RemoteView;
 
@@ -24,7 +25,6 @@ import android.annotation.TestApi;
 import android.app.ActivityManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -34,7 +34,6 @@ import android.icu.text.DateTimePatternGenerator;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
-import android.os.SystemClock;
 import android.os.UserHandle;
 import android.provider.Settings;
 import android.text.format.DateFormat;
@@ -44,7 +43,12 @@ import android.view.ViewHierarchyEncoder;
 import android.view.inspector.InspectableProperty;
 
 import com.android.internal.R;
+import com.android.internal.util.Preconditions;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.TimeZone;
 
@@ -138,6 +142,8 @@ public class TextClock extends TextView {
     private boolean mRegistered;
     private boolean mShouldRunTicker;
 
+    private ClockEventDelegate mClockEventDelegate;
+
     private Calendar mTime;
     private String mTimeZone;
 
@@ -175,8 +181,7 @@ public class TextClock extends TextView {
             if (mTimeZone == null && Intent.ACTION_TIMEZONE_CHANGED.equals(intent.getAction())) {
                 final String timeZone = intent.getStringExtra(Intent.EXTRA_TIMEZONE);
                 createTime(timeZone);
-            } else if (!mShouldRunTicker && (Intent.ACTION_TIME_TICK.equals(intent.getAction())
-                    || Intent.ACTION_TIME_CHANGED.equals(intent.getAction()))) {
+            } else if (!mShouldRunTicker && Intent.ACTION_TIME_CHANGED.equals(intent.getAction())) {
                 return;
             }
             onTimeChanged();
@@ -185,18 +190,29 @@ public class TextClock extends TextView {
 
     private final Runnable mTicker = new Runnable() {
         public void run() {
-            if (mStopTicking) {
+            removeCallbacks(this);
+            if (mStopTicking || !mShouldRunTicker) {
                 return; // Test disabled the clock ticks
             }
             onTimeChanged();
 
-            long now = SystemClock.uptimeMillis();
-            long next = now + (1000 - now % 1000);
+            Instant now = mTime.toInstant();
+            ZoneId zone = mTime.getTimeZone().toZoneId();
 
-            Handler handler = getHandler();
-            if (handler != null) {
-                handler.postAtTime(mTicker, next);
+            ZonedDateTime nextTick;
+            if (mHasSeconds) {
+                nextTick = now.atZone(zone).plusSeconds(1).withNano(0);
+            } else {
+                nextTick = now.atZone(zone).plusMinutes(1).withSecond(0).withNano(0);
             }
+
+            long millisUntilNextTick = Duration.between(now, nextTick.toInstant()).toMillis();
+            if (millisUntilNextTick <= 0) {
+                // This should never happen, but if it does, then tick again in a second.
+                millisUntilNextTick = 1000;
+            }
+
+            postDelayed(this, millisUntilNextTick);
         }
     };
 
@@ -268,6 +284,7 @@ public class TextClock extends TextView {
         if (mFormat24 == null) {
             mFormat24 = getBestDateTimePattern("Hm");
         }
+        mClockEventDelegate = new ClockEventDelegate(getContext());
 
         createTime(mTimeZone);
         chooseFormat();
@@ -417,6 +434,17 @@ public class TextClock extends TextView {
     }
 
     /**
+     * Sets a delegate to handle clock event registration. This must be called before the view is
+     * attached to the window
+     *
+     * @hide
+     */
+    public void setClockEventDelegate(ClockEventDelegate delegate) {
+        Preconditions.checkState(!mRegistered, "Clock events already registered");
+        mClockEventDelegate = delegate;
+    }
+
+    /**
      * Update the displayed time if necessary and invalidate the view.
      */
     public void refreshTime() {
@@ -519,8 +547,7 @@ public class TextClock extends TextView {
         mHasSeconds = DateFormat.hasSeconds(mFormat);
 
         if (mShouldRunTicker && hadSeconds != mHasSeconds) {
-            if (hadSeconds) getHandler().removeCallbacks(mTicker);
-            else mTicker.run();
+            mTicker.run();
         }
     }
 
@@ -544,7 +571,7 @@ public class TextClock extends TextView {
         if (!mRegistered) {
             mRegistered = true;
 
-            registerReceiver();
+            mClockEventDelegate.registerTimeChangeReceiver(mIntentReceiver, getHandler());
             registerObserver();
 
             createTime(mTimeZone);
@@ -557,14 +584,10 @@ public class TextClock extends TextView {
 
         if (!mShouldRunTicker && isVisible) {
             mShouldRunTicker = true;
-            if (mHasSeconds) {
-                mTicker.run();
-            } else {
-                onTimeChanged();
-            }
+            mTicker.run();
         } else if (mShouldRunTicker && !isVisible) {
             mShouldRunTicker = false;
-            getHandler().removeCallbacks(mTicker);
+            removeCallbacks(mTicker);
         }
     }
 
@@ -573,7 +596,7 @@ public class TextClock extends TextView {
         super.onDetachedFromWindow();
 
         if (mRegistered) {
-            unregisterReceiver();
+            mClockEventDelegate.unregisterTimeChangeReceiver(mIntentReceiver);
             unregisterObserver();
 
             mRegistered = false;
@@ -589,57 +612,27 @@ public class TextClock extends TextView {
         mStopTicking = true;
     }
 
-    private void registerReceiver() {
-        final IntentFilter filter = new IntentFilter();
-
-        filter.addAction(Intent.ACTION_TIME_TICK);
-        filter.addAction(Intent.ACTION_TIME_CHANGED);
-        filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
-
-        // OK, this is gross but needed. This class is supported by the
-        // remote views mechanism and as a part of that the remote views
-        // can be inflated by a context for another user without the app
-        // having interact users permission - just for loading resources.
-        // For example, when adding widgets from a managed profile to the
-        // home screen. Therefore, we register the receiver as the user
-        // the app is running as not the one the context is for.
-        getContext().registerReceiverAsUser(mIntentReceiver, android.os.Process.myUserHandle(),
-                filter, null, getHandler());
-    }
-
     private void registerObserver() {
         if (mRegistered) {
             if (mFormatChangeObserver == null) {
                 mFormatChangeObserver = new FormatChangeObserver(getHandler());
             }
-            final ContentResolver resolver = getContext().getContentResolver();
-            Uri uri = Settings.System.getUriFor(Settings.System.TIME_12_24);
-            if (mShowCurrentUserTime) {
-                resolver.registerContentObserver(uri, true,
-                        mFormatChangeObserver, UserHandle.USER_ALL);
-            } else {
-                // UserHandle.myUserId() is needed. This class is supported by the
-                // remote views mechanism and as a part of that the remote views
-                // can be inflated by a context for another user without the app
-                // having interact users permission - just for loading resources.
-                // For example, when adding widgets from a managed profile to the
-                // home screen. Therefore, we register the ContentObserver with the user
-                // the app is running (e.g. the launcher) and not the user of the
-                // context (e.g. the widget's profile).
-                resolver.registerContentObserver(uri, true,
-                        mFormatChangeObserver, UserHandle.myUserId());
-            }
+            // UserHandle.myUserId() is needed. This class is supported by the
+            // remote views mechanism and as a part of that the remote views
+            // can be inflated by a context for another user without the app
+            // having interact users permission - just for loading resources.
+            // For example, when adding widgets from a managed profile to the
+            // home screen. Therefore, we register the ContentObserver with the user
+            // the app is running (e.g. the launcher) and not the user of the
+            // context (e.g. the widget's profile).
+            int userHandle = mShowCurrentUserTime ? UserHandle.USER_ALL : UserHandle.myUserId();
+            mClockEventDelegate.registerFormatChangeObserver(mFormatChangeObserver, userHandle);
         }
-    }
-
-    private void unregisterReceiver() {
-        getContext().unregisterReceiver(mIntentReceiver);
     }
 
     private void unregisterObserver() {
         if (mFormatChangeObserver != null) {
-            final ContentResolver resolver = getContext().getContentResolver();
-            resolver.unregisterContentObserver(mFormatChangeObserver);
+            mClockEventDelegate.unregisterFormatChangeObserver(mFormatChangeObserver);
         }
     }
 
@@ -665,5 +658,60 @@ public class TextClock extends TextView {
         stream.addProperty("format24Hour", s == null ? null : s.toString());
         stream.addProperty("format", mFormat == null ? null : mFormat.toString());
         stream.addProperty("hasSeconds", mHasSeconds);
+    }
+
+    /**
+     * Utility class to delegate some system event handling to allow overring the default behavior
+     *
+     * @hide
+     */
+    public static class ClockEventDelegate {
+
+        private final Context mContext;
+
+        public ClockEventDelegate(Context context) {
+            mContext = context;
+        }
+
+        /**
+         * Registers a receiver for actions {@link Intent#ACTION_TIME_CHANGED} and
+         * {@link Intent#ACTION_TIMEZONE_CHANGED}
+         *
+         * OK, this is gross but needed. This class is supported by the remote views mechanism and
+         * as a part of that the remote views can be inflated by a context for another user without
+         * the app having interact users permission - just for loading resources. For example,
+         * when adding widgets from a managed profile to the home screen. Therefore, we register
+         * the receiver as the user the app is running as not the one the context is for.
+         */
+        public void registerTimeChangeReceiver(BroadcastReceiver receiver, Handler handler) {
+            final IntentFilter filter = new IntentFilter();
+
+            filter.addAction(Intent.ACTION_TIME_CHANGED);
+            filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+
+            mContext.registerReceiverAsUser(receiver, myUserHandle(), filter, null, handler);
+        }
+
+        /**
+         * Unregisters a previously registered receiver
+         */
+        public void unregisterTimeChangeReceiver(BroadcastReceiver receiver) {
+            mContext.unregisterReceiver(receiver);
+        }
+
+        /**
+         * Registers an observer for time format changes
+         */
+        public void registerFormatChangeObserver(ContentObserver observer, int userHandle) {
+            Uri uri = Settings.System.getUriFor(Settings.System.TIME_12_24);
+            mContext.getContentResolver().registerContentObserver(uri, true, observer, userHandle);
+        }
+
+        /**
+         * Unregisters a previously registered observer
+         */
+        public void unregisterFormatChangeObserver(ContentObserver observer) {
+            mContext.getContentResolver().unregisterContentObserver(observer);
+        }
     }
 }

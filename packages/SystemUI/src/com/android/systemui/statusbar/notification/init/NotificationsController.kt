@@ -20,11 +20,8 @@ import android.service.notification.StatusBarNotification
 import com.android.systemui.plugins.statusbar.NotificationSwipeActionHelper.SnoozeOption
 import com.android.systemui.statusbar.NotificationPresenter
 import com.android.systemui.statusbar.notification.NotificationActivityStarter
-import com.android.systemui.statusbar.notification.collection.inflation.NotificationRowBinderImpl
+import com.android.systemui.statusbar.notification.collection.render.NotifStackController
 import com.android.systemui.statusbar.notification.stack.NotificationListContainer
-import com.android.systemui.statusbar.phone.StatusBar
-import java.io.FileDescriptor
-import java.io.PrintWriter
 
 /**
  * The master controller for all notifications-related work
@@ -34,17 +31,13 @@ import java.io.PrintWriter
  */
 interface NotificationsController {
     fun initialize(
-        statusBar: StatusBar,
         presenter: NotificationPresenter,
         listContainer: NotificationListContainer,
+        stackController: NotifStackController,
         notificationActivityStarter: NotificationActivityStarter,
-        bindRowCallback: NotificationRowBinderImpl.BindRowCallback
     )
 
-    fun requestNotificationUpdate(reason: String)
     fun resetUserExpandedStates()
     fun setNotificationSnoozed(sbn: StatusBarNotification, snoozeOption: SnoozeOption)
     fun getActiveNotificationsCount(): Int
-    fun setNotificationSnoozed(sbn: StatusBarNotification, hoursToSnooze: Int)
-    fun dump(fd: FileDescriptor, pw: PrintWriter, args: Array<String>, dumpTruck: Boolean)
 }

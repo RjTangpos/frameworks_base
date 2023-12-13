@@ -23,13 +23,15 @@ import static android.app.servertransaction.TestUtils.resultInfoList;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 
+import android.app.ActivityOptions;
+import android.app.servertransaction.TestUtils.LaunchActivityItemBuilder;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
-import android.content.res.CompatibilityInfo;
 import android.content.res.Configuration;
 import android.os.Binder;
 import android.os.Bundle;
@@ -42,6 +44,8 @@ import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import java.util.function.Supplier;
 
 /**
  * Tests for {@link ObjectPool}.
@@ -94,15 +98,15 @@ public class ObjectPoolTests {
 
     @Test
     public void testRecycleConfigurationChangeItem() {
-        ConfigurationChangeItem emptyItem = ConfigurationChangeItem.obtain(null);
-        ConfigurationChangeItem item = ConfigurationChangeItem.obtain(config());
+        ConfigurationChangeItem emptyItem = ConfigurationChangeItem.obtain(null, 0);
+        ConfigurationChangeItem item = ConfigurationChangeItem.obtain(config(), 1);
         assertNotSame(item, emptyItem);
         assertFalse(item.equals(emptyItem));
 
         item.recycle();
         assertEquals(item, emptyItem);
 
-        ConfigurationChangeItem item2 = ConfigurationChangeItem.obtain(config());
+        ConfigurationChangeItem item2 = ConfigurationChangeItem.obtain(config(), 1);
         assertSame(item, item2);
         assertFalse(item2.equals(emptyItem));
     }
@@ -128,14 +132,13 @@ public class ObjectPoolTests {
         int ident = 57;
         ActivityInfo activityInfo = new ActivityInfo();
         activityInfo.flags = 42;
-        activityInfo.maxAspectRatio = 2.4f;
+        activityInfo.setMaxAspectRatio(2.4f);
         activityInfo.launchToken = "token";
         activityInfo.applicationInfo = new ApplicationInfo();
         activityInfo.packageName = "packageName";
         activityInfo.name = "name";
         Configuration overrideConfig = new Configuration();
         overrideConfig.assetsSeq = 5;
-        CompatibilityInfo compat = CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO;
         String referrer = "referrer";
         int procState = 4;
         Bundle bundle = new Bundle();
@@ -143,25 +146,27 @@ public class ObjectPoolTests {
         PersistableBundle persistableBundle = new PersistableBundle();
         persistableBundle.putInt("k", 4);
         IBinder assistToken = new Binder();
+        IBinder shareableActivityToken = new Binder();
+        int deviceId = 3;
 
-        LaunchActivityItem emptyItem = LaunchActivityItem.obtain(null, 0, null, null, null, null,
-                null, null, 0, null, null, null, null, false, null, null, null);
-        LaunchActivityItem item = LaunchActivityItem.obtain(intent, ident, activityInfo,
-                config(), overrideConfig, compat, referrer, null /* voiceInteractor */,
-                procState, bundle, persistableBundle, resultInfoList(), referrerIntentList(),
-                true /* isForward */, null /* profilerInfo */, assistToken,
-                null /* fixedRotationAdjustments */);
+        Supplier<LaunchActivityItem> itemSupplier = () -> new LaunchActivityItemBuilder()
+                .setIntent(intent).setIdent(ident).setInfo(activityInfo).setCurConfig(config())
+                .setOverrideConfig(overrideConfig).setReferrer(referrer)
+                .setProcState(procState).setState(bundle).setPersistentState(persistableBundle)
+                .setPendingResults(resultInfoList()).setPendingNewIntents(referrerIntentList())
+                .setIsForward(true).setAssistToken(assistToken)
+                .setShareableActivityToken(shareableActivityToken)
+                .setTaskFragmentToken(new Binder()).setDeviceId(deviceId).build();
+
+        LaunchActivityItem emptyItem = new LaunchActivityItemBuilder().build();
+        LaunchActivityItem item = itemSupplier.get();
         assertNotSame(item, emptyItem);
         assertFalse(item.equals(emptyItem));
 
         item.recycle();
         assertEquals(item, emptyItem);
 
-        LaunchActivityItem item2 = LaunchActivityItem.obtain(intent, ident, activityInfo,
-                config(), overrideConfig, compat, referrer, null /* voiceInteractor */,
-                procState, bundle, persistableBundle, resultInfoList(), referrerIntentList(),
-                true /* isForward */, null /* profilerInfo */, assistToken,
-                null /* fixedRotationAdjustments */);
+        LaunchActivityItem item2 = itemSupplier.get();
         assertSame(item, item2);
         assertFalse(item2.equals(emptyItem));
     }
@@ -217,32 +222,48 @@ public class ObjectPoolTests {
 
     @Test
     public void testRecyclePauseActivityItemItem() {
-        PauseActivityItem emptyItem = PauseActivityItem.obtain(false, false, 0, false);
-        PauseActivityItem item = PauseActivityItem.obtain(true, true, 5, true);
+        PauseActivityItem emptyItem = PauseActivityItem.obtain(false, false, 0, false, false);
+        PauseActivityItem item = PauseActivityItem.obtain(true, true, 5, true, true);
         assertNotSame(item, emptyItem);
         assertFalse(item.equals(emptyItem));
 
         item.recycle();
         assertEquals(item, emptyItem);
 
-        PauseActivityItem item2 = PauseActivityItem.obtain(true, false, 5, true);
+        PauseActivityItem item2 = PauseActivityItem.obtain(true, false, 5, true, true);
         assertSame(item, item2);
         assertFalse(item2.equals(emptyItem));
     }
 
     @Test
     public void testRecycleResumeActivityItem() {
-        ResumeActivityItem emptyItem = ResumeActivityItem.obtain(false);
-        ResumeActivityItem item = ResumeActivityItem.obtain(3, true);
+        ResumeActivityItem emptyItem = ResumeActivityItem.obtain(false, false);
+        ResumeActivityItem item = ResumeActivityItem.obtain(3, true, false);
         assertNotSame(item, emptyItem);
         assertFalse(item.equals(emptyItem));
 
         item.recycle();
         assertEquals(item, emptyItem);
 
-        ResumeActivityItem item2 = ResumeActivityItem.obtain(2, true);
+        ResumeActivityItem item2 = ResumeActivityItem.obtain(2, true, false);
         assertSame(item, item2);
         assertFalse(item2.equals(emptyItem));
+    }
+
+    @Test
+    public void testRecycleStartActivityItem() {
+        StartActivityItem emptyItem = StartActivityItem.obtain(null /* activityOptions */);
+        StartActivityItem item = StartActivityItem.obtain(ActivityOptions.makeBasic());
+        assertNotSame(item, emptyItem);
+        assertNotEquals(item, emptyItem);
+
+        item.recycle();
+        assertEquals(item, emptyItem);
+
+        StartActivityItem item2 = StartActivityItem.obtain(
+                ActivityOptions.makeBasic().setLaunchDisplayId(10));
+        assertSame(item, item2);
+        assertNotEquals(item2, emptyItem);
     }
 
     @Test

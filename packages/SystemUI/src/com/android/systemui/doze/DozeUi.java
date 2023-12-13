@@ -26,71 +26,61 @@ import android.os.SystemClock;
 import android.text.format.Formatter;
 import android.util.Log;
 
-import com.android.internal.annotations.VisibleForTesting;
-import com.android.keyguard.KeyguardUpdateMonitor;
-import com.android.keyguard.KeyguardUpdateMonitorCallback;
+import com.android.systemui.DejankUtils;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.doze.dagger.DozeScope;
 import com.android.systemui.statusbar.phone.DozeParameters;
 import com.android.systemui.util.AlarmTimeout;
 import com.android.systemui.util.wakelock.WakeLock;
 
 import java.util.Calendar;
 
+import javax.inject.Inject;
+
 /**
  * The policy controlling doze.
  */
+@DozeScope
 public class DozeUi implements DozeMachine.Part {
-
     private static final long TIME_TICK_DEADLINE_MILLIS = 90 * 1000; // 1.5min
     private final Context mContext;
     private final DozeHost mHost;
     private final Handler mHandler;
     private final WakeLock mWakeLock;
-    private final DozeMachine mMachine;
+    private DozeMachine mMachine;
     private final AlarmTimeout mTimeTicker;
     private final boolean mCanAnimateTransition;
     private final DozeParameters mDozeParameters;
     private final DozeLog mDozeLog;
 
-    private boolean mKeyguardShowing;
-    private final KeyguardUpdateMonitorCallback mKeyguardVisibilityCallback =
-            new KeyguardUpdateMonitorCallback() {
-
-                @Override
-                public void onKeyguardVisibilityChanged(boolean showing) {
-                    mKeyguardShowing = showing;
-                    updateAnimateScreenOff();
-                }
-            };
-
     private long mLastTimeTickElapsed = 0;
+    // If time tick is scheduled and there's not a pending runnable to cancel:
+    private boolean mTimeTickScheduled;
+    private final Runnable mCancelTimeTickerRunnable =  new Runnable() {
+        @Override
+        public void run() {
+            mTimeTicker.cancel();
+        }
+    };
 
-    public DozeUi(Context context, AlarmManager alarmManager, DozeMachine machine,
-            WakeLock wakeLock, DozeHost host, Handler handler,
-            DozeParameters params, KeyguardUpdateMonitor keyguardUpdateMonitor,
+    @Inject
+    public DozeUi(Context context, AlarmManager alarmManager,
+            WakeLock wakeLock, DozeHost host, @Main Handler handler,
+            DozeParameters params,
             DozeLog dozeLog) {
         mContext = context;
-        mMachine = machine;
         mWakeLock = wakeLock;
         mHost = host;
         mHandler = handler;
         mCanAnimateTransition = !params.getDisplayNeedsBlanking();
         mDozeParameters = params;
         mTimeTicker = new AlarmTimeout(alarmManager, this::onTimeTick, "doze_time_tick", handler);
-        keyguardUpdateMonitor.registerCallback(mKeyguardVisibilityCallback);
         mDozeLog = dozeLog;
     }
 
-    /**
-     * Decide if we're taking over the screen-off animation
-     * when the device was configured to skip doze after screen off.
-     */
-    private void updateAnimateScreenOff() {
-        if (mCanAnimateTransition) {
-            final boolean controlScreenOff = mDozeParameters.getAlwaysOn() && mKeyguardShowing
-                    && !mHost.isPowerSaveActive();
-            mDozeParameters.setControlScreenOffAnimation(controlScreenOff);
-            mHost.setAnimateScreenOff(controlScreenOff);
-        }
+    @Override
+    public void setDozeMachine(DozeMachine dozeMachine) {
+        mMachine = dozeMachine;
     }
 
     private void pulseWhileDozing(int reason) {
@@ -100,7 +90,7 @@ public class DozeUi implements DozeMachine.Part {
                     public void onPulseStarted() {
                         try {
                             mMachine.requestState(
-                                    reason == DozeLog.PULSE_REASON_SENSOR_WAKE_LOCK_SCREEN
+                                    reason == DozeLog.PULSE_REASON_SENSOR_WAKE_REACH
                                             ? DozeMachine.State.DOZE_PULSING_BRIGHT
                                             : DozeMachine.State.DOZE_PULSING);
                         } catch (IllegalStateException e) {
@@ -136,6 +126,7 @@ public class DozeUi implements DozeMachine.Part {
                 break;
             case DOZE:
             case DOZE_AOD_PAUSED:
+            case DOZE_SUSPEND_TRIGGERS:
                 unscheduleTimeTick();
                 break;
             case DOZE_REQUEST_PULSE:
@@ -171,13 +162,15 @@ public class DozeUi implements DozeMachine.Part {
     }
 
     private void scheduleTimeTick() {
-        if (mTimeTicker.isScheduled()) {
+        if (mTimeTickScheduled) {
             return;
         }
+        mTimeTickScheduled = true;
+        DejankUtils.removeCallbacks(mCancelTimeTickerRunnable);
 
         long time = System.currentTimeMillis();
         long delta = roundToNextMinute(time) - System.currentTimeMillis();
-        boolean scheduled = mTimeTicker.schedule(delta, AlarmTimeout.MODE_IGNORE_IF_SCHEDULED);
+        boolean scheduled = mTimeTicker.schedule(delta, AlarmTimeout.MODE_RESCHEDULE_IF_SCHEDULED);
         if (scheduled) {
             mDozeLog.traceTimeTickScheduled(time, time + delta);
         }
@@ -185,11 +178,11 @@ public class DozeUi implements DozeMachine.Part {
     }
 
     private void unscheduleTimeTick() {
-        if (!mTimeTicker.isScheduled()) {
+        if (!mTimeTickScheduled) {
             return;
         }
-        verifyLastTimeTick();
-        mTimeTicker.cancel();
+        mTimeTickScheduled = false;
+        DejankUtils.postAfterTraversal(mCancelTimeTickerRunnable);
     }
 
     private void verifyLastTimeTick() {
@@ -219,11 +212,7 @@ public class DozeUi implements DozeMachine.Part {
         // Keep wakelock until a frame has been pushed.
         mHandler.post(mWakeLock.wrap(() -> {}));
 
+        mTimeTickScheduled = false;
         scheduleTimeTick();
-    }
-
-    @VisibleForTesting
-    KeyguardUpdateMonitorCallback getKeyguardCallback() {
-        return mKeyguardVisibilityCallback;
     }
 }

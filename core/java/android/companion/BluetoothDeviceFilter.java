@@ -70,7 +70,7 @@ public final class BluetoothDeviceFilter implements DeviceFilter<BluetoothDevice
     }
 
     private static List<ParcelUuid> readUuids(Parcel in) {
-        return in.readParcelableList(new ArrayList<>(), ParcelUuid.class.getClassLoader());
+        return in.readParcelableList(new ArrayList<>(), ParcelUuid.class.getClassLoader(), android.os.ParcelUuid.class);
     }
 
     /** @hide */
@@ -127,7 +127,7 @@ public final class BluetoothDeviceFilter implements DeviceFilter<BluetoothDevice
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         BluetoothDeviceFilter that = (BluetoothDeviceFilter) o;

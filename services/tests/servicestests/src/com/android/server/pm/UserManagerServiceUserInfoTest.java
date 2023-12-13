@@ -17,9 +17,12 @@
 package com.android.server.pm;
 
 import static android.content.pm.UserInfo.FLAG_DEMO;
+import static android.content.pm.UserInfo.FLAG_DISABLED;
 import static android.content.pm.UserInfo.FLAG_EPHEMERAL;
 import static android.content.pm.UserInfo.FLAG_FULL;
 import static android.content.pm.UserInfo.FLAG_GUEST;
+import static android.content.pm.UserInfo.FLAG_INITIALIZED;
+import static android.content.pm.UserInfo.FLAG_MAIN;
 import static android.content.pm.UserInfo.FLAG_MANAGED_PROFILE;
 import static android.content.pm.UserInfo.FLAG_PROFILE;
 import static android.content.pm.UserInfo.FLAG_RESTRICTED;
@@ -43,7 +46,8 @@ import android.content.pm.UserInfo.UserInfoFlag;
 import android.os.Looper;
 import android.os.Parcel;
 import android.os.UserHandle;
-import android.os.UserManagerInternal;
+import android.os.UserManager;
+import android.platform.test.annotations.Presubmit;
 import android.text.TextUtils;
 
 import androidx.test.InstrumentationRegistry;
@@ -67,6 +71,7 @@ import java.util.List;
  * runtest -c com.android.server.pm.UserManagerServiceUserInfoTest frameworks-services
  * </pre>
  */
+@Presubmit
 @RunWith(AndroidJUnit4.class)
 @MediumTest
 public class UserManagerServiceUserInfoTest {
@@ -106,6 +111,42 @@ public class UserManagerServiceUserInfoTest {
                 data.info.id, new ByteArrayInputStream(bytes));
 
         assertUserInfoEquals(data.info, read.info, /* parcelCopy= */ false);
+    }
+
+    /** Tests that device policy restrictions are written/read properly. */
+    @Test
+    public void testWriteReadDevicePolicyUserRestrictions() throws Exception {
+        final String globalRestriction = UserManager.DISALLOW_FACTORY_RESET;
+        final String localRestriction = UserManager.DISALLOW_CONFIG_DATE_TIME;
+
+        UserData data = new UserData();
+        data.info = createUser(100, FLAG_FULL, "A type");
+
+        mUserManagerService.putUserInfo(data.info);
+
+        // Set a global and user restriction so they get written out to the user file.
+        setUserRestrictions(data.info.id, globalRestriction, localRestriction, true);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(baos);
+        mUserManagerService.writeUserLP(data, out);
+        byte[] bytes = baos.toByteArray();
+
+        // Clear the restrictions to see if they are properly read in from the user file.
+        setUserRestrictions(data.info.id, globalRestriction, localRestriction, false);
+
+        mUserManagerService.readUserLP(data.info.id, new ByteArrayInputStream(bytes));
+        assertTrue(mUserManagerService.hasUserRestrictionOnAnyUser(globalRestriction));
+        assertTrue(mUserManagerService.hasUserRestrictionOnAnyUser(localRestriction));
+    }
+
+    /** Sets a global and local restriction and verifies they were set properly **/
+    private void setUserRestrictions(int id, String global, String local, boolean enabled) {
+        mUserManagerService.setUserRestrictionInner(UserHandle.USER_ALL, global, enabled);
+        assertEquals(mUserManagerService.hasUserRestrictionOnAnyUser(global), enabled);
+
+        mUserManagerService.setUserRestrictionInner(id, local, enabled);
+        assertEquals(mUserManagerService.hasUserRestrictionOnAnyUser(local), enabled);
     }
 
     @Test
@@ -166,6 +207,23 @@ public class UserManagerServiceUserInfoTest {
         assertTrue(mUserManagerService.isUserOfType(testId, typeName));
     }
 
+    /** Test UserInfo.supportsSwitchTo() for partial user. */
+    @Test
+    public void testSupportSwitchTo_partial() throws Exception {
+        UserInfo userInfo = createUser(100, FLAG_FULL, null);
+        userInfo.partial = true;
+        assertFalse("Switching to a partial user should be disabled",
+                userInfo.supportsSwitchTo());
+    }
+
+    /** Test UserInfo.supportsSwitchTo() for disabled user. */
+    @Test
+    public void testSupportSwitchTo_disabled() throws Exception {
+        UserInfo userInfo = createUser(100, FLAG_DISABLED, null);
+        assertFalse("Switching to a DISABLED user should be disabled",
+                userInfo.supportsSwitchTo());
+    }
+
     /** Test UserInfo.supportsSwitchTo() for precreated users. */
     @Test
     public void testSupportSwitchTo_preCreated() throws Exception {
@@ -185,10 +243,19 @@ public class UserManagerServiceUserInfoTest {
         assertFalse("Switching to a profiles should be disabled", userInfo.supportsSwitchTo());
     }
 
+    /** Test UserInfo.canHaveProfile for main user */
+    @Test
+    public void testCanHaveProfile() throws Exception {
+        UserInfo userInfo = createUser(100, FLAG_MAIN, null);
+        assertTrue("Main users can have profile", userInfo.canHaveProfile());
+    }
+
     /** Tests upgradeIfNecessaryLP (but without locking) for upgrading from version 8 to 9+. */
     @Test
     public void testUpgradeIfNecessaryLP_9() {
         final int versionToTest = 9;
+        // do not trigger a user type upgrade
+        final int userTypeVersion = UserTypeFactory.getUserTypeVersion();
 
         mUserManagerService.putUserInfo(createUser(100, FLAG_MANAGED_PROFILE, null));
         mUserManagerService.putUserInfo(createUser(101,
@@ -199,7 +266,7 @@ public class UserManagerServiceUserInfoTest {
         mUserManagerService.putUserInfo(createUser(105, FLAG_SYSTEM | FLAG_FULL, null));
         mUserManagerService.putUserInfo(createUser(106, FLAG_DEMO | FLAG_FULL, null));
 
-        mUserManagerService.upgradeIfNecessaryLP(null, versionToTest - 1);
+        mUserManagerService.upgradeIfNecessaryLP(versionToTest - 1, userTypeVersion);
 
         assertTrue(mUserManagerService.isUserOfType(100, USER_TYPE_PROFILE_MANAGED));
         assertTrue((mUserManagerService.getUserInfo(100).flags & FLAG_PROFILE) != 0);
@@ -260,5 +327,87 @@ public class UserManagerServiceUserInfoTest {
             assertEquals("convertedFromPreCreated not preserved", one.convertedFromPreCreated,
                     two.convertedFromPreCreated);
         }
+    }
+
+    /** Tests upgrading profile types */
+    @Test
+    public void testUpgradeProfileType_updateTypeAndFlags() {
+        final int userId = 42;
+        final String newUserTypeName = "new.user.type";
+        final String oldUserTypeName = USER_TYPE_PROFILE_MANAGED;
+
+        UserTypeDetails.Builder oldUserTypeBuilder = new UserTypeDetails.Builder()
+                .setName(oldUserTypeName)
+                .setBaseType(FLAG_PROFILE)
+                .setDefaultUserInfoPropertyFlags(FLAG_MANAGED_PROFILE)
+                .setMaxAllowedPerParent(32)
+                .setIconBadge(401)
+                .setBadgeColors(402, 403, 404)
+                .setBadgeLabels(23, 24, 25);
+        UserTypeDetails oldUserType = oldUserTypeBuilder.createUserTypeDetails();
+
+        UserInfo userInfo = createUser(userId,
+                oldUserType.getDefaultUserInfoFlags() | FLAG_INITIALIZED, oldUserTypeName);
+        mUserManagerService.putUserInfo(userInfo);
+
+        UserTypeDetails.Builder newUserTypeBuilder = new UserTypeDetails.Builder()
+                .setName(newUserTypeName)
+                .setBaseType(FLAG_PROFILE)
+                .setMaxAllowedPerParent(32)
+                .setIconBadge(401)
+                .setBadgeColors(402, 403, 404)
+                .setBadgeLabels(23, 24, 25);
+        UserTypeDetails newUserType = newUserTypeBuilder.createUserTypeDetails();
+
+        mUserManagerService.upgradeProfileToTypeLU(userInfo, newUserType);
+
+        assertTrue(mUserManagerService.isUserOfType(userId, newUserTypeName));
+        assertTrue((mUserManagerService.getUserInfo(userId).flags & FLAG_PROFILE) != 0);
+        assertTrue((mUserManagerService.getUserInfo(userId).flags & FLAG_MANAGED_PROFILE) == 0);
+        assertTrue((mUserManagerService.getUserInfo(userId).flags & FLAG_INITIALIZED) != 0);
+    }
+
+    @Test
+    public void testUpgradeProfileType_updateRestrictions() {
+        final int userId = 42;
+        final String newUserTypeName = "new.user.type";
+        final String oldUserTypeName = USER_TYPE_PROFILE_MANAGED;
+
+        UserTypeDetails.Builder oldUserTypeBuilder = new UserTypeDetails.Builder()
+                .setName(oldUserTypeName)
+                .setBaseType(FLAG_PROFILE)
+                .setDefaultUserInfoPropertyFlags(FLAG_MANAGED_PROFILE)
+                .setMaxAllowedPerParent(32)
+                .setIconBadge(401)
+                .setBadgeColors(402, 403, 404)
+                .setBadgeLabels(23, 24, 25);
+        UserTypeDetails oldUserType = oldUserTypeBuilder.createUserTypeDetails();
+
+        UserInfo userInfo = createUser(userId, oldUserType.getDefaultUserInfoFlags(),
+                oldUserTypeName);
+        mUserManagerService.putUserInfo(userInfo);
+        mUserManagerService.setUserRestriction(UserManager.DISALLOW_CAMERA, true, userId);
+        mUserManagerService.setUserRestriction(UserManager.DISALLOW_PRINTING, true, userId);
+
+        UserTypeDetails.Builder newUserTypeBuilder = new UserTypeDetails.Builder()
+                .setName(newUserTypeName)
+                .setBaseType(FLAG_PROFILE)
+                .setMaxAllowedPerParent(32)
+                .setIconBadge(401)
+                .setBadgeColors(402, 403, 404)
+                .setBadgeLabels(23, 24, 25)
+                .setDefaultRestrictions(
+                        UserManagerServiceUserTypeTest.makeRestrictionsBundle(
+                                UserManager.DISALLOW_WALLPAPER));
+        UserTypeDetails newUserType = newUserTypeBuilder.createUserTypeDetails();
+
+        mUserManagerService.upgradeProfileToTypeLU(userInfo, newUserType);
+
+        assertTrue(mUserManagerService.getUserRestrictions(userId).getBoolean(
+                UserManager.DISALLOW_PRINTING));
+        assertTrue(mUserManagerService.getUserRestrictions(userId).getBoolean(
+                UserManager.DISALLOW_CAMERA));
+        assertTrue(mUserManagerService.getUserRestrictions(userId).getBoolean(
+                UserManager.DISALLOW_WALLPAPER));
     }
 }

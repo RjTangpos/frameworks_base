@@ -19,9 +19,7 @@ package android.service.dreams;
 import android.annotation.Nullable;
 import android.app.Activity;
 import android.os.Bundle;
-import android.view.WindowInsets;
-
-import com.android.internal.R;
+import android.text.TextUtils;
 
 /**
  * The Activity used by the {@link DreamService} to draw screensaver content
@@ -45,6 +43,9 @@ import com.android.internal.R;
  */
 public class DreamActivity extends Activity {
     static final String EXTRA_CALLBACK = "binder";
+    static final String EXTRA_DREAM_TITLE = "title";
+    @Nullable
+    private DreamService.DreamActivityCallbacks mCallback;
 
     public DreamActivity() {}
 
@@ -52,26 +53,27 @@ public class DreamActivity extends Activity {
     public void onCreate(@Nullable Bundle bundle) {
         super.onCreate(bundle);
 
-        DreamService.DreamServiceWrapper callback =
-                (DreamService.DreamServiceWrapper) getIntent().getIBinderExtra(EXTRA_CALLBACK);
+        final String title = getIntent().getStringExtra(EXTRA_DREAM_TITLE);
+        if (!TextUtils.isEmpty(title)) {
+            setTitle(title);
+        }
 
-        if (callback != null) {
-            callback.onActivityCreated(this);
+        final Object callback = getIntent().getExtras().getBinder(EXTRA_CALLBACK);
+        if (callback instanceof DreamService.DreamActivityCallbacks) {
+            mCallback = (DreamService.DreamActivityCallbacks) callback;
+            mCallback.onActivityCreated(this);
+        } else {
+            mCallback = null;
+            finishAndRemoveTask();
         }
     }
 
     @Override
-    public void onResume() {
-        super.onResume();
-        // Hide all insets (nav bar, status bar, etc) when the dream is showing
-        getWindow().getInsetsController().hide(WindowInsets.Type.systemBars());
-        overridePendingTransition(R.anim.dream_activity_open_enter,
-                                  R.anim.dream_activity_open_exit);
-    }
+    public void onDestroy() {
+        if (mCallback != null) {
+            mCallback.onActivityDestroyed();
+        }
 
-    @Override
-    public void finishAndRemoveTask() {
-        super.finishAndRemoveTask();
-        overridePendingTransition(0, R.anim.dream_activity_close_exit);
+        super.onDestroy();
     }
 }

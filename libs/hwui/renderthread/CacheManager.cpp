@@ -16,52 +16,66 @@
 
 #include "CacheManager.h"
 
+#include <GrContextOptions.h>
+#include <SkExecutor.h>
+#include <SkGraphics.h>
+#include <math.h>
+#include <utils/Trace.h>
+
+#include <set>
+
+#include "CanvasContext.h"
 #include "DeviceInfo.h"
 #include "Layer.h"
 #include "Properties.h"
 #include "RenderThread.h"
+#include "VulkanManager.h"
 #include "pipeline/skia/ATraceMemoryDump.h"
 #include "pipeline/skia/ShaderCache.h"
 #include "pipeline/skia/SkiaMemoryTracer.h"
 #include "renderstate/RenderState.h"
 #include "thread/CommonPool.h"
-#include <utils/Trace.h>
-
-#include <GrContextOptions.h>
-#include <SkExecutor.h>
-#include <SkGraphics.h>
-#include <SkMathPriv.h>
-#include <math.h>
-#include <set>
 
 namespace android {
 namespace uirenderer {
 namespace renderthread {
 
-// This multiplier was selected based on historical review of cache sizes relative
-// to the screen resolution. This is meant to be a conservative default based on
-// that analysis. The 4.0f is used because the default pixel format is assumed to
-// be ARGB_8888.
-#define SURFACE_SIZE_MULTIPLIER (12.0f * 4.0f)
-#define BACKGROUND_RETENTION_PERCENTAGE (0.5f)
-
-CacheManager::CacheManager()
-        : mMaxSurfaceArea(DeviceInfo::getWidth() * DeviceInfo::getHeight())
-        , mMaxResourceBytes(mMaxSurfaceArea * SURFACE_SIZE_MULTIPLIER)
-        , mBackgroundResourceBytes(mMaxResourceBytes * BACKGROUND_RETENTION_PERCENTAGE)
-        // This sets the maximum size for a single texture atlas in the GPU font cache. If
-        // necessary, the cache can allocate additional textures that are counted against the
-        // total cache limits provided to Skia.
-        , mMaxGpuFontAtlasBytes(GrNextSizePow2(mMaxSurfaceArea))
-        // This sets the maximum size of the CPU font cache to be at least the same size as the
-        // total number of GPU font caches (i.e. 4 separate GPU atlases).
-        , mMaxCpuFontCacheBytes(
-                  std::max(mMaxGpuFontAtlasBytes * 4, SkGraphics::GetFontCacheLimit()))
-        , mBackgroundCpuFontCacheBytes(mMaxCpuFontCacheBytes * BACKGROUND_RETENTION_PERCENTAGE) {
-    SkGraphics::SetFontCacheLimit(mMaxCpuFontCacheBytes);
+CacheManager::CacheManager(RenderThread& thread)
+        : mRenderThread(thread), mMemoryPolicy(loadMemoryPolicy()) {
+    mMaxSurfaceArea = static_cast<size_t>((DeviceInfo::getWidth() * DeviceInfo::getHeight()) *
+                                          mMemoryPolicy.initialMaxSurfaceAreaScale);
+    setupCacheLimits();
 }
 
-void CacheManager::reset(sk_sp<GrContext> context) {
+static inline int countLeadingZeros(uint32_t mask) {
+    // __builtin_clz(0) is undefined, so we have to detect that case.
+    return mask ? __builtin_clz(mask) : 32;
+}
+
+// Return the smallest power-of-2 >= n.
+static inline uint32_t nextPowerOfTwo(uint32_t n) {
+    return n ? (1 << (32 - countLeadingZeros(n - 1))) : 1;
+}
+
+void CacheManager::setupCacheLimits() {
+    mMaxResourceBytes = mMaxSurfaceArea * mMemoryPolicy.surfaceSizeMultiplier;
+    mBackgroundResourceBytes = mMaxResourceBytes * mMemoryPolicy.backgroundRetentionPercent;
+    // This sets the maximum size for a single texture atlas in the GPU font cache. If
+    // necessary, the cache can allocate additional textures that are counted against the
+    // total cache limits provided to Skia.
+    mMaxGpuFontAtlasBytes = nextPowerOfTwo(mMaxSurfaceArea);
+    // This sets the maximum size of the CPU font cache to be at least the same size as the
+    // total number of GPU font caches (i.e. 4 separate GPU atlases).
+    mMaxCpuFontCacheBytes = std::max(mMaxGpuFontAtlasBytes * 4, SkGraphics::GetFontCacheLimit());
+    mBackgroundCpuFontCacheBytes = mMaxCpuFontCacheBytes * mMemoryPolicy.backgroundRetentionPercent;
+
+    SkGraphics::SetFontCacheLimit(mMaxCpuFontCacheBytes);
+    if (mGrContext) {
+        mGrContext->setResourceCacheLimit(mMaxResourceBytes);
+    }
+}
+
+void CacheManager::reset(sk_sp<GrDirectContext> context) {
     if (context != mGrContext) {
         destroy();
     }
@@ -69,6 +83,7 @@ void CacheManager::reset(sk_sp<GrContext> context) {
     if (context) {
         mGrContext = std::move(context);
         mGrContext->setResourceCacheLimit(mMaxResourceBytes);
+        mLastDeferredCleanup = systemTime(CLOCK_MONOTONIC);
     }
 }
 
@@ -93,79 +108,136 @@ void CacheManager::configureContext(GrContextOptions* contextOptions, const void
     auto& cache = skiapipeline::ShaderCache::get();
     cache.initShaderDiskCache(identity, size);
     contextOptions->fPersistentCache = &cache;
-    contextOptions->fGpuPathRenderers &= ~GpuPathRenderers::kCoverageCounting;
 }
 
-void CacheManager::trimMemory(TrimMemoryMode mode) {
+void CacheManager::trimMemory(TrimLevel mode) {
     if (!mGrContext) {
         return;
     }
 
-    mGrContext->flush();
+    // flush and submit all work to the gpu and wait for it to finish
+    mGrContext->flushAndSubmit(/*syncCpu=*/true);
 
     switch (mode) {
-        case TrimMemoryMode::Complete:
+        case TrimLevel::BACKGROUND:
             mGrContext->freeGpuResources();
             SkGraphics::PurgeAllCaches();
+            mRenderThread.destroyRenderingContext();
             break;
-        case TrimMemoryMode::UiHidden:
+        case TrimLevel::UI_HIDDEN:
             // Here we purge all the unlocked scratch resources and then toggle the resources cache
             // limits between the background and max amounts. This causes the unlocked resources
             // that have persistent data to be purged in LRU order.
-            mGrContext->purgeUnlockedResources(true);
             mGrContext->setResourceCacheLimit(mBackgroundResourceBytes);
-            mGrContext->setResourceCacheLimit(mMaxResourceBytes);
             SkGraphics::SetFontCacheLimit(mBackgroundCpuFontCacheBytes);
+            mGrContext->purgeUnlockedResources(mMemoryPolicy.purgeScratchOnly);
+            mGrContext->setResourceCacheLimit(mMaxResourceBytes);
             SkGraphics::SetFontCacheLimit(mMaxCpuFontCacheBytes);
             break;
+        default:
+            break;
     }
+}
 
-    // We must sync the cpu to make sure deletions of resources still queued up on the GPU actually
-    // happen.
-    mGrContext->flush(kSyncCpu_GrFlushFlag, 0, nullptr);
+void CacheManager::trimCaches(CacheTrimLevel mode) {
+    switch (mode) {
+        case CacheTrimLevel::FONT_CACHE:
+            SkGraphics::PurgeFontCache();
+            break;
+        case CacheTrimLevel::RESOURCE_CACHE:
+            SkGraphics::PurgeResourceCache();
+            break;
+        case CacheTrimLevel::ALL_CACHES:
+            SkGraphics::PurgeAllCaches();
+            if (mGrContext) {
+                mGrContext->purgeUnlockedResources(false);
+            }
+            break;
+        default:
+            break;
+    }
 }
 
 void CacheManager::trimStaleResources() {
     if (!mGrContext) {
         return;
     }
-    mGrContext->flush();
+    mGrContext->flushAndSubmit();
     mGrContext->purgeResourcesNotUsedInMs(std::chrono::seconds(30));
 }
 
-void CacheManager::dumpMemoryUsage(String8& log, const RenderState* renderState) {
+void CacheManager::getMemoryUsage(size_t* cpuUsage, size_t* gpuUsage) {
+    *cpuUsage = 0;
+    *gpuUsage = 0;
     if (!mGrContext) {
-        log.appendFormat("No valid cache instance.\n");
         return;
     }
 
-    log.appendFormat("Font Cache (CPU):\n");
-    log.appendFormat("  Size: %.2f kB \n", SkGraphics::GetFontCacheUsed() / 1024.0f);
-    log.appendFormat("  Glyph Count: %d \n", SkGraphics::GetFontCacheCountUsed());
+    skiapipeline::SkiaMemoryTracer cpuTracer("category", true);
+    SkGraphics::DumpMemoryStatistics(&cpuTracer);
+    *cpuUsage += cpuTracer.total();
 
-    log.appendFormat("CPU Caches:\n");
+    skiapipeline::SkiaMemoryTracer gpuTracer("category", true);
+    mGrContext->dumpMemoryStatistics(&gpuTracer);
+    *gpuUsage += gpuTracer.total();
+}
+
+void CacheManager::dumpMemoryUsage(String8& log, const RenderState* renderState) {
+    log.appendFormat(R"(Memory policy:
+  Max surface area: %zu
+  Max resource usage: %.2fMB (x%.0f)
+  Background retention: %.0f%% (altUiHidden = %s)
+)",
+                     mMaxSurfaceArea, mMaxResourceBytes / 1000000.f,
+                     mMemoryPolicy.surfaceSizeMultiplier,
+                     mMemoryPolicy.backgroundRetentionPercent * 100.0f,
+                     mMemoryPolicy.useAlternativeUiHidden ? "true" : "false");
+    if (Properties::isSystemOrPersistent) {
+        log.appendFormat("  IsSystemOrPersistent\n");
+    }
+    log.appendFormat("  GPU Context timeout: %" PRIu64 "\n", ns2s(mMemoryPolicy.contextTimeout));
+    size_t stoppedContexts = 0;
+    for (auto context : mCanvasContexts) {
+        if (context->isStopped()) stoppedContexts++;
+    }
+    log.appendFormat("Contexts: %zu (stopped = %zu)\n", mCanvasContexts.size(), stoppedContexts);
+
+    auto vkInstance = VulkanManager::peekInstance();
+    if (!mGrContext) {
+        if (!vkInstance) {
+            log.appendFormat("No GPU context.\n");
+        } else {
+            log.appendFormat("No GrContext; however %d remaining Vulkan refs",
+                             vkInstance->getStrongCount() - 1);
+        }
+        return;
+    }
     std::vector<skiapipeline::ResourcePair> cpuResourceMap = {
             {"skia/sk_resource_cache/bitmap_", "Bitmaps"},
             {"skia/sk_resource_cache/rrect-blur_", "Masks"},
             {"skia/sk_resource_cache/rects-blur_", "Masks"},
             {"skia/sk_resource_cache/tessellated", "Shadows"},
+            {"skia/sk_glyph_cache", "Glyph Cache"},
     };
     skiapipeline::SkiaMemoryTracer cpuTracer(cpuResourceMap, false);
     SkGraphics::DumpMemoryStatistics(&cpuTracer);
-    cpuTracer.logOutput(log);
+    if (cpuTracer.hasOutput()) {
+        log.appendFormat("CPU Caches:\n");
+        cpuTracer.logOutput(log);
+        log.appendFormat("  Glyph Count: %d \n", SkGraphics::GetFontCacheCountUsed());
+        log.appendFormat("Total CPU memory usage:\n");
+        cpuTracer.logTotals(log);
+    }
 
-    log.appendFormat("GPU Caches:\n");
     skiapipeline::SkiaMemoryTracer gpuTracer("category", true);
     mGrContext->dumpMemoryStatistics(&gpuTracer);
-    gpuTracer.logOutput(log);
+    if (gpuTracer.hasOutput()) {
+        log.appendFormat("GPU Caches:\n");
+        gpuTracer.logOutput(log);
+    }
 
-    log.appendFormat("Other Caches:\n");
-    log.appendFormat("                         Current / Maximum\n");
-
-    if (renderState) {
-        if (renderState->mActiveLayers.size() > 0) {
-            log.appendFormat("  Layer Info:\n");
-        }
+    if (renderState && renderState->mActiveLayers.size() > 0) {
+        log.appendFormat("Layer Info:\n");
 
         const char* layerType = Properties::getRenderPipelineType() == RenderPipelineType::SkiaGL
                                         ? "GlLayer"
@@ -187,6 +259,8 @@ void CacheManager::dumpMemoryUsage(String8& log, const RenderState* renderState)
 }
 
 void CacheManager::onFrameCompleted() {
+    cancelDestroyContext();
+    mFrameCompletions.next() = systemTime(CLOCK_MONOTONIC);
     if (ATRACE_ENABLED()) {
         static skiapipeline::ATraceMemoryDump tracer;
         tracer.startFrame();
@@ -195,6 +269,85 @@ void CacheManager::onFrameCompleted() {
             mGrContext->dumpMemoryStatistics(&tracer);
         }
         tracer.logTraces();
+    }
+}
+
+void CacheManager::onThreadIdle() {
+    if (!mGrContext || mFrameCompletions.size() == 0) return;
+
+    const nsecs_t now = systemTime(CLOCK_MONOTONIC);
+    // Rate limiting
+    if ((now - mLastDeferredCleanup) < 25_ms) {
+        mLastDeferredCleanup = now;
+        const nsecs_t frameCompleteNanos = mFrameCompletions[0];
+        const nsecs_t frameDiffNanos = now - frameCompleteNanos;
+        const nsecs_t cleanupMillis =
+                ns2ms(std::max(frameDiffNanos, mMemoryPolicy.minimumResourceRetention));
+        mGrContext->performDeferredCleanup(std::chrono::milliseconds(cleanupMillis),
+                                           mMemoryPolicy.purgeScratchOnly);
+    }
+}
+
+void CacheManager::scheduleDestroyContext() {
+    if (mMemoryPolicy.contextTimeout > 0) {
+        mRenderThread.queue().postDelayed(mMemoryPolicy.contextTimeout,
+                                          [this, genId = mGenerationId] {
+                                              if (mGenerationId != genId) return;
+                                              // GenID should have already stopped this, but just in
+                                              // case
+                                              if (!areAllContextsStopped()) return;
+                                              mRenderThread.destroyRenderingContext();
+                                          });
+    }
+}
+
+void CacheManager::cancelDestroyContext() {
+    if (mIsDestructionPending) {
+        mIsDestructionPending = false;
+        mGenerationId++;
+    }
+}
+
+bool CacheManager::areAllContextsStopped() {
+    for (auto context : mCanvasContexts) {
+        if (!context->isStopped()) return false;
+    }
+    return true;
+}
+
+void CacheManager::checkUiHidden() {
+    if (!mGrContext) return;
+
+    if (mMemoryPolicy.useAlternativeUiHidden && areAllContextsStopped()) {
+        trimMemory(TrimLevel::UI_HIDDEN);
+    }
+}
+
+void CacheManager::registerCanvasContext(CanvasContext* context) {
+    mCanvasContexts.push_back(context);
+    cancelDestroyContext();
+}
+
+void CacheManager::unregisterCanvasContext(CanvasContext* context) {
+    std::erase(mCanvasContexts, context);
+    checkUiHidden();
+    if (mCanvasContexts.empty()) {
+        scheduleDestroyContext();
+    }
+}
+
+void CacheManager::onContextStopped(CanvasContext* context) {
+    checkUiHidden();
+    if (mMemoryPolicy.releaseContextOnStoppedOnly && areAllContextsStopped()) {
+        scheduleDestroyContext();
+    }
+}
+
+void CacheManager::notifyNextFrameSize(int width, int height) {
+    int frameArea = width * height;
+    if (frameArea > mMaxSurfaceArea) {
+        mMaxSurfaceArea = frameArea;
+        setupCacheLimits();
     }
 }
 

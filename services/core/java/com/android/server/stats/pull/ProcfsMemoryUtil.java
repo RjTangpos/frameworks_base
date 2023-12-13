@@ -28,14 +28,18 @@ public final class ProcfsMemoryUtil {
             "VmHWM:",
             "VmRSS:",
             "RssAnon:",
-            "VmSwap:"
+            "RssShmem:",
+            "VmSwap:",
+    };
+    private static final String[] VMSTAT_KEYS = new String[] {
+            "oom_kill"
     };
 
     private ProcfsMemoryUtil() {}
 
     /**
      * Reads memory stats of a process from procfs. Returns values of the VmHWM, VmRss, AnonRSS,
-     * VmSwap fields in /proc/pid/status in kilobytes or null if not available.
+     * VmSwap, RssShmem fields in /proc/pid/status in kilobytes or null if not available.
      */
     @Nullable
     public static MemorySnapshot readMemorySnapshotFromProcfs(int pid) {
@@ -43,8 +47,9 @@ public final class ProcfsMemoryUtil {
         output[0] = -1;
         output[3] = -1;
         output[4] = -1;
+        output[5] = -1;
         Process.readProcLines("/proc/" + pid + "/status", STATUS_KEYS, output);
-        if (output[0] == -1 || output[3] == -1 || output[4] == -1) {
+        if (output[0] == -1 || output[3] == -1 || output[4] == -1 || output[5] == -1) {
             // Could not open or parse file.
             return null;
         }
@@ -53,7 +58,8 @@ public final class ProcfsMemoryUtil {
         snapshot.rssHighWaterMarkInKilobytes = (int) output[1];
         snapshot.rssInKilobytes = (int) output[2];
         snapshot.anonRssInKilobytes = (int) output[3];
-        snapshot.swapInKilobytes = (int) output[4];
+        snapshot.rssShmemKilobytes = (int) output[4];
+        snapshot.swapInKilobytes = (int) output[5];
         return snapshot;
     }
 
@@ -98,5 +104,24 @@ public final class ProcfsMemoryUtil {
         public int rssInKilobytes;
         public int anonRssInKilobytes;
         public int swapInKilobytes;
+        public int rssShmemKilobytes;
+    }
+
+    /** Reads and parses selected entries of /proc/vmstat. */
+    @Nullable
+    static VmStat readVmStat() {
+        long[] vmstat = new long[VMSTAT_KEYS.length];
+        vmstat[0] = -1;
+        Process.readProcLines("/proc/vmstat", VMSTAT_KEYS, vmstat);
+        if (vmstat[0] == -1) {
+            return null;
+        }
+        VmStat result = new VmStat();
+        result.oomKillCount = (int) vmstat[0];
+        return result;
+    }
+
+    static final class VmStat {
+        public int oomKillCount;
     }
 }

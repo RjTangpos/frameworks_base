@@ -61,7 +61,6 @@ import org.mockito.quality.Strictness;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -86,6 +85,7 @@ public class DexManagerTests {
 
     private final Object mInstallLock = new Object();
 
+    private DynamicCodeLogger mDynamicCodeLogger;
     private DexManager mDexManager;
 
     private TestData mFooUser0;
@@ -159,8 +159,9 @@ public class DexManagerTests {
             .when(mockContext)
                 .getSystemService(PowerManager.class);
 
-        mDexManager = new DexManager(mockContext, mPM, /*PackageDexOptimizer*/ null,
-                mInstaller, mInstallLock);
+        mDynamicCodeLogger = new DynamicCodeLogger(mInstaller);
+        mDexManager = new DexManager(mockContext, /*PackageDexOptimizer*/ null, mInstaller,
+                mInstallLock, mDynamicCodeLogger, mPM);
 
         // Foo and Bar are available to user0.
         // Only Bar is available to user1;
@@ -410,6 +411,17 @@ public class DexManagerTests {
     }
 
     @Test
+    public void testNotifyUsedByIsolatedProcess() {
+        // Bar loads its own apk but as isolatedProcess.
+        notifyDexLoad(mBarUser0, mBarUser0.getBaseAndSplitDexPaths(), mUser0,
+                /*isolatedProcess=*/ true);
+
+        // Bar is used by an isolated process and should be marked as usedByOtherApps
+        PackageUseInfo pui = getPackageUseInfo(mBarUser0);
+        assertIsUsedByOtherApps(mBarUser0, pui, true);
+    }
+
+    @Test
     public void testNotifyPackageUpdatedCodeLocations() {
         // Simulate a split update.
         String newSplit = mBarUser0.replaceLastSplit();
@@ -442,6 +454,7 @@ public class DexManagerTests {
         notifyDexLoad(mBarUser1, mBarUser1.getSecondaryDexPaths(), mUser1);
 
         mDexManager.notifyPackageDataDestroyed(mBarUser0.getPackageName(), mUser0);
+        mDynamicCodeLogger.notifyPackageDataDestroyed(mBarUser0.getPackageName(), mUser0);
 
         // Data for user 1 should still be present
         PackageUseInfo pui = getPackageUseInfo(mBarUser1);
@@ -464,6 +477,7 @@ public class DexManagerTests {
         notifyDexLoad(mBarUser0, mFooUser0.getBaseAndSplitDexPaths(), mUser0);
 
         mDexManager.notifyPackageDataDestroyed(mFooUser0.getPackageName(), mUser0);
+        mDynamicCodeLogger.notifyPackageDataDestroyed(mFooUser0.getPackageName(), mUser0);
 
         // Foo should still be around since it's used by other apps but with no
         // secondary dex info.
@@ -481,6 +495,7 @@ public class DexManagerTests {
         notifyDexLoad(mFooUser0, fooSecondaries, mUser0);
 
         mDexManager.notifyPackageDataDestroyed(mFooUser0.getPackageName(), mUser0);
+        mDynamicCodeLogger.notifyPackageDataDestroyed(mFooUser0.getPackageName(), mUser0);
 
         // Foo should not be around since all its secondary dex info were deleted
         // and it is not used by other apps.
@@ -495,6 +510,8 @@ public class DexManagerTests {
         notifyDexLoad(mBarUser1, mBarUser1.getSecondaryDexPaths(), mUser1);
 
         mDexManager.notifyPackageDataDestroyed(mBarUser0.getPackageName(), UserHandle.USER_ALL);
+        mDynamicCodeLogger.notifyPackageDataDestroyed(
+                mBarUser0.getPackageName(), UserHandle.USER_ALL);
 
         // Bar should not be around since it was removed for all users.
         assertNoUseInfo(mBarUser0);
@@ -545,7 +562,7 @@ public class DexManagerTests {
         List<String> classLoaders =
                 Arrays.asList(PATH_CLASS_LOADER_NAME, UNSUPPORTED_CLASS_LOADER_NAME);
         List<String> classPaths = Arrays.asList(classPath, classPath);
-        notifyDexLoad(mBarUser0, classLoaders, classPaths, mUser0);
+        notifyDexLoad(mBarUser0, classLoaders, classPaths, mUser0, /*isolatedProcess=*/ false);
 
         assertNoUseInfo(mBarUser0);
 
@@ -664,7 +681,8 @@ public class DexManagerTests {
             expectedContexts[i] += contextSuffix;
         }
 
-        notifyDexLoad(mFooUser0, fooSecondaries, expectedContexts, mUser0);
+        notifyDexLoad(mFooUser0, fooSecondaries, expectedContexts, mUser0,
+                /*isolatedProcess=*/ false);
 
         PackageUseInfo pui = getPackageUseInfo(mFooUser0);
         assertIsUsedByOtherApps(mFooUser0, pui, false);
@@ -838,26 +856,32 @@ public class DexManagerTests {
             assertEquals(codePath, isUsedByOtherApps, pui.isUsedByOtherApps(codePath));
         }
     }
+
     private void notifyDexLoad(TestData testData, List<String> dexPaths, int loaderUserId) {
+        notifyDexLoad(testData, dexPaths, loaderUserId, /*isolatedProcess=*/ false);
+    }
+
+    private void notifyDexLoad(TestData testData, List<String> dexPaths, int loaderUserId,
+            boolean isolatedProcess) {
         // By default, assume a single class loader in the chain.
         // This makes writing tests much easier.
         List<String> classLoaders = Arrays.asList(testData.mClassLoader);
         List<String> classPaths = dexPaths != null
                 ? Arrays.<String>asList(String.join(File.pathSeparator, dexPaths)) : null;
-        notifyDexLoad(testData, classLoaders, classPaths, loaderUserId);
+        notifyDexLoad(testData, classLoaders, classPaths, loaderUserId, isolatedProcess);
     }
 
     private void notifyDexLoad(TestData testData, List<String> classLoaders,
-            List<String> classPaths, int loaderUserId) {
+            List<String> classPaths, int loaderUserId, boolean isolatedProcess) {
         String[] classLoaderContexts = computeClassLoaderContexts(classLoaders, classPaths);
         // We call the internal function so any exceptions thrown cause test failures.
         List<String> dexPaths = classPaths != null
                 ? Arrays.asList(classPaths.get(0).split(File.pathSeparator)) : Arrays.asList();
-        notifyDexLoad(testData, dexPaths, classLoaderContexts, loaderUserId);
+        notifyDexLoad(testData, dexPaths, classLoaderContexts, loaderUserId, isolatedProcess);
     }
 
     private void notifyDexLoad(TestData testData, List<String> dexPaths,
-            String[] classLoaderContexts, int loaderUserId) {
+            String[] classLoaderContexts, int loaderUserId, boolean isolatedProcess) {
         assertTrue(dexPaths.size() == classLoaderContexts.length);
         HashMap<String, String> dexPathMapping = new HashMap<>(dexPaths.size());
         for (int i = 0; i < dexPaths.size(); i++) {
@@ -865,7 +889,7 @@ public class DexManagerTests {
                     ? classLoaderContexts[i] : PackageDexUsage.UNSUPPORTED_CLASS_LOADER_CONTEXT);
         }
         mDexManager.notifyDexLoadInternal(testData.mPackageInfo.applicationInfo, dexPathMapping,
-                testData.mLoaderIsa, loaderUserId);
+                testData.mLoaderIsa, loaderUserId, isolatedProcess);
     }
 
     private String[] computeClassLoaderContexts(List<String> classLoaders,
@@ -889,8 +913,7 @@ public class DexManagerTests {
     }
 
     private PackageDynamicCode getPackageDynamicCodeInfo(TestData testData) {
-        return mDexManager.getDynamicCodeLogger()
-                .getPackageDynamicCodeInfo(testData.getPackageName());
+        return mDynamicCodeLogger.getPackageDynamicCodeInfo(testData.getPackageName());
     }
 
     private void assertNoUseInfo(TestData testData) {
@@ -1010,45 +1033,5 @@ public class DexManagerTests {
             mPackageInfo.applicationInfo.splitSourceDirs[length - 1] += ".dex";
             return mPackageInfo.applicationInfo.splitSourceDirs[length - 1];
         }
-    }
-
-    private boolean shouldPackageRunOob(boolean isDefaultEnabled, String whitelist,
-            Collection<String> packageNamesInSameProcess) {
-        return DexManager.isPackageSelectedToRunOobInternal(
-                isDefaultEnabled, whitelist, packageNamesInSameProcess);
-    }
-
-    @Test
-    public void testOobPackageSelectionDefault() {
-        // Feature is off by default, not overriden
-        assertFalse(shouldPackageRunOob(false, "ALL", null));
-    }
-
-    @Test
-    public void testOobPackageSelectionWhitelist() {
-        // Various allowlist of apps to run in OOB mode.
-        final String kWhitelistApp0 = "com.priv.app0";
-        final String kWhitelistApp1 = "com.priv.app1";
-        final String kWhitelistApp2 = "com.priv.app2";
-        final String kWhitelistApp1AndApp2 = "com.priv.app1,com.priv.app2";
-
-        // Packages that shares the targeting process.
-        final Collection<String> runningPackages = Arrays.asList("com.priv.app1", "com.priv.app2");
-
-        // Feature is off, allowlist does not matter
-        assertFalse(shouldPackageRunOob(false, kWhitelistApp0, runningPackages));
-        assertFalse(shouldPackageRunOob(false, kWhitelistApp1, runningPackages));
-        assertFalse(shouldPackageRunOob(false, "", runningPackages));
-        assertFalse(shouldPackageRunOob(false, "ALL", runningPackages));
-
-        // Feature is on, app not in allowlist
-        assertFalse(shouldPackageRunOob(true, kWhitelistApp0, runningPackages));
-        assertFalse(shouldPackageRunOob(true, "", runningPackages));
-
-        // Feature is on, app in allowlist
-        assertTrue(shouldPackageRunOob(true, kWhitelistApp1, runningPackages));
-        assertTrue(shouldPackageRunOob(true, kWhitelistApp2, runningPackages));
-        assertTrue(shouldPackageRunOob(true, kWhitelistApp1AndApp2, runningPackages));
-        assertTrue(shouldPackageRunOob(true, "ALL", runningPackages));
     }
 }

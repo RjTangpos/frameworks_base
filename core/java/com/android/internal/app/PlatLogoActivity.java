@@ -16,106 +16,325 @@
 
 package com.android.internal.app;
 
+import static android.os.VibrationEffect.Composition.PRIMITIVE_SPIN;
+
 import android.animation.ObjectAnimator;
-import android.annotation.NonNull;
-import android.annotation.Nullable;
+import android.animation.TimeAnimator;
+import android.annotation.SuppressLint;
 import android.app.ActionBar;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ContentResolver;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorFilter;
-import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.os.CombinedVibration;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Message;
+import android.os.VibrationEffect;
+import android.os.VibratorManager;
 import android.provider.Settings;
-import android.util.AttributeSet;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.animation.PathInterpolator;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.internal.R;
 
 import org.json.JSONObject;
 
+import java.util.Random;
+
 /**
  * @hide
  */
 public class PlatLogoActivity extends Activity {
-    private static final boolean WRITE_SETTINGS = true;
+    private static final String TAG = "PlatLogoActivity";
 
-    private static final String R_EGG_UNLOCK_SETTING = "egg_mode_r";
+    private static final long LAUNCH_TIME = 5000L;
 
-    private static final int UNLOCK_TRIES = 3;
+    private static final String U_EGG_UNLOCK_SETTING = "egg_mode_u";
 
-    BigDialView mDialView;
+    private static final float MIN_WARP = 1f;
+    private static final float MAX_WARP = 10f; // after all these years
+    private static final boolean FINISH_AFTER_NEXT_STAGE_LAUNCH = false;
+
+    private ImageView mLogo;
+    private Starfield mStarfield;
+
+    private FrameLayout mLayout;
+
+    private TimeAnimator mAnim;
+    private ObjectAnimator mWarpAnim;
+    private Random mRandom;
+    private float mDp;
+
+    private RumblePack mRumble;
+
+    private boolean mAnimationsEnabled = true;
+
+    private final View.OnTouchListener mTouchListener = new View.OnTouchListener() {
+        @Override
+        public boolean onTouch(View v, MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    measureTouchPressure(event);
+                    startWarp();
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    stopWarp();
+                    break;
+            }
+            return true;
+        }
+
+    };
+
+    private final Runnable mLaunchNextStage = () -> {
+        stopWarp();
+        launchNextStage(false);
+    };
+
+    private final TimeAnimator.TimeListener mTimeListener = new TimeAnimator.TimeListener() {
+        @Override
+        public void onTimeUpdate(TimeAnimator animation, long totalTime, long deltaTime) {
+            mStarfield.update(deltaTime);
+            final float warpFrac = (mStarfield.getWarp() - MIN_WARP) / (MAX_WARP - MIN_WARP);
+            if (mAnimationsEnabled) {
+                mLogo.setTranslationX(mRandom.nextFloat() * warpFrac * 5 * mDp);
+                mLogo.setTranslationY(mRandom.nextFloat() * warpFrac * 5 * mDp);
+            }
+            if (warpFrac > 0f) {
+                mRumble.rumble(warpFrac);
+            }
+            mLayout.postInvalidate();
+        }
+    };
+
+    private class RumblePack implements Handler.Callback {
+        private static final int MSG = 6464;
+        private static final int INTERVAL = 50;
+
+        private final VibratorManager mVibeMan;
+        private final HandlerThread mVibeThread;
+        private final Handler mVibeHandler;
+        private boolean mSpinPrimitiveSupported;
+
+        private long mLastVibe = 0;
+
+        @SuppressLint("MissingPermission")
+        @Override
+        public boolean handleMessage(Message msg) {
+            final float warpFrac = msg.arg1 / 100f;
+            if (mSpinPrimitiveSupported) {
+                if (msg.getWhen() > mLastVibe + INTERVAL) {
+                    mLastVibe = msg.getWhen();
+                    mVibeMan.vibrate(CombinedVibration.createParallel(
+                            VibrationEffect.startComposition()
+                                    .addPrimitive(PRIMITIVE_SPIN, (float) Math.pow(warpFrac, 3.0))
+                                    .compose()
+                    ));
+                }
+            } else {
+                if (mRandom.nextFloat() < warpFrac) {
+                    mLogo.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                }
+            }
+            return false;
+        }
+        RumblePack() {
+            mVibeMan = getSystemService(VibratorManager.class);
+            mSpinPrimitiveSupported = mVibeMan.getDefaultVibrator()
+                    .areAllPrimitivesSupported(PRIMITIVE_SPIN);
+
+            mVibeThread = new HandlerThread("VibratorThread");
+            mVibeThread.start();
+            mVibeHandler = Handler.createAsync(mVibeThread.getLooper(), this);
+        }
+
+        public void destroy() {
+            mVibeThread.quit();
+        }
+
+        private void rumble(float warpFrac) {
+            if (!mVibeThread.isAlive()) return;
+
+            final Message msg = Message.obtain();
+            msg.what = MSG;
+            msg.arg1 = (int) (warpFrac * 100);
+            mVibeHandler.removeMessages(MSG);
+            mVibeHandler.sendMessage(msg);
+        }
+
+    }
 
     @Override
-    protected void onPause() {
-        super.onPause();
+    protected void onDestroy() {
+        mRumble.destroy();
+
+        super.onDestroy();
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        final float dp = getResources().getDisplayMetrics().density;
 
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        getWindow().setDecorFitsSystemWindows(false);
         getWindow().setNavigationBarColor(0);
         getWindow().setStatusBarColor(0);
+        getWindow().getDecorView().getWindowInsetsController().hide(WindowInsets.Type.systemBars());
 
         final ActionBar ab = getActionBar();
         if (ab != null) ab.hide();
 
-        mDialView = new BigDialView(this, null);
-        if (Settings.System.getLong(getContentResolver(),
-                R_EGG_UNLOCK_SETTING, 0) == 0) {
-            mDialView.setUnlockTries(UNLOCK_TRIES);
-        } else {
-            mDialView.setUnlockTries(0);
+        try {
+            mAnimationsEnabled = Settings.Global.getFloat(getContentResolver(),
+                    Settings.Global.ANIMATOR_DURATION_SCALE) > 0f;
+        } catch (Settings.SettingNotFoundException e) {
+            mAnimationsEnabled = true;
         }
 
-        final FrameLayout layout = new FrameLayout(this);
-        layout.setBackgroundColor(0xFFFF0000);
-        layout.addView(mDialView, FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT);
-        setContentView(layout);
+        mRumble = new RumblePack();
+
+        mLayout = new FrameLayout(this);
+        mRandom = new Random();
+        mDp = getResources().getDisplayMetrics().density;
+        mStarfield = new Starfield(mRandom, mDp * 2f);
+        mStarfield.setVelocity(
+                200f * (mRandom.nextFloat() - 0.5f),
+                200f * (mRandom.nextFloat() - 0.5f));
+        mLayout.setBackground(mStarfield);
+
+        final DisplayMetrics dm = getResources().getDisplayMetrics();
+        final float dp = dm.density;
+        final int minSide = Math.min(dm.widthPixels, dm.heightPixels);
+        final int widgetSize = (int) (minSide * 0.75);
+        final FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(widgetSize, widgetSize);
+        lp.gravity = Gravity.CENTER;
+
+        mLogo = new ImageView(this);
+        mLogo.setImageResource(R.drawable.platlogo);
+        mLogo.setOnTouchListener(mTouchListener);
+        mLogo.requestFocus();
+        mLayout.addView(mLogo, lp);
+
+        Log.v(TAG, "Hello");
+
+        setContentView(mLayout);
+    }
+
+    private void startAnimating() {
+        mAnim = new TimeAnimator();
+        mAnim.setTimeListener(mTimeListener);
+        mAnim.start();
+    }
+
+    private void stopAnimating() {
+        mAnim.cancel();
+        mAnim = null;
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_SPACE) {
+            if (event.getRepeatCount() == 0) {
+                startWarp();
+            }
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_SPACE) {
+            stopWarp();
+            return true;
+        }
+        return false;
+    }
+
+    private void startWarp() {
+        stopWarp();
+        mWarpAnim = ObjectAnimator.ofFloat(mStarfield, "warp", MIN_WARP, MAX_WARP)
+                .setDuration(LAUNCH_TIME);
+        mWarpAnim.start();
+
+        mLogo.postDelayed(mLaunchNextStage, LAUNCH_TIME + 1000L);
+    }
+
+    private void stopWarp() {
+        if (mWarpAnim != null) {
+            mWarpAnim.cancel();
+            mWarpAnim.removeAllListeners();
+            mWarpAnim = null;
+        }
+        mStarfield.setWarp(1f);
+        mLogo.removeCallbacks(mLaunchNextStage);
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        startAnimating();
+    }
+
+    @Override
+    public void onPause() {
+        stopWarp();
+        stopAnimating();
+        super.onPause();
+    }
+
+    private boolean shouldWriteSettings() {
+        return getPackageName().equals("android");
     }
 
     private void launchNextStage(boolean locked) {
         final ContentResolver cr = getContentResolver();
 
         try {
-            if (WRITE_SETTINGS) {
+            if (shouldWriteSettings()) {
+                Log.v(TAG, "Saving egg locked=" + locked);
+                syncTouchPressure();
                 Settings.System.putLong(cr,
-                        R_EGG_UNLOCK_SETTING,
+                        U_EGG_UNLOCK_SETTING,
                         locked ? 0 : System.currentTimeMillis());
             }
         } catch (RuntimeException e) {
-            Log.e("com.android.internal.app.PlatLogoActivity", "Can't write settings", e);
+            Log.e(TAG, "Can't write settings", e);
         }
 
         try {
-            startActivity(new Intent(Intent.ACTION_MAIN)
+            final Intent eggActivity = new Intent(Intent.ACTION_MAIN)
                     .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                             | Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                    .addCategory("com.android.internal.category.PLATLOGO"));
+                    .addCategory("com.android.internal.category.PLATLOGO");
+            Log.v(TAG, "launching: " + eggActivity);
+            startActivity(eggActivity);
         } catch (ActivityNotFoundException ex) {
             Log.e("com.android.internal.app.PlatLogoActivity", "No more eggs.");
         }
-        //finish(); // no longer finish upon unlock; it's fun to frob the dial
+        if (FINISH_AFTER_NEXT_STAGE_LAUNCH) {
+            finish(); // we're done here.
+        }
     }
 
     static final String TOUCH_STATS = "touch.stats";
@@ -151,7 +370,7 @@ public class PlatLogoActivity extends Activity {
             if (mPressureMax >= 0) {
                 touchData.put("min", mPressureMin);
                 touchData.put("max", mPressureMax);
-                if (WRITE_SETTINGS) {
+                if (shouldWriteSettings()) {
                     Settings.System.putString(getContentResolver(), TOUCH_STATS,
                             touchData.toString());
                 }
@@ -173,274 +392,111 @@ public class PlatLogoActivity extends Activity {
         super.onStop();
     }
 
-    class BigDialView extends ImageView {
-        private static final int COLOR_GREEN = 0xff3ddc84;
-        private static final int COLOR_BLUE = 0xff4285f4;
-        private static final int COLOR_NAVY = 0xff073042;
-        private static final int COLOR_ORANGE = 0xfff86734;
-        private static final int COLOR_CHARTREUSE = 0xffeff7cf;
-        private static final int COLOR_LIGHTBLUE = 0xffd7effe;
+    private static class Starfield extends Drawable {
+        private static final int NUM_STARS = 34; // Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
-        private static final int STEPS = 11;
-        private static final float VALUE_CHANGE_MAX = 1f / STEPS;
+        private static final int NUM_PLANES = 2;
+        private final float[] mStars = new float[NUM_STARS * 4];
+        private float mVx, mVy;
+        private long mDt = 0;
+        private final Paint mStarPaint;
 
-        private BigDialDrawable mDialDrawable;
-        private boolean mWasLocked;
+        private final Random mRng;
+        private final float mSize;
 
-        BigDialView(Context context, @Nullable AttributeSet attrs) {
-            super(context, attrs);
-            init();
+        private final Rect mSpace = new Rect();
+        private float mWarp = 1f;
+
+        private float mBuffer;
+
+        public void setWarp(float warp) {
+            mWarp = warp;
         }
 
-        BigDialView(Context context, @Nullable AttributeSet attrs, int defStyleAttr) {
-            super(context, attrs, defStyleAttr);
-            init();
+        public float getWarp() {
+            return mWarp;
         }
 
-        BigDialView(Context context, @Nullable AttributeSet attrs, int defStyleAttr,
-                int defStyleRes) {
-            super(context, attrs, defStyleAttr, defStyleRes);
-            init();
-        }
-
-        private void init() {
-            mDialDrawable = new BigDialDrawable();
-            setImageDrawable(mDialDrawable);
-        }
-
-        @Override
-        public void onDraw(Canvas c) {
-            super.onDraw(c);
-        }
-
-        double toPositiveDegrees(double rad) {
-            return (Math.toDegrees(rad) + 360 - 90) % 360;
+        Starfield(Random rng, float size) {
+            mRng = rng;
+            mSize = size;
+            mStarPaint = new Paint();
+            mStarPaint.setStyle(Paint.Style.STROKE);
+            mStarPaint.setColor(Color.WHITE);
         }
 
         @Override
-        public boolean onTouchEvent(MotionEvent ev) {
-            switch (ev.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    mWasLocked = mDialDrawable.isLocked();
-                    // pass through
-                case MotionEvent.ACTION_MOVE:
-                    float x = ev.getX();
-                    float y = ev.getY();
-                    float cx = (getLeft() + getRight()) / 2f;
-                    float cy = (getTop() + getBottom()) / 2f;
-                    float angle = (float) toPositiveDegrees(Math.atan2(x - cx, y - cy));
-                    final int oldLevel = mDialDrawable.getUserLevel();
-                    mDialDrawable.touchAngle(angle);
-                    final int newLevel = mDialDrawable.getUserLevel();
-                    if (oldLevel != newLevel) {
-                        performHapticFeedback(newLevel == STEPS
-                                ? HapticFeedbackConstants.CONFIRM
-                                : HapticFeedbackConstants.CLOCK_TICK);
-                    }
-                    return true;
-                case MotionEvent.ACTION_UP:
-                    if (mWasLocked != mDialDrawable.isLocked()) {
-                        launchNextStage(mDialDrawable.isLocked());
-                    }
-                    return true;
+        public void onBoundsChange(Rect bounds) {
+            mSpace.set(bounds);
+            mBuffer = mSize * NUM_PLANES * 2 * MAX_WARP;
+            mSpace.inset(-(int) mBuffer, -(int) mBuffer);
+            final float w = mSpace.width();
+            final float h = mSpace.height();
+            for (int i = 0; i < NUM_STARS; i++) {
+                mStars[4 * i] = mRng.nextFloat() * w;
+                mStars[4 * i + 1] = mRng.nextFloat() * h;
+                mStars[4 * i + 2] = mStars[4 * i];
+                mStars[4 * i + 3] = mStars[4 * i + 1];
             }
-            return false;
+        }
+
+        public void setVelocity(float x, float y) {
+            mVx = x;
+            mVy = y;
         }
 
         @Override
-        public boolean performClick() {
-            if (mDialDrawable.getUserLevel() < STEPS - 1) {
-                mDialDrawable.setUserLevel(mDialDrawable.getUserLevel() + 1);
-                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        public void draw(@NonNull Canvas canvas) {
+            final float dtSec = mDt / 1000f;
+            final float dx = (mVx * dtSec * mWarp);
+            final float dy = (mVy * dtSec * mWarp);
+
+            final boolean inWarp = mWarp > 1f;
+
+            canvas.drawColor(Color.BLACK); // 0xFF16161D);
+
+            if (mDt > 0 && mDt < 1000) {
+                canvas.translate(
+                        -(mBuffer) + mRng.nextFloat() * (mWarp - 1f),
+                        -(mBuffer) + mRng.nextFloat() * (mWarp - 1f)
+                );
+                final float w = mSpace.width();
+                final float h = mSpace.height();
+                for (int i = 0; i < NUM_STARS; i++) {
+                    final int plane = (int) ((((float) i) / NUM_STARS) * NUM_PLANES) + 1;
+                    mStars[4 * i + 2] = (mStars[4 * i + 2] + dx * plane + w) % w;
+                    mStars[4 * i + 3] = (mStars[4 * i + 3] + dy * plane + h) % h;
+                    mStars[4 * i + 0] = inWarp ? mStars[4 * i + 2] - dx * mWarp * 2 * plane : -100;
+                    mStars[4 * i + 1] = inWarp ? mStars[4 * i + 3] - dy * mWarp * 2 * plane : -100;
+                }
             }
-            return true;
+            final int slice = (mStars.length / NUM_PLANES / 4) * 4;
+            for (int p = 0; p < NUM_PLANES; p++) {
+                mStarPaint.setStrokeWidth(mSize * (p + 1));
+                if (inWarp) {
+                    canvas.drawLines(mStars, p * slice, slice, mStarPaint);
+                }
+                canvas.drawPoints(mStars, p * slice, slice, mStarPaint);
+            }
         }
 
-        void setUnlockTries(int tries) {
-            mDialDrawable.setUnlockTries(tries);
+        @Override
+        public void setAlpha(int alpha) {
+
         }
 
-        private class BigDialDrawable extends Drawable {
-            public final int STEPS = 10;
-            private int mUnlockTries = 0;
-            final Paint mPaint = new Paint();
-            final Drawable mEleven;
-            private boolean mNightMode;
-            private float mValue = 0f;
-            float mElevenAnim = 0f;
-            ObjectAnimator mElevenShowAnimator = ObjectAnimator.ofFloat(this, "elevenAnim", 0f,
-                    1f).setDuration(300);
-            ObjectAnimator mElevenHideAnimator = ObjectAnimator.ofFloat(this, "elevenAnim", 1f,
-                    0f).setDuration(500);
+        @Override
+        public void setColorFilter(@Nullable ColorFilter colorFilter) {
 
-            BigDialDrawable() {
-                mNightMode = getContext().getResources().getConfiguration().isNightModeActive();
-                mEleven = getContext().getDrawable(R.drawable.ic_number11);
-                mElevenShowAnimator.setInterpolator(new PathInterpolator(0.4f, 0f, 0.2f, 1f));
-                mElevenHideAnimator.setInterpolator(new PathInterpolator(0.8f, 0.2f, 0.6f, 1f));
-            }
+        }
 
-            public void setUnlockTries(int count) {
-                if (mUnlockTries != count) {
-                    mUnlockTries = count;
-                    setValue(getValue());
-                    invalidateSelf();
-                }
-            }
+        @Override
+        public int getOpacity() {
+            return PixelFormat.OPAQUE;
+        }
 
-            boolean isLocked() {
-                return mUnlockTries > 0;
-            }
-
-            public void setValue(float v) {
-                // until the dial is "unlocked", you can't turn it all the way to 11
-                final float max = isLocked() ? 1f - 1f / STEPS : 1f;
-                mValue = v < 0f ? 0f : v > max ? max : v;
-                invalidateSelf();
-            }
-
-            public float getValue() {
-                return mValue;
-            }
-
-            public int getUserLevel() {
-                return Math.round(getValue() * STEPS - 0.25f);
-            }
-
-            public void setUserLevel(int i) {
-                setValue(getValue() + ((float) i) / STEPS);
-            }
-
-            public float getElevenAnim() {
-                return mElevenAnim;
-            }
-
-            public void setElevenAnim(float f) {
-                if (mElevenAnim != f) {
-                    mElevenAnim = f;
-                    invalidateSelf();
-                }
-            }
-
-            @Override
-            public void draw(@NonNull Canvas canvas) {
-                final Rect bounds = getBounds();
-                final int w = bounds.width();
-                final int h = bounds.height();
-                final float w2 = w / 2f;
-                final float h2 = h / 2f;
-                final float radius = w / 4f;
-
-                canvas.drawColor(mNightMode ? COLOR_NAVY : COLOR_LIGHTBLUE);
-
-                canvas.save();
-                canvas.rotate(45, w2, h2);
-                canvas.clipRect(w2, h2 - radius, Math.min(w, h), h2 + radius);
-                final int gradientColor = mNightMode ? 0x60000020 : (0x10FFFFFF & COLOR_NAVY);
-                mPaint.setShader(
-                        new LinearGradient(w2, h2, Math.min(w, h), h2, gradientColor,
-                                0x00FFFFFF & gradientColor, Shader.TileMode.CLAMP));
-                mPaint.setColor(Color.BLACK);
-                canvas.drawPaint(mPaint);
-                mPaint.setShader(null);
-                canvas.restore();
-
-                mPaint.setStyle(Paint.Style.FILL);
-                mPaint.setColor(COLOR_GREEN);
-
-                canvas.drawCircle(w2, h2, radius, mPaint);
-
-                mPaint.setColor(mNightMode ? COLOR_LIGHTBLUE : COLOR_NAVY);
-                final float cx = w * 0.85f;
-                for (int i = 0; i < STEPS; i++) {
-                    final float f = (float) i / STEPS;
-                    canvas.save();
-                    final float angle = valueToAngle(f);
-                    canvas.rotate(-angle, w2, h2);
-                    canvas.drawCircle(cx, h2, (i <= getUserLevel()) ? 20 : 5, mPaint);
-                    canvas.restore();
-                }
-
-                if (mElevenAnim > 0f) {
-                    final int color = COLOR_ORANGE;
-                    final int size2 = (int) ((0.5 + 0.5f * mElevenAnim) * w / 14);
-                    final float cx11 = cx + size2 / 4f;
-                    mEleven.setBounds((int) cx11 - size2, (int) h2 - size2,
-                            (int) cx11 + size2, (int) h2 + size2);
-                    final int alpha = 0xFFFFFF | ((int) clamp(0xFF * 2 * mElevenAnim, 0, 0xFF)
-                            << 24);
-                    mEleven.setTint(alpha & color);
-                    mEleven.draw(canvas);
-                }
-
-                // don't want to use the rounded value here since the quantization will be visible
-                final float angle = valueToAngle(mValue);
-
-                // it's easier to draw at far-right and rotate backwards
-                canvas.rotate(-angle, w2, h2);
-                mPaint.setColor(Color.WHITE);
-                final float dimple = w2 / 12f;
-                canvas.drawCircle(w - radius - dimple * 2, h2, dimple, mPaint);
-            }
-
-            float clamp(float x, float a, float b) {
-                return x < a ? a : x > b ? b : x;
-            }
-
-            float angleToValue(float a) {
-                return 1f - clamp(a / (360 - 45), 0f, 1f);
-            }
-
-            // rotation: min is at 4:30, max is at 3:00
-            float valueToAngle(float v) {
-                return (1f - v) * (360 - 45);
-            }
-
-            public void touchAngle(float a) {
-                final int oldUserLevel = getUserLevel();
-                final float newValue = angleToValue(a);
-                // this is how we prevent the knob from snapping from max back to min, or from
-                // jumping around wherever the user presses. The new value must be pretty close
-                // to the
-                // previous one.
-                if (Math.abs(newValue - getValue()) < VALUE_CHANGE_MAX) {
-                    setValue(newValue);
-
-                    if (isLocked() && oldUserLevel != STEPS - 1 && getUserLevel() == STEPS - 1) {
-                        mUnlockTries--;
-                    } else if (!isLocked() && getUserLevel() == 0) {
-                        mUnlockTries = UNLOCK_TRIES;
-                    }
-
-                    if (!isLocked()) {
-                        if (getUserLevel() == STEPS && mElevenAnim != 1f
-                                && !mElevenShowAnimator.isRunning()) {
-                            mElevenHideAnimator.cancel();
-                            mElevenShowAnimator.start();
-                        } else if (getUserLevel() != STEPS && mElevenAnim == 1f
-                                && !mElevenHideAnimator.isRunning()) {
-                            mElevenShowAnimator.cancel();
-                            mElevenHideAnimator.start();
-                        }
-                    }
-                }
-            }
-
-            @Override
-            public void setAlpha(int i) {
-            }
-
-            @Override
-            public void setColorFilter(@Nullable ColorFilter colorFilter) {
-            }
-
-            @Override
-            public int getOpacity() {
-                return PixelFormat.TRANSLUCENT;
-            }
+        public void update(long dt) {
+            mDt = dt;
         }
     }
 }
-
-
-

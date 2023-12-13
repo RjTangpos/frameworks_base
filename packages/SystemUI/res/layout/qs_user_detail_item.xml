@@ -18,14 +18,13 @@
 
 <!-- LinearLayout -->
 <com.android.systemui.qs.tiles.UserDetailItemView
+        android:id="@+id/user_item"
         xmlns:android="http://schemas.android.com/apk/res/android"
         xmlns:systemui="http://schemas.android.com/apk/res-auto"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:gravity="top|center_horizontal"
-        android:paddingTop="16dp"
-        android:minHeight="112dp"
         android:clipChildren="false"
         android:clipToPadding="false"
         android:focusable="true"
@@ -39,8 +38,8 @@
             android:layout_height="@dimen/qs_framed_avatar_size"
             android:layout_marginBottom="7dp"
             systemui:frameWidth="6dp"
-            systemui:badgeDiameter="18dp"
-            systemui:badgeMargin="1dp"
+            systemui:badgeDiameter="15dp"
+            systemui:badgeMargin="5dp"
             systemui:framePadding="-1dp"
             systemui:frameColor="@color/qs_user_avatar_frame"/>
 
@@ -51,10 +50,11 @@
                 android:id="@+id/user_name"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:gravity="center_horizontal" />
+                android:gravity="center_horizontal"
+                android:hyphenationFrequency="full"/>
         <ImageView
                 android:id="@+id/restricted_padlock"
-                android:layout_width="@dimen/qs_detail_item_secondary_text_size"
+                android:layout_width="@dimen/qs_tile_text_size"
                 android:layout_height="match_parent"
                 android:gravity="center_vertical"
                 android:src="@drawable/ic_info"

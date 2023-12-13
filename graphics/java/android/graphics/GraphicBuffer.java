@@ -57,7 +57,7 @@ public class GraphicBuffer implements Parcelable {
     private final int mUsage;
     // Note: do not rename, this field is used by native code
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    private final long mNativeObject;
+    private long mNativeObject;
 
     // These two fields are only used by lock/unlockCanvas()
     private Canvas mCanvas;
@@ -95,20 +95,6 @@ public class GraphicBuffer implements Parcelable {
         mFormat = format;
         mUsage = usage;
         mNativeObject = nativeObject;
-    }
-
-    /**
-     * For SurfaceControl JNI.
-     * @hide
-     */
-    @UnsupportedAppUsage
-    public static GraphicBuffer createFromExisting(int width, int height,
-            int format, int usage, long unwrappedNativeObject) {
-        long nativeObject = nWrapGraphicBuffer(unwrappedNativeObject);
-        if (nativeObject != 0) {
-            return new GraphicBuffer(width, height, format, usage, nativeObject);
-        }
-        return null;
     }
 
     /**
@@ -233,6 +219,7 @@ public class GraphicBuffer implements Parcelable {
         if (!mDestroyed) {
             mDestroyed = true;
             nDestroyGraphicBuffer(mNativeObject);
+            mNativeObject = 0;
         }
     }
 
@@ -253,7 +240,7 @@ public class GraphicBuffer implements Parcelable {
     @Override
     protected void finalize() throws Throwable {
         try {
-            if (!mDestroyed) nDestroyGraphicBuffer(mNativeObject);
+            destroy();
         } finally {
             super.finalize();
         }
@@ -314,6 +301,5 @@ public class GraphicBuffer implements Parcelable {
     private static native long nReadGraphicBufferFromParcel(Parcel in);
     private static native boolean nLockCanvas(long nativeObject, Canvas canvas, Rect dirty);
     private static native boolean nUnlockCanvasAndPost(long nativeObject, Canvas canvas);
-    private static native long nWrapGraphicBuffer(long nativeObject);
     private static native GraphicBuffer nCreateFromHardwareBuffer(HardwareBuffer buffer);
 }

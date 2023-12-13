@@ -19,15 +19,28 @@ package com.android.systemui.qs.tiles;
 import android.app.UiModeManager;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.text.TextUtils;
+import android.view.View;
 import android.widget.Switch;
 
+import androidx.annotation.Nullable;
+
+import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto;
 import com.android.systemui.R;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.QsEventLogger;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.statusbar.policy.BatteryController;
 import com.android.systemui.statusbar.policy.ConfigurationController;
@@ -47,16 +60,30 @@ import javax.inject.Inject;
 public class UiModeNightTile extends QSTileImpl<QSTile.BooleanState> implements
         ConfigurationController.ConfigurationListener,
         BatteryController.BatteryStateChangeCallback {
+
+    public static final String TILE_SPEC = "dark";
+
     public static DateTimeFormatter formatter = DateTimeFormatter.ofPattern("hh:mm a");
-    private final Icon mIcon = ResourceIcon.get(
-            com.android.internal.R.drawable.ic_qs_ui_mode_night);
-    private UiModeManager mUiModeManager;
+    private final UiModeManager mUiModeManager;
     private final BatteryController mBatteryController;
     private final LocationController mLocationController;
     @Inject
-    public UiModeNightTile(QSHost host, ConfigurationController configurationController,
-            BatteryController batteryController, LocationController locationController) {
-        super(host);
+    public UiModeNightTile(
+            QSHost host,
+            QsEventLogger uiEventLogger,
+            @Background Looper backgroundLooper,
+            @Main Handler mainHandler,
+            FalsingManager falsingManager,
+            MetricsLogger metricsLogger,
+            StatusBarStateController statusBarStateController,
+            ActivityStarter activityStarter,
+            QSLogger qsLogger,
+            ConfigurationController configurationController,
+            BatteryController batteryController,
+            LocationController locationController
+    ) {
+        super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                statusBarStateController, activityStarter, qsLogger);
         mBatteryController = batteryController;
         mUiModeManager = host.getUserContext().getSystemService(UiModeManager.class);
         mLocationController = locationController;
@@ -80,7 +107,7 @@ public class UiModeNightTile extends QSTileImpl<QSTile.BooleanState> implements
     }
 
     @Override
-    protected void handleClick() {
+    protected void handleClick(@Nullable View view) {
         if (getState().state == Tile.STATE_UNAVAILABLE) {
             return;
         }
@@ -105,23 +132,32 @@ public class UiModeNightTile extends QSTileImpl<QSTile.BooleanState> implements
                     ? R.string.quick_settings_dark_mode_secondary_label_until_sunrise
                     : R.string.quick_settings_dark_mode_secondary_label_on_at_sunset);
         } else if (uiMode == UiModeManager.MODE_NIGHT_CUSTOM) {
-            final boolean use24HourFormat = android.text.format.DateFormat.is24HourFormat(mContext);
-            final LocalTime time;
-            if (nightMode) {
-                time = mUiModeManager.getCustomNightModeEnd();
+            int nightModeCustomType = mUiModeManager.getNightModeCustomType();
+            if (nightModeCustomType == UiModeManager.MODE_NIGHT_CUSTOM_TYPE_SCHEDULE) {
+                final boolean use24HourFormat = android.text.format.DateFormat.is24HourFormat(
+                        mContext);
+                final LocalTime time;
+                if (nightMode) {
+                    time = mUiModeManager.getCustomNightModeEnd();
+                } else {
+                    time = mUiModeManager.getCustomNightModeStart();
+                }
+                state.secondaryLabel = mContext.getResources().getString(nightMode
+                                ? R.string.quick_settings_dark_mode_secondary_label_until
+                                : R.string.quick_settings_dark_mode_secondary_label_on_at,
+                        use24HourFormat ? time.toString() : formatter.format(time));
+            } else if (nightModeCustomType == UiModeManager.MODE_NIGHT_CUSTOM_TYPE_BEDTIME) {
+                state.secondaryLabel = mContext.getResources().getString(nightMode
+                        ? R.string.quick_settings_dark_mode_secondary_label_until_bedtime_ends
+                        : R.string.quick_settings_dark_mode_secondary_label_on_at_bedtime);
             } else {
-                time = mUiModeManager.getCustomNightModeStart();
+                state.secondaryLabel = null;
             }
-            state.secondaryLabel = mContext.getResources().getString(nightMode
-                    ? R.string.quick_settings_dark_mode_secondary_label_until
-                    : R.string.quick_settings_dark_mode_secondary_label_on_at,
-                    use24HourFormat ? time.toString() : formatter.format(time));
         } else {
             state.secondaryLabel = null;
         }
         state.value = nightMode;
         state.label = mContext.getString(R.string.quick_settings_ui_mode_night_label);
-        state.icon = mIcon;
         state.contentDescription = TextUtils.isEmpty(state.secondaryLabel)
                 ? state.label
                 : TextUtils.concat(state.label, ", ", state.secondaryLabel);
@@ -130,7 +166,9 @@ public class UiModeNightTile extends QSTileImpl<QSTile.BooleanState> implements
         } else {
             state.state = state.value ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
         }
-        state.showRippleEffect = false;
+        state.icon = ResourceIcon.get(state.state == Tile.STATE_ACTIVE
+                ? R.drawable.qs_light_dark_theme_icon_on
+                : R.drawable.qs_light_dark_theme_icon_off);
         state.expandedAccessibilityClassName = Switch.class.getName();
     }
 

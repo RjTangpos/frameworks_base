@@ -17,20 +17,25 @@
 package android.app;
 
 import android.app.ActivityManager;
+import android.app.ActivityManager.PendingIntentInfo;
+import android.app.ActivityTaskManager;
+import android.app.ApplicationStartInfo;
 import android.app.ApplicationErrorReport;
 import android.app.ApplicationExitInfo;
 import android.app.ContentProviderHolder;
 import android.app.GrantedUriPermission;
+import android.app.IApplicationStartInfoCompleteListener;
 import android.app.IApplicationThread;
 import android.app.IActivityController;
 import android.app.IAppTask;
-import android.app.IAssistDataReceiver;
+import android.app.IForegroundServiceObserver;
 import android.app.IInstrumentationWatcher;
 import android.app.IProcessObserver;
 import android.app.IServiceConnection;
 import android.app.IStopUserCallback;
 import android.app.ITaskStackListener;
 import android.app.IUiAutomationConnection;
+import android.app.IUidFrozenStateChangedCallback;
 import android.app.IUidObserver;
 import android.app.IUserSwitchObserver;
 import android.app.Notification;
@@ -51,6 +56,7 @@ import android.content.pm.ConfigurationInfo;
 import android.content.pm.IPackageDataObserver;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.ProviderInfo;
+import android.content.pm.ResolveInfo;
 import android.content.pm.UserInfo;
 import android.content.res.Configuration;
 import android.content.LocusId;
@@ -69,7 +75,6 @@ import android.os.RemoteCallback;
 import android.os.StrictMode;
 import android.os.WorkSource;
 import android.service.voice.IVoiceInteractionSession;
-import android.view.IRecentsAnimationRunner;
 import android.view.RemoteAnimationDefinition;
 import android.view.RemoteAnimationAdapter;
 import com.android.internal.app.IVoiceInteractor;
@@ -91,14 +96,64 @@ interface IActivityManager {
     // below block of transactions.
 
     // Since these transactions are also called from native code, these must be kept in sync with
-    // the ones in frameworks/native/libs/binder/include/binder/IActivityManager.h
+    // the ones in frameworks/native/libs/binder/include_activitymanager/binder/ActivityManager.h
     // =============== Beginning of transactions used on native side as well ======================
     ParcelFileDescriptor openContentUri(in String uriString);
     void registerUidObserver(in IUidObserver observer, int which, int cutpoint,
             String callingPackage);
     void unregisterUidObserver(in IUidObserver observer);
+
+    /**
+     * Registers a UidObserver with a uid filter.
+     *
+     * @param observer The UidObserver implementation to register.
+     * @param which    A bitmask of events to observe. See ActivityManager.UID_OBSERVER_*.
+     * @param cutpoint The cutpoint for onUidStateChanged events. When the state crosses this
+     *                 threshold in either direction, onUidStateChanged will be called.
+     * @param callingPackage The name of the calling package.
+     * @param uids     A list of uids to watch. If all uids are to be watched, use
+     *                 registerUidObserver instead.
+     * @throws RemoteException
+     * @return Returns A binder token identifying the UidObserver registration.
+     */
+    IBinder registerUidObserverForUids(in IUidObserver observer, int which, int cutpoint,
+            String callingPackage, in int[] uids);
+
+    /**
+     * Adds a uid to the list of uids that a UidObserver will receive updates about.
+     *
+     * @param observerToken  The binder token identifying the UidObserver registration.
+     * @param callingPackage The name of the calling package.
+     * @param uid            The uid to watch.
+     * @throws RemoteException
+     */
+    void addUidToObserver(in IBinder observerToken, String callingPackage, int uid);
+
+    /**
+     * Removes a uid from the list of uids that a UidObserver will receive updates about.
+     *
+     * @param observerToken  The binder token identifying the UidObserver registration.
+     * @param callingPackage The name of the calling package.
+     * @param uid            The uid to stop watching.
+     * @throws RemoteException
+     */
+    void removeUidFromObserver(in IBinder observerToken, String callingPackage, int uid);
+
     boolean isUidActive(int uid, String callingPackage);
+    @JavaPassthrough(annotation=
+            "@android.annotation.RequiresPermission(allOf = {android.Manifest.permission.PACKAGE_USAGE_STATS, android.Manifest.permission.INTERACT_ACROSS_USERS_FULL}, conditional = true)")
     int getUidProcessState(int uid, in String callingPackage);
+    @UnsupportedAppUsage
+    int checkPermission(in String permission, int pid, int uid);
+
+    /** Logs start of an API call to associate with an FGS, used for FGS Type Metrics */
+    oneway void logFgsApiBegin(int apiType, int appUid, int appPid);
+
+    /** Logs stop of an API call to associate with an FGS, used for FGS Type Metrics */
+    oneway void logFgsApiEnd(int apiType, int appUid, int appPid);
+
+    /** Logs API state change to associate with an FGS, used for FGS Type Metrics */
+    oneway void logFgsApiStateChanged(int apiType, int state, int appUid, int appPid);
     // =============== End of transactions used on native side as well ============================
 
     // Special low-level communication with activity manager.
@@ -122,8 +177,8 @@ interface IActivityManager {
             in IIntentReceiver receiver, in IntentFilter filter,
             in String requiredPermission, int userId, int flags);
     Intent registerReceiverWithFeature(in IApplicationThread caller, in String callerPackage,
-            in String callingFeatureId, in IIntentReceiver receiver, in IntentFilter filter,
-            in String requiredPermission, int userId, int flags);
+            in String callingFeatureId, in String receiverId, in IIntentReceiver receiver,
+            in IntentFilter filter, in String requiredPermission, int userId, int flags);
     @UnsupportedAppUsage
     void unregisterReceiver(in IIntentReceiver receiver);
     /** @deprecated Use {@link #broadcastIntentWithFeature} instead */
@@ -134,13 +189,14 @@ interface IActivityManager {
             int appOp, in Bundle options, boolean serialized, boolean sticky, int userId);
     int broadcastIntentWithFeature(in IApplicationThread caller, in String callingFeatureId,
             in Intent intent, in String resolvedType, in IIntentReceiver resultTo, int resultCode,
-            in String resultData, in Bundle map, in String[] requiredPermissions,
-            int appOp, in Bundle options, boolean serialized, boolean sticky, int userId);
+            in String resultData, in Bundle map, in String[] requiredPermissions, in String[] excludePermissions,
+            in String[] excludePackages, int appOp, in Bundle options, boolean serialized, boolean sticky, int userId);
     void unbroadcastIntent(in IApplicationThread caller, in Intent intent, int userId);
     @UnsupportedAppUsage
     oneway void finishReceiver(in IBinder who, int resultCode, in String resultData, in Bundle map,
             boolean abortBroadcast, int flags);
     void attachApplication(in IApplicationThread app, long startSeq);
+    void finishAttachApplication(long startSeq);
     List<ActivityManager.RunningTaskInfo> getTasks(int maxNum);
     @UnsupportedAppUsage
     void moveTaskToFront(in IApplicationThread caller, in String callingPackage, int task,
@@ -163,10 +219,10 @@ interface IActivityManager {
     // Currently keeping old bindService because it is on the greylist
     @UnsupportedAppUsage
     int bindService(in IApplicationThread caller, in IBinder token, in Intent service,
-            in String resolvedType, in IServiceConnection connection, int flags,
+            in String resolvedType, in IServiceConnection connection, long flags,
             in String callingPackage, int userId);
-    int bindIsolatedService(in IApplicationThread caller, in IBinder token, in Intent service,
-            in String resolvedType, in IServiceConnection connection, int flags,
+    int bindServiceInstance(in IApplicationThread caller, in IBinder token, in Intent service,
+            in String resolvedType, in IServiceConnection connection, long flags,
             in String instanceName, in String callingPackage, int userId);
     void updateServiceGroup(in IServiceConnection connection, int group, int importance);
     @UnsupportedAppUsage
@@ -216,10 +272,10 @@ interface IActivityManager {
     void setProcessLimit(int max);
     @UnsupportedAppUsage
     int getProcessLimit();
-    @UnsupportedAppUsage
-    int checkPermission(in String permission, int pid, int uid);
     int checkUriPermission(in Uri uri, int pid, int uid, int mode, int userId,
             in IBinder callerToken);
+    int[] checkUriPermissions(in List<Uri> uris, int pid, int uid, int mode, int userId,
+                in IBinder callerToken);
     void grantUriPermission(in IApplicationThread caller, in String targetPkg, in Uri uri,
             int mode, int userId);
     void revokeUriPermission(in IApplicationThread caller, in String targetPkg, in Uri uri,
@@ -246,8 +302,15 @@ interface IActivityManager {
             in IBinder token, in String resultWho, int requestCode, in Intent[] intents,
             in String[] resolvedTypes, int flags, in Bundle options, int userId);
     void cancelIntentSender(in IIntentSender sender);
-    String getPackageForIntentSender(in IIntentSender sender);
-    void registerIntentSenderCancelListener(in IIntentSender sender, in IResultReceiver receiver);
+    ActivityManager.PendingIntentInfo getInfoForIntentSender(in IIntentSender sender);
+    /**
+      This method used to be called registerIntentSenderCancelListener(), was void, and
+      would call `receiver` if the PI has already been canceled.
+      Now it returns false if the PI is cancelled, without calling `receiver`.
+      The method was renamed to catch calls to the original method.
+     */
+    boolean registerIntentSenderCancelListenerEx(in IIntentSender sender,
+        in IResultReceiver receiver);
     void unregisterIntentSenderCancelListener(in IIntentSender sender, in IResultReceiver receiver);
     void enterSafeMode();
     void noteWakeupAlarm(in IIntentSender sender, in WorkSource workSource, int sourceUid,
@@ -268,8 +331,12 @@ interface IActivityManager {
     List<ActivityManager.ProcessErrorStateInfo> getProcessesInErrorState();
     boolean clearApplicationUserData(in String packageName, boolean keepState,
             in IPackageDataObserver observer, int userId);
+    void stopAppForUser(in String packageName, int userId);
+    /** Returns {@code false} if the callback could not be registered, {@true} otherwise. */
+    boolean registerForegroundServiceObserver(in IForegroundServiceObserver callback);
     @UnsupportedAppUsage
     void forceStopPackage(in String packageName, int userId);
+    void forceStopPackageEvenWhenStopping(in String packageName, int userId);
     boolean killPids(in int[] pids, in String reason, boolean secure);
     @UnsupportedAppUsage
     List<ActivityManager.RunningServiceInfo> getServices(int maxNum, int flags);
@@ -287,14 +354,15 @@ interface IActivityManager {
     void stopAppSwitches();
     @UnsupportedAppUsage
     void resumeAppSwitches();
-    boolean bindBackupAgent(in String packageName, int backupRestoreMode, int targetUserId);
+    boolean bindBackupAgent(in String packageName, int backupRestoreMode, int targetUserId,
+            int backupDestination);
     void backupAgentCreated(in String packageName, in IBinder agent, int userId);
     void unbindBackupAgent(in ApplicationInfo appInfo);
-    int getUidForIntentSender(in IIntentSender sender);
     int handleIncomingUser(int callingPid, int callingUid, int userId, boolean allowAll,
             boolean requireFull, in String name, in String callerPackage);
     void addPackageDependency(in String packageName);
-    void killApplication(in String pkg, int appId, int userId, in String reason);
+    void killApplication(in String pkg, int appId, int userId, in String reason,
+            int exitInfoReason);
     @UnsupportedAppUsage
     void closeSystemDialogs(in String reason);
     @UnsupportedAppUsage
@@ -315,16 +383,13 @@ interface IActivityManager {
     @UnsupportedAppUsage
     void handleApplicationStrictModeViolation(in IBinder app, int penaltyMask,
             in StrictMode.ViolationInfo crashInfo);
+    void registerStrictModeCallback(in IBinder binder);
     boolean isTopActivityImmersive();
-    void crashApplication(int uid, int initialPid, in String packageName, int userId,
-            in String message, boolean force);
-    /** @deprecated -- use getProviderMimeTypeAsync */
-    @UnsupportedAppUsage(maxTargetSdk = 29, publicAlternatives =
-            "Use {@link android.content.ContentResolver#getType} public API instead.")
-    String getProviderMimeType(in Uri uri, int userId);
-
-    oneway void getProviderMimeTypeAsync(in Uri uri, int userId, in RemoteCallback resultCallback);
-
+    void crashApplicationWithType(int uid, int initialPid, in String packageName, int userId,
+            in String message, boolean force, int exceptionTypeId);
+    void crashApplicationWithTypeWithExtras(int uid, int initialPid, in String packageName,
+            int userId, in String message, boolean force, int exceptionTypeId, in Bundle extras);
+    oneway void getMimeTypeFilterAsync(in Uri uri, int userId, in RemoteCallback resultCallback);
     // Cause the specified process to dump the specified heap.
     boolean dumpHeap(in String process, int userId, boolean managed, boolean mallocInfo,
             boolean runGc, in String path, in ParcelFileDescriptor fd,
@@ -335,7 +400,10 @@ interface IActivityManager {
     void setPackageScreenCompatMode(in String packageName, int mode);
     @UnsupportedAppUsage
     boolean switchUser(int userid);
+    String getSwitchingFromUserMessage();
+    String getSwitchingToUserMessage();
     @UnsupportedAppUsage
+    void setStopUserOnSwitch(int value);
     boolean removeTask(int taskId);
     @UnsupportedAppUsage
     void registerProcessObserver(in IProcessObserver observer);
@@ -344,6 +412,8 @@ interface IActivityManager {
     boolean isIntentSenderTargetedToPackage(in IIntentSender sender);
     @UnsupportedAppUsage
     void updatePersistentConfiguration(in Configuration values);
+    void updatePersistentConfigurationWithAttribution(in Configuration values,
+            String callingPackageName, String callingAttributionTag);
     @UnsupportedAppUsage
     long[] getProcessPss(in int[] pids);
     void showBootMessage(in CharSequence msg, boolean always);
@@ -360,6 +430,7 @@ interface IActivityManager {
     boolean killProcessesBelowForeground(in String reason);
     @UnsupportedAppUsage
     UserInfo getCurrentUser();
+    int getCurrentUserId();
     // This is not public because you need to be very careful in how you
     // manage your activity to make sure it is always the uid you expect.
     @UnsupportedAppUsage
@@ -368,8 +439,6 @@ interface IActivityManager {
     void unstableProviderDied(in IBinder connection);
     @UnsupportedAppUsage
     boolean isIntentSenderAnActivity(in IIntentSender sender);
-    boolean isIntentSenderAForegroundService(in IIntentSender sender);
-    boolean isIntentSenderABroadcast(in IIntentSender sender);
     /** @deprecated Use {@link startActivityAsUserWithFeature} instead */
     @UnsupportedAppUsage(maxTargetSdk=29, publicAlternatives="Use {@code android.content.Context#createContextAsUser(android.os.UserHandle, int)} and {@link android.content.Context#startActivity(android.content.Intent)} instead")
     int startActivityAsUser(in IApplicationThread caller, in String callingPackage,
@@ -429,7 +498,7 @@ interface IActivityManager {
 
     void requestInteractiveBugReport();
     void requestFullBugReport();
-    void requestRemoteBugReport();
+    void requestRemoteBugReport(long nonce);
     boolean launchBugReportHandlerApp();
     List<String> getBugreportWhitelistedPackages();
 
@@ -444,12 +513,10 @@ interface IActivityManager {
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void hang(in IBinder who, boolean allowRestart);
 
-    @UnsupportedAppUsage
-    List<ActivityManager.StackInfo> getAllStackInfos();
-    @UnsupportedAppUsage
-    void moveTaskToStack(int taskId, int stackId, boolean toTop);
-    void setFocusedStack(int stackId);
-    ActivityManager.StackInfo getFocusedStackInfo();
+    List<ActivityTaskManager.RootTaskInfo> getAllRootTaskInfos();
+    void moveTaskToRootTask(int taskId, int rootTaskId, boolean toTop);
+    void setFocusedRootTask(int taskId);
+    ActivityTaskManager.RootTaskInfo getFocusedRootTaskInfo();
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void restart();
     void performIdleMaintenance();
@@ -457,20 +524,25 @@ interface IActivityManager {
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     Rect getTaskBounds(int taskId);
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
-    boolean setProcessMemoryTrimLevel(in String process, int uid, int level);
+    boolean setProcessMemoryTrimLevel(in String process, int userId, int level);
 
 
     // Start of L transactions
     String getTagForIntentSender(in IIntentSender sender, in String prefix);
+
+    /**
+      * Starts a user in the background (i.e., while another user is running in the foreground).
+      *
+      * Notice that a background user is "invisible" and cannot launch activities. Starting on
+      * Android U, all users started with this method are invisible, even profiles (prior to Android
+      * U, profiles started with this method would be visible if its parent was the current user) -
+      * if you want to start a profile visible, you should call {@code startProfile()} instead.
+      */
     @UnsupportedAppUsage
     boolean startUserInBackground(int userid);
+
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isInLockTaskMode();
-    @UnsupportedAppUsage
-    void startRecentsActivity(in Intent intent, in IAssistDataReceiver assistDataReceiver,
-            in IRecentsAnimationRunner recentsAnimationRunner);
-    @UnsupportedAppUsage
-    void cancelRecentsAnimation(boolean restoreHomeStackPosition);
     @UnsupportedAppUsage
     int startActivityFromRecents(int taskId, in Bundle options);
     @UnsupportedAppUsage
@@ -478,8 +550,6 @@ interface IActivityManager {
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isTopOfTask(in IBinder token);
     void bootAnimationComplete();
-    int checkPermissionWithToken(in String permission, int pid, int uid,
-            in IBinder callerToken);
     @UnsupportedAppUsage
     void registerTaskStackListener(in ITaskStackListener listener);
     void unregisterTaskStackListener(in ITaskStackListener listener);
@@ -499,7 +569,6 @@ interface IActivityManager {
     void noteAlarmFinish(in IIntentSender sender, in WorkSource workSource, int sourceUid, in String tag);
     @UnsupportedAppUsage
     int getPackageProcessState(in String packageName, in String callingPackage);
-    void updateDeviceOwner(in String packageName);
 
     // Start of N transactions
     // Start Binder transaction tracking for all applications.
@@ -509,32 +578,44 @@ interface IActivityManager {
     // descriptor.
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean stopBinderTrackingAndDump(in ParcelFileDescriptor fd);
-    /**
-     * Try to place task to provided position. The final position might be different depending on
-     * current user and stacks state. The task will be moved to target stack if it's currently in
-     * different stack.
-     */
-    @UnsupportedAppUsage
-    void positionTaskInStack(int taskId, int stackId, int position);
+
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void suppressResizeConfigChanges(boolean suppress);
-    @UnsupportedAppUsage
-    boolean moveTopActivityToPinnedStack(int stackId, in Rect bounds);
-    boolean isAppStartModeDisabled(int uid, in String packageName);
+
+    /**
+     * @deprecated Use {@link #unlockUser2(int, IProgressListener)} instead, since the token and
+     * secret arguments no longer do anything.  This method still exists only because it is marked
+     * with {@code @UnsupportedAppUsage}, so it might not be safe to remove it or change its
+     * signature.
+     */
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean unlockUser(int userid, in byte[] token, in byte[] secret,
             in IProgressListener listener);
+
+    /**
+     * Tries to unlock the given user.
+     * <p>
+     * This will succeed only if the user's CE storage key is already unlocked or if the user
+     * doesn't have a lockscreen credential set.
+     *
+     * @param userId The ID of the user to unlock.
+     * @param listener An optional progress listener.
+     *
+     * @return true if the user was successfully unlocked, otherwise false.
+     */
+    boolean unlockUser2(int userId, in IProgressListener listener);
+
     void killPackageDependents(in String packageName, int userId);
-    @UnsupportedAppUsage
-    void removeStack(int stackId);
     void makePackageIdle(String packageName, int userId);
+    void setDeterministicUidIdle(boolean deterministic);
     int getMemoryTrimLevel();
     boolean isVrModePackageEnabled(in ComponentName packageName);
     void notifyLockedProfile(int userId);
     void startConfirmDeviceCredentialIntent(in Intent intent, in Bundle options);
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void sendIdleJobTrigger();
-    int sendIntentSender(in IIntentSender target, in IBinder whitelistToken, int code,
+    int sendIntentSender(in IApplicationThread caller, in IIntentSender target,
+            in IBinder whitelistToken, int code,
             in Intent intent, in String resolvedType, in IIntentReceiver finishedReceiver,
             in String requiredPermission, in Bundle options);
     boolean isBackgroundRestricted(in String packageName);
@@ -552,18 +633,9 @@ interface IActivityManager {
     void setHasTopUi(boolean hasTopUi);
 
     // Start of O transactions
-    int restartUserInBackground(int userId);
     /** Cancels the window transitions for the given task. */
     @UnsupportedAppUsage
     void cancelTaskWindowTransition(int taskId);
-    /**
-     * @param taskId the id of the task to retrieve the sAutoapshots for
-     * @param isLowResolution if set, if the snapshot needs to be loaded from disk, this will load
-     *                          a reduced resolution of it, which is much faster
-     * @return a graphic buffer representing a screenshot of a task
-     */
-    @UnsupportedAppUsage
-    ActivityManager.TaskSnapshot getTaskSnapshot(int taskId, boolean isLowResolution);
     void scheduleApplicationInfoChanged(in List<String> packageNames, int userId);
     void setPersistentVrThread(int tid);
 
@@ -571,7 +643,7 @@ interface IActivityManager {
     /**
      * Add a bare uid to the background restrictions whitelist.  Only the system uid may call this.
      */
-    void backgroundWhitelistUid(int uid);
+    void backgroundAllowlistUid(int uid);
 
     // Start of P transactions
     /**
@@ -595,6 +667,12 @@ interface IActivityManager {
      */
     void stopDelegateShellPermissionIdentity();
 
+    /**
+     * Method for the shell UID to get currently adopted permissions for an active instrumentation.
+     * An active instrumentation is one running and started from the shell.
+     */
+    List<String> getDelegatedShellPermissions();
+
     /** Returns a file descriptor that'll be closed when the system server process dies. */
     ParcelFileDescriptor getLifeMonitor();
 
@@ -608,6 +686,45 @@ interface IActivityManager {
      * Method for the app to tell system that it's wedged and would like to trigger an ANR.
      */
     void appNotResponding(String reason);
+
+    /**
+     * Return a list of {@link ApplicationStartInfo} records.
+     *
+     * <p class="note"> Note: System stores historical information in a ring buffer, older
+     * records would be overwritten by newer records. </p>
+     *
+     * @param packageName Optional, an empty value means match all packages belonging to the
+     *                    caller's UID. If this package belongs to another UID, you must hold
+     *                    {@link android.Manifest.permission#DUMP} in order to retrieve it.
+     * @param maxNum      Optional, the maximum number of results should be returned; A value of 0
+     *                    means to ignore this parameter and return all matching records
+     * @param userId      The userId in the multi-user environment.
+     *
+     * @return a list of {@link ApplicationStartInfo} records with the matching criteria, sorted in
+     *         the order from most recent to least recent.
+     */
+    ParceledListSlice<ApplicationStartInfo> getHistoricalProcessStartReasons(String packageName,
+            int maxNum, int userId);
+
+
+    /**
+     * Sets a callback for {@link ApplicationStartInfo} upon completion of collecting startup data.
+     *
+     * <p class="note"> Note: completion of startup is no guaranteed and as such this callback may not occur.</p>
+     *
+     * @param listener    A listener to for the callback upon completion of startup data collection.
+     * @param userId      The userId in the multi-user environment.
+     */
+    void setApplicationStartInfoCompleteListener(IApplicationStartInfoCompleteListener listener,
+            int userId);
+
+
+    /**
+     * Removes callback for {@link ApplicationStartInfo} upon completion of collecting startup data.
+     *
+     * @param userId      The userId in the multi-user environment.
+     */
+    void removeApplicationStartInfoCompleteListener(int userId);
 
     /**
      * Return a list of {@link ApplicationExitInfo} records.
@@ -678,6 +795,10 @@ interface IActivityManager {
      */
     boolean isAppFreezerSupported();
 
+    /**
+     * Return whether the app freezer is enabled (true) or not (false) by this system.
+     */
+    boolean isAppFreezerEnabled();
 
     /**
      * Kills uid with the reason of permission change.
@@ -685,12 +806,122 @@ interface IActivityManager {
     void killUidForPermissionChange(int appId, int userId, String reason);
 
     /**
+     * Resets the state of the {@link com.android.server.am.AppErrors} instance.
+     * This is intended for testing within the CTS only and is protected by
+     * android.permission.RESET_APP_ERRORS.
+     */
+    void resetAppErrors();
+
+    /**
      * Control the app freezer state. Returns true in case of success, false if the operation
-     * didn't succeed (for example, when the app freezer isn't supported). 
-     * Handling the freezer state via this method is reentrant, that is it can be 
+     * didn't succeed (for example, when the app freezer isn't supported).
+     * Handling the freezer state via this method is reentrant, that is it can be
      * disabled and re-enabled multiple times in parallel. As long as there's a 1:1 disable to
      * enable match, the freezer is re-enabled at last enable only.
      * @param enable set it to true to enable the app freezer, false to disable it.
      */
     boolean enableAppFreezer(in boolean enable);
+
+    /**
+     * Suppress or reenable the rate limit on foreground service notification deferral.
+     * This is for use within CTS and is protected by android.permission.WRITE_DEVICE_CONFIG.
+     *
+     * @param enable false to suppress rate-limit policy; true to reenable it.
+     */
+    boolean enableFgsNotificationRateLimit(in boolean enable);
+
+    /**
+     * Holds the AM lock for the specified amount of milliseconds.
+     * This is intended for use by the tests that need to imitate lock contention.
+     * The token should be obtained by
+     * {@link android.content.pm.PackageManager#getHoldLockToken()}.
+     */
+    void holdLock(in IBinder token, in int durationMs);
+
+    /**
+     * Starts a profile.
+     * @param userId the user id of the profile.
+     * @return true if the profile has been successfully started or if the profile is already
+     * running, false if profile failed to start.
+     * @throws IllegalArgumentException if the user is not a profile.
+     */
+    boolean startProfile(int userId);
+
+    /**
+     * Stops a profile.
+     * @param userId the user id of the profile.
+     * @return true if the profile has been successfully stopped or is already stopped. Otherwise
+     * the exceptions listed below are thrown.
+     * @throws IllegalArgumentException if the user is not a profile.
+     */
+    boolean stopProfile(int userId);
+
+    /** Called by PendingIntent.queryIntentComponents() */
+    ParceledListSlice queryIntentComponentsForIntentSender(in IIntentSender sender, int matchFlags);
+
+    @JavaPassthrough(annotation=
+            "@android.annotation.RequiresPermission(allOf = {android.Manifest.permission.PACKAGE_USAGE_STATS, android.Manifest.permission.INTERACT_ACROSS_USERS_FULL}, conditional = true)")
+    int getUidProcessCapabilities(int uid, in String callingPackage);
+
+    /** Blocks until all broadcast queues become idle. */
+    void waitForBroadcastIdle();
+    void waitForBroadcastBarrier();
+
+    /** Delays delivering broadcasts to the specified package. */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.DUMP)")
+    void forceDelayBroadcastDelivery(in String targetPackage, long delayedDurationMs);
+
+    /** Checks if the modern broadcast queue is enabled. */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.DUMP)")
+    boolean isModernBroadcastQueueEnabled();
+
+    /** Checks if the process represented by the given pid is frozen. */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.DUMP)")
+    boolean isProcessFrozen(int pid);
+
+    /**
+     * @return The reason code of whether or not the given UID should be exempted from background
+     * restrictions here.
+     *
+     * <p>
+     * Note: Call it with caution as it'll try to acquire locks in other services.
+     * </p>
+     */
+    int getBackgroundRestrictionExemptionReason(int uid);
+
+    // Start (?) of T transactions
+    /**
+     * Similar to {@link #startUserInBackgroundWithListener(int userId, IProgressListener unlockProgressListener)},
+     * but setting the user as the visible user of that display (i.e., allowing the user and its
+     * running profiles to launch activities on that display).
+     *
+     * <p>Typically used only by automotive builds when the vehicle has multiple displays.
+     */
+    @JavaPassthrough(annotation=
+            "@android.annotation.RequiresPermission(anyOf = {android.Manifest.permission.MANAGE_USERS, android.Manifest.permission.CREATE_USERS}, conditional = true)")
+    boolean startUserInBackgroundVisibleOnDisplay(int userid, int displayId, IProgressListener unlockProgressListener);
+
+    /**
+     * Similar to {@link #startProfile(int userId)}, but with a listener to report user unlock
+     * progress.
+     */
+    boolean startProfileWithListener(int userid, IProgressListener unlockProgressListener);
+
+    int restartUserInBackground(int userId, int userStartMode);
+
+    /**
+     * Gets the ids of displays that can be used on {@link #startUserInBackgroundVisibleOnDisplay(int userId, int displayId)}.
+     *
+     * <p>Typically used only by automotive builds when the vehicle has multiple displays.
+     */
+    @nullable int[] getDisplayIdsForStartingVisibleBackgroundUsers();
+
+    /** Returns if the service is a short-service is still "alive" and past the timeout. */
+    boolean shouldServiceTimeOut(in ComponentName className, in IBinder token);
+
+    void registerUidFrozenStateChangedCallback(in IUidFrozenStateChangedCallback callback);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.PACKAGE_USAGE_STATS)")
+    void unregisterUidFrozenStateChangedCallback(in IUidFrozenStateChangedCallback callback);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.PACKAGE_USAGE_STATS)")
+    int[] getUidFrozenState(in int[] uids);
 }

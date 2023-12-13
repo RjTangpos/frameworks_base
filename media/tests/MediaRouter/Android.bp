@@ -18,11 +18,15 @@ android_test {
     ],
 
     static_libs: [
-        "android-support-test",
+        "androidx.test.core",
+        "androidx.test.ext.truth",
+        "androidx.test.rules",
+        "compatibility-device-util-axt",
         "mockito-target-minus-junit4",
-        "testng"
+        "testng",
+        "truth-prebuilt",
     ],
-
+    test_suites: ["general-tests"],
     platform_apis: true,
     certificate: "platform",
 }

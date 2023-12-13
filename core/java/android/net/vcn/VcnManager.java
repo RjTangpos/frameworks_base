@@ -38,6 +38,7 @@ import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -72,6 +73,70 @@ import java.util.concurrent.Executor;
 @SystemService(Context.VCN_MANAGEMENT_SERVICE)
 public class VcnManager {
     @NonNull private static final String TAG = VcnManager.class.getSimpleName();
+
+    /**
+     * Key for WiFi entry RSSI thresholds
+     *
+     * <p>The VCN will only migrate to a Carrier WiFi network that has a signal strength greater
+     * than, or equal to this threshold.
+     *
+     * <p>WARNING: The VCN does not listen for changes to this key made after VCN startup.
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_WIFI_ENTRY_RSSI_THRESHOLD_KEY =
+            "vcn_network_selection_wifi_entry_rssi_threshold";
+
+    /**
+     * Key for WiFi entry RSSI thresholds
+     *
+     * <p>If the VCN's selected Carrier WiFi network has a signal strength less than this threshold,
+     * the VCN will attempt to migrate away from the Carrier WiFi network.
+     *
+     * <p>WARNING: The VCN does not listen for changes to this key made after VCN startup.
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY =
+            "vcn_network_selection_wifi_exit_rssi_threshold";
+
+    // TODO: Add separate signal strength thresholds for 2.4 GHz and 5GHz
+
+    /**
+     * Key for transports that need to be marked as restricted by the VCN
+     *
+     * <p>Defaults to TRANSPORT_WIFI if the config does not exist
+     *
+     * @hide
+     */
+    public static final String VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY =
+            "vcn_restricted_transports";
+
+    /**
+     * Key for maximum number of parallel SAs for tunnel aggregation
+     *
+     * <p>If set to a value > 1, multiple tunnels will be set up, and inbound traffic will be
+     * aggregated over the various tunnels.
+     *
+     * <p>Defaults to 1, unless overridden by carrier config
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_TUNNEL_AGGREGATION_SA_COUNT_MAX_KEY =
+            "vcn_tunnel_aggregation_sa_count_max";
+
+    /** List of Carrier Config options to extract from Carrier Config bundles. @hide */
+    @NonNull
+    public static final String[] VCN_RELATED_CARRIER_CONFIG_KEYS =
+            new String[] {
+                VCN_NETWORK_SELECTION_WIFI_ENTRY_RSSI_THRESHOLD_KEY,
+                VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY,
+                VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY,
+                VCN_TUNNEL_AGGREGATION_SA_COUNT_MAX_KEY,
+            };
 
     private static final Map<
                     VcnNetworkPolicyChangeListener, VcnUnderlyingNetworkPolicyListenerBinder>
@@ -141,11 +206,11 @@ public class VcnManager {
      *
      * <p>An app that has carrier privileges for any of the subscriptions in the given group may
      * clear a VCN configuration. This API is ONLY permitted for callers running as the primary
-     * user. Any active VCN will be torn down.
+     * user. Any active VCN associated with this configuration will be torn down.
      *
      * @param subscriptionGroup the subscription group that the configuration should be applied to
-     * @throws SecurityException if the caller does not have carrier privileges, or is not running
-     *     as the primary user
+     * @throws SecurityException if the caller does not have carrier privileges, is not the owner of
+     *     the associated configuration, or is not running as the primary user
      * @throws IOException if the configuration failed to be cleared from disk. This may occur due
      *     to temporary disk errors, or more permanent conditions such as a full disk.
      */
@@ -157,6 +222,28 @@ public class VcnManager {
             mService.clearVcnConfig(subscriptionGroup, mContext.getOpPackageName());
         } catch (ServiceSpecificException e) {
             throw new IOException(e);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Retrieves the list of Subscription Groups for which a VCN Configuration has been set.
+     *
+     * <p>The returned list will include only subscription groups for which an associated {@link
+     * VcnConfig} exists, and the app is either:
+     *
+     * <ul>
+     *   <li>Carrier privileged for that subscription group, or
+     *   <li>Is the provisioning package of the config
+     * </ul>
+     *
+     * @throws SecurityException if the caller is not running as the primary user
+     */
+    @NonNull
+    public List<ParcelUuid> getConfiguredSubscriptionGroups() {
+        try {
+            return mService.getConfiguredSubscriptionGroups(mContext.getOpPackageName());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -437,7 +524,7 @@ public class VcnManager {
          * Invoked when status of the VCN for this callback's subscription group changes.
          *
          * @param statusCode the code for the status change encountered by this {@link
-         *     VcnStatusCallback}'s subscription group.
+         *     VcnStatusCallback}'s subscription group. This value will be one of VCN_STATUS_CODE_*.
          */
         public abstract void onStatusChanged(@VcnStatusCode int statusCode);
 
@@ -445,18 +532,17 @@ public class VcnManager {
          * Invoked when a VCN Gateway Connection corresponding to this callback's subscription group
          * encounters an error.
          *
-         * @param networkCapabilities an array of NetworkCapabilities.NET_CAPABILITY_* capabilities
-         *     for the Gateway Connection that encountered the error, for identification purposes.
-         *     These will be a sorted list with no duplicates and will match {@link
-         *     VcnGatewayConnectionConfig#getExposedCapabilities()} for one of the {@link
-         *     VcnGatewayConnectionConfig}s set in the {@link VcnConfig} for this subscription
-         *     group.
-         * @param errorCode the code to indicate the error that occurred
+         * @param gatewayConnectionName the String GatewayConnection name for the GatewayConnection
+         *     encountering an error. This will match the name for exactly one {@link
+         *     VcnGatewayConnectionConfig} for the {@link VcnConfig} configured for this callback's
+         *     subscription group
+         * @param errorCode the code to indicate the error that occurred. This value will be one of
+         *     VCN_ERROR_CODE_*.
          * @param detail Throwable to provide additional information about the error, or {@code
          *     null} if none
          */
         public abstract void onGatewayConnectionError(
-                @NonNull int[] networkCapabilities,
+                @NonNull String gatewayConnectionName,
                 @VcnErrorCode int errorCode,
                 @Nullable Throwable detail);
     }
@@ -586,7 +672,7 @@ public class VcnManager {
         // TODO(b/180521637): use ServiceSpecificException for safer Exception 'parceling'
         @Override
         public void onGatewayConnectionError(
-                @NonNull int[] networkCapabilities,
+                @NonNull String gatewayConnectionName,
                 @VcnErrorCode int errorCode,
                 @Nullable String exceptionClass,
                 @Nullable String exceptionMessage) {
@@ -597,7 +683,7 @@ public class VcnManager {
                             mExecutor.execute(
                                     () ->
                                             mCallback.onGatewayConnectionError(
-                                                    networkCapabilities, errorCode, cause)));
+                                                    gatewayConnectionName, errorCode, cause)));
         }
 
         private static Throwable createThrowableByClassName(

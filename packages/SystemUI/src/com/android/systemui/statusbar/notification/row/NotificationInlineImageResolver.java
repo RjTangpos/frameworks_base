@@ -19,13 +19,11 @@ package com.android.systemui.statusbar.notification.row;
 import android.app.ActivityManager;
 import android.app.Notification;
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Parcelable;
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.android.internal.R;
@@ -34,7 +32,6 @@ import com.android.internal.widget.ImageResolver;
 import com.android.internal.widget.LocalImageResolver;
 import com.android.internal.widget.MessagingMessage;
 
-import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -48,6 +45,9 @@ import java.util.Set;
  */
 public class NotificationInlineImageResolver implements ImageResolver {
     private static final String TAG = NotificationInlineImageResolver.class.getSimpleName();
+
+    // Timeout for loading images from ImageCache when calling from UI thread
+    private static final long MAX_UI_THREAD_TIMEOUT_MS = 100L;
 
     private final Context mContext;
     private final ImageCache mImageCache;
@@ -81,7 +81,7 @@ public class NotificationInlineImageResolver implements ImageResolver {
      * @return True if has its internal cache, false otherwise.
      */
     public boolean hasCache() {
-        return mImageCache != null && !ActivityManager.isLowRamDeviceStatic();
+        return mImageCache != null && !isLowRam();
     }
 
     private boolean isLowRam() {
@@ -110,45 +110,42 @@ public class NotificationInlineImageResolver implements ImageResolver {
                 : R.dimen.notification_custom_view_max_image_height);
     }
 
-    @VisibleForTesting
-    protected BitmapDrawable resolveImageInternal(Uri uri) throws IOException {
-        return (BitmapDrawable) LocalImageResolver.resolveImage(uri, mContext);
-    }
-
     /**
      * To resolve image from specified uri directly. If the resulting image is larger than the
      * maximum allowed size, scale it down.
      * @param uri Uri of the image.
-     * @return Drawable of the image.
-     * @throws IOException Throws if failed at resolving the image.
+     * @return Drawable of the image, or null if unable to load.
      */
-    Drawable resolveImage(Uri uri) throws IOException {
-        BitmapDrawable image = resolveImageInternal(uri);
-        if (image == null || image.getBitmap() == null) {
-            throw new IOException("resolveImageInternal returned null for uri: " + uri);
+    Drawable resolveImage(Uri uri) {
+        try {
+            return LocalImageResolver.resolveImage(uri, mContext, mMaxImageWidth, mMaxImageHeight);
+        } catch (Exception ex) {
+            // Catch general Exception because ContentResolver can re-throw arbitrary Exception
+            // from remote process as a RuntimeException. See: Parcel#readException
+            Log.d(TAG, "resolveImage: Can't load image from " + uri, ex);
         }
-        Bitmap bitmap = image.getBitmap();
-        image.setBitmap(Icon.scaleDownIfNecessary(bitmap, mMaxImageWidth, mMaxImageHeight));
-        return image;
+        return null;
     }
 
+    /**
+     * Loads an image from the Uri.
+     * This method is synchronous and is usually called from the Main thread.
+     * It will time-out after MAX_UI_THREAD_TIMEOUT_MS.
+     *
+     * @param uri Uri of the target image.
+     * @return drawable of the image, null if loading failed/timeout
+     */
     @Override
     public Drawable loadImage(Uri uri) {
-        Drawable result = null;
-        try {
-            if (hasCache()) {
-                // if the uri isn't currently cached, try caching it first
-                if (!mImageCache.hasEntry(uri)) {
-                    mImageCache.preload((uri));
-                }
-                result = mImageCache.get(uri);
-            } else {
-                result = resolveImage(uri);
-            }
-        } catch (IOException | SecurityException ex) {
-            Log.d(TAG, "loadImage: Can't load image from " + uri, ex);
+        return hasCache() ? loadImageFromCache(uri, MAX_UI_THREAD_TIMEOUT_MS) : resolveImage(uri);
+    }
+
+    private Drawable loadImageFromCache(Uri uri, long timeoutMs) {
+        // if the uri isn't currently cached, try caching it first
+        if (!mImageCache.hasEntry(uri)) {
+            mImageCache.preload((uri));
         }
-        return result;
+        return mImageCache.get(uri, timeoutMs);
     }
 
     /**
@@ -223,6 +220,30 @@ public class NotificationInlineImageResolver implements ImageResolver {
     }
 
     /**
+     * Wait for a maximum timeout for images to finish preloading
+     * @param timeoutMs total timeout time
+     */
+    void waitForPreloadedImages(long timeoutMs) {
+        if (!hasCache()) {
+            return;
+        }
+        Set<Uri> preloadedUris = getWantedUriSet();
+        if (preloadedUris != null) {
+            // Decrement remaining timeout after each image check
+            long endTimeMs = SystemClock.elapsedRealtime() + timeoutMs;
+            preloadedUris.forEach(
+                    uri -> loadImageFromCache(uri, endTimeMs - SystemClock.elapsedRealtime()));
+        }
+    }
+
+    void cancelRunningTasks() {
+        if (!hasCache()) {
+            return;
+        }
+        mImageCache.cancelRunningTasks();
+    }
+
+    /**
      * A interface for internal cache implementation of this resolver.
      */
     interface ImageCache {
@@ -231,7 +252,7 @@ public class NotificationInlineImageResolver implements ImageResolver {
          * @param uri The uri of the image.
          * @return Drawable of the image.
          */
-        Drawable get(Uri uri);
+        Drawable get(Uri uri, long timeoutMs);
 
         /**
          * Set the image resolver that actually resolves image from specified uri.
@@ -256,6 +277,11 @@ public class NotificationInlineImageResolver implements ImageResolver {
          * Purge unnecessary entries in the cache.
          */
         void purge();
+
+        /**
+         * Cancel all unfinished image loading tasks
+         */
+        void cancelRunningTasks();
     }
 
 }

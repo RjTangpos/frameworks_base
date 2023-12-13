@@ -1,6 +1,7 @@
 package com.android.systemui.statusbar.policy;
 
 
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -17,6 +18,7 @@ import android.testing.TestableLooper;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.dump.DumpManager;
 import com.android.systemui.statusbar.policy.CastController.Callback;
 
 import org.junit.Before;
@@ -51,7 +53,7 @@ public class CastControllerImplTest extends SysuiTestCase {
         mContext.addMockSystemService(MediaProjectionManager.class, mMediaProjectionManager);
         when(mMediaProjectionManager.getActiveProjectionInfo()).thenReturn(mProjection);
 
-        mController = new CastControllerImpl(mContext);
+        mController = new CastControllerImpl(mContext, mock(DumpManager.class));
     }
 
     @Test
@@ -123,5 +125,21 @@ public class CastControllerImplTest extends SysuiTestCase {
         if (error.get()) {
             fail("Concurrent modification exception");
         }
+    }
+
+    @Test
+    public void hasConnectedCastDevice_connected() {
+        CastController.CastDevice castDevice = new CastController.CastDevice();
+        castDevice.state = CastController.CastDevice.STATE_CONNECTED;
+        mController.startCasting(castDevice);
+        assertTrue(mController.hasConnectedCastDevice());
+    }
+
+    @Test
+    public void hasConnectedCastDevice_notConnected() {
+        CastController.CastDevice castDevice = new CastController.CastDevice();
+        castDevice.state = CastController.CastDevice.STATE_CONNECTING;
+        mController.startCasting(castDevice);
+        assertTrue(mController.hasConnectedCastDevice());
     }
 }

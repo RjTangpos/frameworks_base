@@ -19,14 +19,16 @@ package android.media.tv.tuner.dvr;
 import android.annotation.BytesLong;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
-import android.app.ActivityManager;
 import android.media.tv.tuner.Tuner;
 import android.media.tv.tuner.Tuner.Result;
 import android.media.tv.tuner.TunerUtils;
+import android.media.tv.tuner.TunerVersionChecker;
 import android.media.tv.tuner.filter.Filter;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.util.Log;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.util.FrameworkStatsLog;
 
 import java.util.concurrent.Executor;
@@ -47,11 +49,15 @@ public class DvrRecorder implements AutoCloseable {
     private static int sInstantId = 0;
     private int mSegmentId = 0;
     private int mOverflow;
-    private Boolean mIsStopped = null;
+    private final Object mIsStoppedLock = new Object();
+    @GuardedBy("mIsStoppedLock")
+    private boolean mIsStopped = true;
+    private final Object mListenerLock = new Object();
 
     private native int nativeAttachFilter(Filter filter);
     private native int nativeDetachFilter(Filter filter);
     private native int nativeConfigureDvr(DvrSettings settings);
+    private native int nativeSetStatusCheckIntervalHint(long durationInMs);
     private native int nativeStartDvr();
     private native int nativeStopDvr();
     private native int nativeFlushDvr();
@@ -61,7 +67,7 @@ public class DvrRecorder implements AutoCloseable {
     private native long nativeWrite(byte[] bytes, long offset, long size);
 
     private DvrRecorder() {
-        mUserId = ActivityManager.getCurrentUser();
+        mUserId = Process.myUid();
         mSegmentId = (sInstantId & 0x0000ffff) << 16;
         sInstantId++;
     }
@@ -69,16 +75,26 @@ public class DvrRecorder implements AutoCloseable {
     /** @hide */
     public void setListener(
             @NonNull Executor executor, @NonNull OnRecordStatusChangedListener listener) {
-        mExecutor = executor;
-        mListener = listener;
+        synchronized (mListenerLock) {
+            mExecutor = executor;
+            mListener = listener;
+        }
     }
 
     private void onRecordStatusChanged(int status) {
         if (status == Filter.STATUS_OVERFLOW) {
             mOverflow++;
         }
-        if (mExecutor != null && mListener != null) {
-            mExecutor.execute(() -> mListener.onRecordStatusChanged(status));
+        synchronized (mListenerLock) {
+            if (mExecutor != null && mListener != null) {
+                mExecutor.execute(() -> {
+                    synchronized (mListenerLock) {
+                        if (mListener != null) {
+                            mListener.onRecordStatusChanged(status);
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -120,6 +136,35 @@ public class DvrRecorder implements AutoCloseable {
     }
 
     /**
+     * Set record buffer status check time interval.
+     *
+     * This status check time interval will be used by the Dvr to decide how often to evaluate
+     * data. The default value will be decided by HAL if it’s not set.
+     *
+     * <p>This functionality is only available in Tuner version 3.0 and higher and will otherwise
+     * return a {@link Tuner#RESULT_UNAVAILABLE}. Use {@link TunerVersionChecker#getTunerVersion()}
+     * to get the version information.
+     *
+     * @param durationInMs specifies the duration of the delay in milliseconds.
+     *
+     * @return one of the following results:
+     * {@link Tuner#RESULT_SUCCESS} if succeed,
+     * {@link Tuner#RESULT_UNAVAILABLE} if Dvr is unavailable or unsupported HAL versions,
+     * {@link Tuner#RESULT_NOT_INITIALIZED} if Dvr is not initialized,
+     * {@link Tuner#RESULT_INVALID_STATE} if Dvr is in a wrong state,
+     * {@link Tuner#RESULT_INVALID_ARGUMENT}  if the input parameter is invalid.
+     */
+    @Result
+    public int setRecordBufferStatusCheckIntervalHint(long durationInMs) {
+        if (!TunerVersionChecker.checkHigherOrEqualVersionTo(
+                TunerVersionChecker.TUNER_VERSION_3_0, "Set status check interval hint")) {
+            // no-op
+            return Tuner.RESULT_UNAVAILABLE;
+        }
+        return nativeSetStatusCheckIntervalHint(durationInMs);
+    }
+
+    /**
      * Starts DVR.
      *
      * <p>Starts consuming playback data or producing data for recording.
@@ -136,7 +181,7 @@ public class DvrRecorder implements AutoCloseable {
                 .write(FrameworkStatsLog.TV_TUNER_DVR_STATUS, mUserId,
                     FrameworkStatsLog.TV_TUNER_DVR_STATUS__TYPE__RECORD,
                     FrameworkStatsLog.TV_TUNER_DVR_STATUS__STATE__STARTED, mSegmentId, 0);
-        synchronized (mIsStopped) {
+        synchronized (mIsStoppedLock) {
             int result = nativeStartDvr();
             if (result == Tuner.RESULT_SUCCESS) {
                 mIsStopped = false;
@@ -159,7 +204,7 @@ public class DvrRecorder implements AutoCloseable {
                 .write(FrameworkStatsLog.TV_TUNER_DVR_STATUS, mUserId,
                     FrameworkStatsLog.TV_TUNER_DVR_STATUS__TYPE__RECORD,
                     FrameworkStatsLog.TV_TUNER_DVR_STATUS__STATE__STOPPED, mSegmentId, mOverflow);
-        synchronized (mIsStopped) {
+        synchronized (mIsStoppedLock) {
             int result = nativeStopDvr();
             if (result == Tuner.RESULT_SUCCESS) {
                 mIsStopped = true;
@@ -177,7 +222,7 @@ public class DvrRecorder implements AutoCloseable {
      */
     @Result
     public int flush() {
-        synchronized (mIsStopped) {
+        synchronized (mIsStoppedLock) {
             if (mIsStopped) {
                 return nativeFlushDvr();
             }
@@ -205,7 +250,6 @@ public class DvrRecorder implements AutoCloseable {
      *
      * @param fd the file descriptor to write data.
      * @see #write(long)
-     * @see #write(byte[], long, long)
      */
     public void setFileDescriptor(@NonNull ParcelFileDescriptor fd) {
         nativeSetFileDescriptor(fd.getFd());
@@ -225,17 +269,17 @@ public class DvrRecorder implements AutoCloseable {
     /**
      * Writes recording data to buffer.
      *
-     * @param bytes the byte array stores the data to be written to DVR.
-     * @param offset the index of the first byte in {@code bytes} to be written to DVR.
+     * @param buffer the byte array stores the data from DVR.
+     * @param offset the index of the first byte in {@code buffer} to write the data from DVR.
      * @param size the maximum number of bytes to write.
      * @return the number of bytes written.
      */
     @BytesLong
-    public long write(@NonNull byte[] bytes, @BytesLong long offset, @BytesLong long size) {
-        if (size + offset > bytes.length) {
+    public long write(@NonNull byte[] buffer, @BytesLong long offset, @BytesLong long size) {
+        if (size + offset > buffer.length) {
             throw new ArrayIndexOutOfBoundsException(
-                    "Array length=" + bytes.length + ", offset=" + offset + ", size=" + size);
+                    "Array length=" + buffer.length + ", offset=" + offset + ", size=" + size);
         }
-        return nativeWrite(bytes, offset, size);
+        return nativeWrite(buffer, offset, size);
     }
 }

@@ -16,6 +16,9 @@
 
 package android.net.vcn.persistablebundleutils;
 
+import static android.net.ipsec.ike.IkeSessionParams.IKE_OPTION_AUTOMATIC_KEEPALIVE_ON_OFF;
+import static android.net.vcn.persistablebundleutils.IkeSessionParamsUtils.IKE_OPTION_AUTOMATIC_ADDRESS_FAMILY_SELECTION;
+import static android.net.vcn.persistablebundleutils.IkeSessionParamsUtils.IKE_OPTION_AUTOMATIC_NATT_KEEPALIVES;
 import static android.system.OsConstants.AF_INET;
 import static android.system.OsConstants.AF_INET6;
 import static android.telephony.TelephonyManager.APPTYPE_USIM;
@@ -52,14 +55,18 @@ import java.util.concurrent.TimeUnit;
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public class IkeSessionParamsUtilsTest {
-    private static IkeSessionParams.Builder createBuilderMinimum() {
+    // Public for use in VcnGatewayConnectionConfigTest, EncryptedTunnelParamsUtilsTest
+    public static IkeSessionParams.Builder createBuilderMinimum() {
         final InetAddress serverAddress = InetAddresses.parseNumericAddress("192.0.2.100");
 
+        // TODO: b/185941731 Make sure all valid IKE_OPTIONS are added and validated.
         return new IkeSessionParams.Builder()
                 .setServerHostname(serverAddress.getHostAddress())
                 .addSaProposal(SaProposalUtilsTest.buildTestIkeSaProposal())
                 .setLocalIdentification(new IkeFqdnIdentification("client.test.android.net"))
                 .setRemoteIdentification(new IkeFqdnIdentification("server.test.android.net"))
+                .addIkeOption(IkeSessionParams.IKE_OPTION_FORCE_PORT_4500)
+                .addIkeOption(IkeSessionParams.IKE_OPTION_MOBIKE)
                 .setAuthPsk("psk".getBytes());
     }
 
@@ -130,14 +137,35 @@ public class IkeSessionParamsUtilsTest {
         verifyPersistableBundleEncodeDecodeIsLossless(params);
     }
 
-    @Test
-    public void testEncodeRecodeParamsWithIkeOptions() throws Exception {
-        final IkeSessionParams params =
-                createBuilderMinimum()
-                        .addIkeOption(IkeSessionParams.IKE_OPTION_ACCEPT_ANY_REMOTE_ID)
-                        .addIkeOption(IkeSessionParams.IKE_OPTION_MOBIKE)
+    private static IkeSessionParams.Builder createBuilderMinimumWithEap() throws Exception {
+        final X509Certificate serverCaCert = createCertFromPemFile("self-signed-ca.pem");
+
+        final byte[] eapId = "test@android.net".getBytes(StandardCharsets.US_ASCII);
+        final int subId = 1;
+        final EapSessionConfig eapConfig =
+                new EapSessionConfig.Builder()
+                        .setEapIdentity(eapId)
+                        .setEapSimConfig(subId, APPTYPE_USIM)
+                        .setEapAkaConfig(subId, APPTYPE_USIM)
                         .build();
-        verifyPersistableBundleEncodeDecodeIsLossless(params);
+        return createBuilderMinimum().setAuthEap(serverCaCert, eapConfig);
+    }
+
+    @Test
+    public void testEncodeDecodeParamsWithIkeOptions() throws Exception {
+        final IkeSessionParams.Builder builder =
+                createBuilderMinimumWithEap()
+                        .addIkeOption(IkeSessionParams.IKE_OPTION_ACCEPT_ANY_REMOTE_ID)
+                        .addIkeOption(IkeSessionParams.IKE_OPTION_EAP_ONLY_AUTH)
+                        .addIkeOption(IkeSessionParams.IKE_OPTION_MOBIKE)
+                        .addIkeOption(IkeSessionParams.IKE_OPTION_FORCE_PORT_4500)
+                        .addIkeOption(IkeSessionParams.IKE_OPTION_INITIAL_CONTACT)
+                        .addIkeOption(IkeSessionParams.IKE_OPTION_REKEY_MOBILITY)
+                        .addIkeOption(IKE_OPTION_AUTOMATIC_ADDRESS_FAMILY_SELECTION)
+                        .addIkeOption(IKE_OPTION_AUTOMATIC_NATT_KEEPALIVES)
+                        .addIkeOption(IKE_OPTION_AUTOMATIC_KEEPALIVE_ON_OFF);
+
+        verifyPersistableBundleEncodeDecodeIsLossless(builder.build());
     }
 
     private static InputStream openAssetsFile(String fileName) throws Exception {
@@ -171,19 +199,7 @@ public class IkeSessionParamsUtilsTest {
 
     @Test
     public void testEncodeRecodeParamsWithEapAuth() throws Exception {
-        final X509Certificate serverCaCert = createCertFromPemFile("self-signed-ca.pem");
-
-        final byte[] eapId = "test@android.net".getBytes(StandardCharsets.US_ASCII);
-        final int subId = 1;
-        final EapSessionConfig eapConfig =
-                new EapSessionConfig.Builder()
-                        .setEapIdentity(eapId)
-                        .setEapSimConfig(subId, APPTYPE_USIM)
-                        .setEapAkaConfig(subId, APPTYPE_USIM)
-                        .build();
-
-        final IkeSessionParams params =
-                createBuilderMinimum().setAuthEap(serverCaCert, eapConfig).build();
+        final IkeSessionParams params = createBuilderMinimumWithEap().build();
         verifyPersistableBundleEncodeDecodeIsLossless(params);
     }
 }

@@ -128,11 +128,13 @@ public class ActivityManagerTest extends AndroidTestCase {
                 0x222222,                // colorBackground
                 0x333333,                // statusBarColor
                 0x444444,                // navigationBarColor
+                0,                       // statusBarAppearance
                 true,                    // ensureStatusBarContrastWhenTransparent
                 true,                    // ensureNavigationBarContrastWhenTransparent
                 RESIZE_MODE_RESIZEABLE,  // resizeMode
                 10,                      // minWidth
-                20                       // minHeight
+                20,                      // minHeight
+                0                        // colorBackgroundFloating
         );
 
         TaskDescription td2 = new TaskDescription();
@@ -151,11 +153,13 @@ public class ActivityManagerTest extends AndroidTestCase {
                 0x222222,                  // colorBackground
                 0x333333,                  // statusBarColor
                 0x444444,                  // navigationBarColor
+                0,                         // statusBarAppearance
                 false,                     // ensureStatusBarContrastWhenTransparent
                 false,                     // ensureNavigationBarContrastWhenTransparent
                 RESIZE_MODE_UNRESIZEABLE,  // resizeMode
                 10,                        // minWidth
-                20                         // minHeight
+                20,                        // minHeight
+                0                          // colorBackgroundFloating
         );
 
         TaskDescription td2 = new TaskDescription(
@@ -165,11 +169,13 @@ public class ActivityManagerTest extends AndroidTestCase {
                 0x2222222,               // colorBackground
                 0x3333332,               // statusBarColor
                 0x4444442,               // navigationBarColor
+                0,                       // statusBarAppearance
                 true,                    // ensureStatusBarContrastWhenTransparent
                 true,                    // ensureNavigationBarContrastWhenTransparent
                 RESIZE_MODE_RESIZEABLE,  // resizeMode
                 102,                     // minWidth
-                202                      // minHeight
+                202,                     // minHeight
+                0                        // colorBackgroundFloating
         );
 
         // Must overwrite all public and hidden fields, since other has all fields set.
@@ -194,11 +200,13 @@ public class ActivityManagerTest extends AndroidTestCase {
                 0x222222,                  // colorBackground
                 0x333333,                  // statusBarColor
                 0x444444,                  // navigationBarColor
+                0,                         // statusBarAppearance
                 false,                     // ensureStatusBarContrastWhenTransparent
                 false,                     // ensureNavigationBarContrastWhenTransparent
                 RESIZE_MODE_UNRESIZEABLE,  // resizeMode
                 10,                        // minWidth
-                20                         // minHeight
+                20,                        // minHeight
+                0                          // colorBackgroundFloating
         );
 
         // Normal parceling should keep everything the same.
@@ -215,11 +223,13 @@ public class ActivityManagerTest extends AndroidTestCase {
                 0x222222,                  // colorBackground
                 0x333333,                  // statusBarColor
                 0x444444,                  // navigationBarColor
+                0,                         // statusBarAppearance
                 false,                     // ensureStatusBarContrastWhenTransparent
                 false,                     // ensureNavigationBarContrastWhenTransparent
                 RESIZE_MODE_UNRESIZEABLE,  // resizeMode
                 10,                        // minWidth
-                20                         // minHeight
+                20,                        // minHeight
+                0                          // colorBackgroundFloating
         );
         // Recycled bitmap will be ignored while parceling.
         tdParcelled = new TaskDescription(parcelingRoundTrip(tdBitmapRecycled));
@@ -245,6 +255,7 @@ public class ActivityManagerTest extends AndroidTestCase {
             assertEquals(td1.getBackgroundColor(), td2.getBackgroundColor());
             assertEquals(td1.getStatusBarColor(), td2.getStatusBarColor());
             assertEquals(td1.getNavigationBarColor(), td2.getNavigationBarColor());
+            assertEquals(td1.getStatusBarAppearance(), td2.getStatusBarAppearance());
             assertEquals(td1.getResizeMode(), td2.getResizeMode());
             assertEquals(td1.getMinWidth(), td2.getMinWidth());
             assertEquals(td1.getMinHeight(), td2.getMinHeight());

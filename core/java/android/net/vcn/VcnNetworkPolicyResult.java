@@ -87,6 +87,16 @@ public final class VcnNetworkPolicyResult implements Parcelable {
                 && mNetworkCapabilities.equals(that.mNetworkCapabilities);
     }
 
+    @Override
+    public String toString() {
+        return "VcnNetworkPolicyResult { "
+                + "mIsTeardownRequested = "
+                + mIsTearDownRequested
+                + ", mNetworkCapabilities"
+                + mNetworkCapabilities
+                + " }";
+    }
+
     /** {@inheritDoc} */
     @Override
     public int describeContents() {
@@ -104,7 +114,7 @@ public final class VcnNetworkPolicyResult implements Parcelable {
     public static final @NonNull Creator<VcnNetworkPolicyResult> CREATOR =
             new Creator<VcnNetworkPolicyResult>() {
                 public VcnNetworkPolicyResult createFromParcel(Parcel in) {
-                    return new VcnNetworkPolicyResult(in.readBoolean(), in.readParcelable(null));
+                    return new VcnNetworkPolicyResult(in.readBoolean(), in.readParcelable(null, android.net.NetworkCapabilities.class));
                 }
 
                 public VcnNetworkPolicyResult[] newArray(int size) {

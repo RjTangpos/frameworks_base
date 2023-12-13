@@ -16,6 +16,8 @@
 
 package android.media;
 
+import static android.media.AudioManager.AUDIO_SESSION_ID_GENERATE;
+
 import android.annotation.CallbackExecutor;
 import android.annotation.FloatRange;
 import android.annotation.IntDef;
@@ -26,12 +28,20 @@ import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.AttributionSource;
+import android.content.AttributionSource.ScopedParcelState;
+import android.content.Context;
+import android.media.audiopolicy.AudioMix;
+import android.media.audiopolicy.AudioMixingRule;
+import android.media.audiopolicy.AudioPolicy;
+import android.media.metrics.LogSessionId;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
+import android.os.Parcel;
 import android.os.PersistableBundle;
 import android.util.ArrayMap;
 import android.util.Log;
@@ -45,6 +55,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.NioUtils;
 import java.util.LinkedList;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
@@ -260,15 +272,19 @@ public class AudioTrack extends PlayerBase
     @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
     public static final int ENCAPSULATION_MODE_HANDLE = 2;
 
-    /* Enumeration of metadata types permitted for use by
+    /**
+     * Enumeration of metadata types permitted for use by
      * encapsulation mode audio streams.
+     * @hide
      */
-    /** @hide */
-    @IntDef(prefix = { "ENCAPSULATION_METADATA_TYPE_" }, value = {
-        ENCAPSULATION_METADATA_TYPE_NONE, /* reserved */
-        ENCAPSULATION_METADATA_TYPE_FRAMEWORK_TUNER,
-        ENCAPSULATION_METADATA_TYPE_DVB_AD_DESCRIPTOR,
-    })
+    @IntDef(prefix = {"ENCAPSULATION_METADATA_TYPE_"},
+            value =
+                    {
+                            ENCAPSULATION_METADATA_TYPE_NONE, /* reserved */
+                            ENCAPSULATION_METADATA_TYPE_FRAMEWORK_TUNER,
+                            ENCAPSULATION_METADATA_TYPE_DVB_AD_DESCRIPTOR,
+                            ENCAPSULATION_METADATA_TYPE_SUPPLEMENTARY_AUDIO_PLACEMENT,
+                    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface EncapsulationMetadataType {}
 
@@ -291,6 +307,45 @@ public class AudioTrack extends PlayerBase
      * This metadata is formatted per ETSI TS 101 154 Table E.1: AD_descriptor.
      */
     public static final int ENCAPSULATION_METADATA_TYPE_DVB_AD_DESCRIPTOR = 2;
+
+    /**
+     * Encapsulation metadata type for placement of supplementary audio.
+     *
+     * A 32 bit integer constant, one of {@link #SUPPLEMENTARY_AUDIO_PLACEMENT_NORMAL}, {@link
+     * #SUPPLEMENTARY_AUDIO_PLACEMENT_LEFT}, {@link #SUPPLEMENTARY_AUDIO_PLACEMENT_RIGHT}.
+     */
+    public static final int ENCAPSULATION_METADATA_TYPE_SUPPLEMENTARY_AUDIO_PLACEMENT = 3;
+
+    /**
+     * Enumeration of supplementary audio placement types.
+     * @hide
+     */
+    @IntDef(prefix = {"SUPPLEMENTARY_AUDIO_PLACEMENT_"},
+            value =
+                    {
+                            SUPPLEMENTARY_AUDIO_PLACEMENT_NORMAL,
+                            SUPPLEMENTARY_AUDIO_PLACEMENT_LEFT,
+                            SUPPLEMENTARY_AUDIO_PLACEMENT_RIGHT,
+                    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface SupplementaryAudioPlacement {}
+    // Important: The SUPPLEMENTARY_AUDIO_PLACEMENT values must be kept in sync with native header
+    // files.
+
+    /**
+     * Supplementary audio placement normal.
+     */
+    public static final int SUPPLEMENTARY_AUDIO_PLACEMENT_NORMAL = 0;
+
+    /**
+     * Supplementary audio placement left.
+     */
+    public static final int SUPPLEMENTARY_AUDIO_PLACEMENT_LEFT = 1;
+
+    /**
+     * Supplementary audio placement right.
+     */
+    public static final int SUPPLEMENTARY_AUDIO_PLACEMENT_RIGHT = 2;
 
     /* Dual Mono handling is used when a stereo audio stream
      * contains separate audio content on the left and right channels.
@@ -539,7 +594,7 @@ public class AudioTrack extends PlayerBase
     /**
      * Audio session ID
      */
-    private int mSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE;
+    private int mSessionId = AUDIO_SESSION_ID_GENERATE;
     /**
      * HW_AV_SYNC track AV Sync Header
      */
@@ -564,6 +619,14 @@ public class AudioTrack extends PlayerBase
      * When offloaded track: padding for decoder in frames
      */
     private int mOffloadPaddingFrames = 0;
+
+    /**
+     * The log session id used for metrics.
+     * {@link LogSessionId#LOG_SESSION_ID_NONE} here means it is not set.
+     */
+    @NonNull private LogSessionId mLogSessionId = LogSessionId.LOG_SESSION_ID_NONE;
+
+    private AudioPolicy mAudioPolicy;
 
     //--------------------------------
     // Used exclusively by native code
@@ -631,7 +694,7 @@ public class AudioTrack extends PlayerBase
             int bufferSizeInBytes, int mode)
     throws IllegalArgumentException {
         this(streamType, sampleRateInHz, channelConfig, audioFormat,
-                bufferSizeInBytes, mode, AudioManager.AUDIO_SESSION_ID_GENERATE);
+                bufferSizeInBytes, mode, AUDIO_SESSION_ID_GENERATE);
     }
 
     /**
@@ -735,12 +798,12 @@ public class AudioTrack extends PlayerBase
     public AudioTrack(AudioAttributes attributes, AudioFormat format, int bufferSizeInBytes,
             int mode, int sessionId)
                     throws IllegalArgumentException {
-        this(attributes, format, bufferSizeInBytes, mode, sessionId, false /*offload*/,
-                ENCAPSULATION_MODE_NONE, null /* tunerConfiguration */);
+        this(null /* context */, attributes, format, bufferSizeInBytes, mode, sessionId,
+                false /*offload*/, ENCAPSULATION_MODE_NONE, null /* tunerConfiguration */);
     }
 
-    private AudioTrack(AudioAttributes attributes, AudioFormat format, int bufferSizeInBytes,
-            int mode, int sessionId, boolean offload, int encapsulationMode,
+    private AudioTrack(@Nullable Context context, AudioAttributes attributes, AudioFormat format,
+            int bufferSizeInBytes, int mode, int sessionId, boolean offload, int encapsulationMode,
             @Nullable TunerConfiguration tunerConfiguration)
                     throws IllegalArgumentException {
         super(attributes, AudioPlaybackConfiguration.PLAYER_TYPE_JAM_AUDIOTRACK);
@@ -803,16 +866,22 @@ public class AudioTrack extends PlayerBase
 
         int[] sampleRate = new int[] {mSampleRate};
         int[] session = new int[1];
-        session[0] = sessionId;
+        session[0] = resolvePlaybackSessionId(context, sessionId);
+
+        AttributionSource attributionSource = context == null
+                ? AttributionSource.myAttributionSource() : context.getAttributionSource();
+
         // native initialization
-        int initResult = native_setup(new WeakReference<AudioTrack>(this), mAttributes,
-                sampleRate, mChannelMask, mChannelIndexMask, mAudioFormat,
-                mNativeBufferSizeInBytes, mDataLoadMode, session, 0 /*nativeTrackInJavaObj*/,
-                offload, encapsulationMode, tunerConfiguration,
-                getCurrentOpPackageName());
-        if (initResult != SUCCESS) {
-            loge("Error code "+initResult+" when initializing AudioTrack.");
-            return; // with mState == STATE_UNINITIALIZED
+        try (ScopedParcelState attributionSourceState = attributionSource.asScopedParcelState()) {
+            int initResult = native_setup(new WeakReference<AudioTrack>(this), mAttributes,
+                    sampleRate, mChannelMask, mChannelIndexMask, mAudioFormat,
+                    mNativeBufferSizeInBytes, mDataLoadMode, session,
+                    attributionSourceState.getParcel(), 0 /*nativeTrackInJavaObj*/, offload,
+                    encapsulationMode, tunerConfiguration, getCurrentOpPackageName());
+            if (initResult != SUCCESS) {
+                loge("Error code " + initResult + " when initializing AudioTrack.");
+                return; // with mState == STATE_UNINITIALIZED
+            }
         }
 
         mSampleRate = sampleRate[0];
@@ -836,7 +905,8 @@ public class AudioTrack extends PlayerBase
             mState = STATE_INITIALIZED;
         }
 
-        baseRegisterPlayer();
+        baseRegisterPlayer(mSessionId);
+        native_setPlayerIId(mPlayerIId); // mPlayerIId now ready to send to native AudioTrack.
     }
 
     /**
@@ -866,7 +936,7 @@ public class AudioTrack extends PlayerBase
 
         // other initialization...
         if (nativeTrackInJavaObj != 0) {
-            baseRegisterPlayer();
+            baseRegisterPlayer(AudioSystem.AUDIO_SESSION_ALLOCATE);
             deferred_connect(nativeTrackInJavaObj);
         } else {
             mState = STATE_UNINITIALIZED;
@@ -883,23 +953,27 @@ public class AudioTrack extends PlayerBase
             // *Native* AudioTrack, so the attributes parameters to native_setup() are ignored.
             int[] session = { 0 };
             int[] rates = { 0 };
-            int initResult = native_setup(new WeakReference<AudioTrack>(this),
-                    null /*mAttributes - NA*/,
-                    rates /*sampleRate - NA*/,
-                    0 /*mChannelMask - NA*/,
-                    0 /*mChannelIndexMask - NA*/,
-                    0 /*mAudioFormat - NA*/,
-                    0 /*mNativeBufferSizeInBytes - NA*/,
-                    0 /*mDataLoadMode - NA*/,
-                    session,
-                    nativeTrackInJavaObj,
-                    false /*offload*/,
-                    ENCAPSULATION_MODE_NONE,
-                    null /* tunerConfiguration */,
-                    "" /* opPackagename */);
-            if (initResult != SUCCESS) {
-                loge("Error code "+initResult+" when initializing AudioTrack.");
-                return; // with mState == STATE_UNINITIALIZED
+            try (ScopedParcelState attributionSourceState =
+                         AttributionSource.myAttributionSource().asScopedParcelState()) {
+                int initResult = native_setup(new WeakReference<AudioTrack>(this),
+                        null /*mAttributes - NA*/,
+                        rates /*sampleRate - NA*/,
+                        0 /*mChannelMask - NA*/,
+                        0 /*mChannelIndexMask - NA*/,
+                        0 /*mAudioFormat - NA*/,
+                        0 /*mNativeBufferSizeInBytes - NA*/,
+                        0 /*mDataLoadMode - NA*/,
+                        session,
+                        attributionSourceState.getParcel(),
+                        nativeTrackInJavaObj,
+                        false /*offload*/,
+                        ENCAPSULATION_MODE_NONE,
+                        null /* tunerConfiguration */,
+                        "" /* opPackagename */);
+                if (initResult != SUCCESS) {
+                    loge("Error code " + initResult + " when initializing AudioTrack.");
+                    return; // with mState == STATE_UNINITIALIZED
+                }
             }
 
             mSessionId = session[0];
@@ -1013,20 +1087,35 @@ public class AudioTrack extends PlayerBase
      * <br>Offload is false by default.
      */
     public static class Builder {
+        private Context mContext;
         private AudioAttributes mAttributes;
         private AudioFormat mFormat;
         private int mBufferSizeInBytes;
         private int mEncapsulationMode = ENCAPSULATION_MODE_NONE;
-        private int mSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE;
+        private int mSessionId = AUDIO_SESSION_ID_GENERATE;
         private int mMode = MODE_STREAM;
         private int mPerformanceMode = PERFORMANCE_MODE_NONE;
         private boolean mOffload = false;
         private TunerConfiguration mTunerConfiguration;
+        private int mCallRedirectionMode = AudioManager.CALL_REDIRECT_NONE;
 
         /**
          * Constructs a new Builder with the default values as described above.
          */
         public Builder() {
+        }
+
+        /**
+         * Sets the context the track belongs to. This context will be used to pull information,
+         * such as {@link android.content.AttributionSource} and device specific audio session ids,
+         * which will be associated with the {@link AudioTrack}. However, the context itself will
+         * not be retained by the {@link AudioTrack}.
+         * @param context a non-null {@link Context} instance
+         * @return the same Builder instance.
+         */
+        public @NonNull Builder setContext(@NonNull Context context) {
+            mContext = Objects.requireNonNull(context);
+            return this;
         }
 
         /**
@@ -1136,6 +1225,10 @@ public class AudioTrack extends PlayerBase
 
         /**
          * Sets the session ID the {@link AudioTrack} will be attached to.
+         *
+         * Note, that if there's a device specific session id asociated with the context, explicitly
+         * setting a session id using this method will override it
+         * (see {@link Builder#setContext(Context)}).
          * @param sessionId a strictly positive ID number retrieved from another
          *     <code>AudioTrack</code> via {@link AudioTrack#getAudioSessionId()} or allocated by
          *     {@link AudioManager} via {@link AudioManager#generateAudioSessionId()}, or
@@ -1145,7 +1238,7 @@ public class AudioTrack extends PlayerBase
          */
         public @NonNull Builder setSessionId(@IntRange(from = 1) int sessionId)
                 throws IllegalArgumentException {
-            if ((sessionId != AudioManager.AUDIO_SESSION_ID_GENERATE) && (sessionId < 1)) {
+            if ((sessionId != AUDIO_SESSION_ID_GENERATE) && (sessionId < 1)) {
                 throw new IllegalArgumentException("Invalid audio session ID " + sessionId);
             }
             mSessionId = sessionId;
@@ -1217,6 +1310,62 @@ public class AudioTrack extends PlayerBase
         }
 
         /**
+         * @hide
+         * Sets the {@link AudioTrack} call redirection mode.
+         * Used when creating an AudioTrack to inject audio to call uplink path. The mode
+         * indicates if the call is a PSTN call or a VoIP call in which case a dynamic audio
+         * policy is created to use this track as the source for all capture with voice
+         * communication preset.
+         *
+         * @param callRedirectionMode one of
+         * {@link AudioManager#CALL_REDIRECT_NONE},
+         * {@link AudioManager#CALL_REDIRECT_PSTN},
+         * or {@link AAudioManager#CALL_REDIRECT_VOIP}.
+         * @return the same Builder instance.
+         * @throws IllegalArgumentException if {@code callRedirectionMode} is not valid.
+         */
+        public @NonNull Builder setCallRedirectionMode(
+                @AudioManager.CallRedirectionMode int callRedirectionMode) {
+            switch (callRedirectionMode) {
+                case AudioManager.CALL_REDIRECT_NONE:
+                case AudioManager.CALL_REDIRECT_PSTN:
+                case AudioManager.CALL_REDIRECT_VOIP:
+                    mCallRedirectionMode = callRedirectionMode;
+                    break;
+                default:
+                    throw new IllegalArgumentException(
+                            "Invalid call redirection mode " + callRedirectionMode);
+            }
+            return this;
+        }
+
+        private @NonNull AudioTrack buildCallInjectionTrack() {
+            AudioMixingRule audioMixingRule = new AudioMixingRule.Builder()
+                    .addMixRule(AudioMixingRule.RULE_MATCH_ATTRIBUTE_CAPTURE_PRESET,
+                            new AudioAttributes.Builder()
+                                   .setCapturePreset(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                                   .setForCallRedirection()
+                                   .build())
+                    .setTargetMixRole(AudioMixingRule.MIX_ROLE_INJECTOR)
+                    .build();
+            AudioMix audioMix = new AudioMix.Builder(audioMixingRule)
+                    .setFormat(mFormat)
+                    .setRouteFlags(AudioMix.ROUTE_FLAG_LOOP_BACK)
+                    .build();
+            AudioPolicy audioPolicy =
+                    new AudioPolicy.Builder(/*context=*/ null).addMix(audioMix).build();
+            if (AudioManager.registerAudioPolicyStatic(audioPolicy) != 0) {
+                throw new UnsupportedOperationException("Error: could not register audio policy");
+            }
+            AudioTrack track = audioPolicy.createAudioTrackSource(audioMix);
+            if (track == null) {
+                throw new UnsupportedOperationException("Cannot create injection AudioTrack");
+            }
+            track.unregisterAudioPolicyOnRelease(audioPolicy);
+            return track;
+        }
+
+        /**
          * Builds an {@link AudioTrack} instance initialized with all the parameters set
          * on this <code>Builder</code>.
          * @return a new successfully initialized {@link AudioTrack} instance.
@@ -1260,12 +1409,21 @@ public class AudioTrack extends PlayerBase
                         .build();
             }
 
+            if (mCallRedirectionMode == AudioManager.CALL_REDIRECT_VOIP) {
+                return buildCallInjectionTrack();
+            } else if (mCallRedirectionMode == AudioManager.CALL_REDIRECT_PSTN) {
+                mAttributes = new AudioAttributes.Builder(mAttributes)
+                        .setForCallRedirection()
+                        .build();
+            }
+
             if (mOffload) {
                 if (mPerformanceMode == PERFORMANCE_MODE_LOW_LATENCY) {
                     throw new UnsupportedOperationException(
                             "Offload and low latency modes are incompatible");
                 }
-                if (!AudioSystem.isOffloadSupported(mFormat, mAttributes)) {
+                if (AudioSystem.getDirectPlaybackSupport(mFormat, mAttributes)
+                        == AudioSystem.DIRECT_NOT_SUPPORTED) {
                     throw new UnsupportedOperationException(
                             "Cannot create AudioTrack, offload format / attributes not supported");
                 }
@@ -1290,8 +1448,8 @@ public class AudioTrack extends PlayerBase
 
             try {
                 final AudioTrack track = new AudioTrack(
-                        mAttributes, mFormat, mBufferSizeInBytes, mMode, mSessionId, mOffload,
-                        mEncapsulationMode, mTunerConfiguration);
+                        mContext, mAttributes, mFormat, mBufferSizeInBytes, mMode, mSessionId,
+                        mOffload, mEncapsulationMode, mTunerConfiguration);
                 if (track.getState() == STATE_UNINITIALIZED) {
                     // release is not necessary
                     throw new UnsupportedOperationException("Cannot create AudioTrack");
@@ -1301,6 +1459,16 @@ public class AudioTrack extends PlayerBase
                 throw new UnsupportedOperationException(e.getMessage());
             }
         }
+    }
+
+    /**
+     * Sets an {@link AudioPolicy} to automatically unregister when the track is released.
+     *
+     * <p>This is to prevent users of the call audio injection API from having to manually
+     * unregister the policy that was used to create the track.
+     */
+    private void unregisterAudioPolicyOnRelease(AudioPolicy audioPolicy) {
+        mAudioPolicy = audioPolicy;
     }
 
     /**
@@ -1427,7 +1595,10 @@ public class AudioTrack extends PlayerBase
      *   the audio data.
      * @param attributes a non-null {@link AudioAttributes} instance.
      * @return true if the given audio format can be played directly.
+     * @deprecated Use {@link AudioManager#getDirectPlaybackSupport(AudioFormat, AudioAttributes)}
+     *             instead.
      */
+    @Deprecated
     public static boolean isDirectPlaybackSupported(@NonNull AudioFormat format,
             @NonNull AudioAttributes attributes) {
         if (format == null) {
@@ -1585,9 +1756,26 @@ public class AudioTrack extends PlayerBase
             AudioFormat.CHANNEL_OUT_LOW_FREQUENCY |
             AudioFormat.CHANNEL_OUT_BACK_LEFT |
             AudioFormat.CHANNEL_OUT_BACK_RIGHT |
+            AudioFormat.CHANNEL_OUT_FRONT_LEFT_OF_CENTER |
+            AudioFormat.CHANNEL_OUT_FRONT_RIGHT_OF_CENTER |
             AudioFormat.CHANNEL_OUT_BACK_CENTER |
             AudioFormat.CHANNEL_OUT_SIDE_LEFT |
-            AudioFormat.CHANNEL_OUT_SIDE_RIGHT;
+            AudioFormat.CHANNEL_OUT_SIDE_RIGHT |
+            AudioFormat.CHANNEL_OUT_TOP_CENTER |
+            AudioFormat.CHANNEL_OUT_TOP_FRONT_LEFT |
+            AudioFormat.CHANNEL_OUT_TOP_FRONT_CENTER |
+            AudioFormat.CHANNEL_OUT_TOP_FRONT_RIGHT |
+            AudioFormat.CHANNEL_OUT_TOP_BACK_LEFT |
+            AudioFormat.CHANNEL_OUT_TOP_BACK_CENTER |
+            AudioFormat.CHANNEL_OUT_TOP_BACK_RIGHT |
+            AudioFormat.CHANNEL_OUT_TOP_SIDE_LEFT |
+            AudioFormat.CHANNEL_OUT_TOP_SIDE_RIGHT |
+            AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_LEFT |
+            AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_CENTER |
+            AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_RIGHT |
+            AudioFormat.CHANNEL_OUT_LOW_FREQUENCY_2 |
+            AudioFormat.CHANNEL_OUT_FRONT_WIDE_LEFT |
+            AudioFormat.CHANNEL_OUT_FRONT_WIDE_RIGHT;
 
     // Returns a boolean whether the attributes, format, bufferSizeInBytes, mode allow
     // power saving to be automatically enabled for an AudioTrack. Returns false if
@@ -1666,13 +1854,11 @@ public class AudioTrack extends PlayerBase
         }
         mSampleRate = sampleRateInHz;
 
-        // IEC61937 is based on stereo. We could coerce it to stereo.
-        // But the application needs to know the stream is stereo so that
-        // it is encoded and played correctly. So better to just reject it.
         if (audioFormat == AudioFormat.ENCODING_IEC61937
-                && channelConfig != AudioFormat.CHANNEL_OUT_STEREO) {
-            throw new IllegalArgumentException(
-                    "ENCODING_IEC61937 must be configured as CHANNEL_OUT_STEREO");
+                && channelConfig != AudioFormat.CHANNEL_OUT_STEREO
+                && AudioFormat.channelCountFromOutChannelMask(channelConfig) != 8) {
+            Log.w(TAG, "ENCODING_IEC61937 is configured with channel mask as " + channelConfig
+                    + ", which is not 2 or 8 channels");
         }
 
         //--------------
@@ -1696,9 +1882,10 @@ public class AudioTrack extends PlayerBase
                 mChannelCount = 0;
                 break; // channel index configuration only
             }
-            if (!isMultichannelConfigSupported(channelConfig)) {
-                // input channel configuration features unsupported channels
-                throw new IllegalArgumentException("Unsupported channel configuration.");
+            if (!isMultichannelConfigSupported(channelConfig, audioFormat)) {
+                throw new IllegalArgumentException(
+                        "Unsupported channel mask configuration " + channelConfig
+                        + " for encoding " + audioFormat);
             }
             mChannelMask = channelConfig;
             mChannelCount = AudioFormat.channelCountFromOutChannelMask(channelConfig);
@@ -1706,13 +1893,17 @@ public class AudioTrack extends PlayerBase
         // check the channel index configuration (if present)
         mChannelIndexMask = channelIndexMask;
         if (mChannelIndexMask != 0) {
-            // restrictive: indexMask could allow up to AUDIO_CHANNEL_BITS_LOG2
-            final int indexMask = (1 << AudioSystem.OUT_CHANNEL_COUNT_MAX) - 1;
-            if ((channelIndexMask & ~indexMask) != 0) {
-                throw new IllegalArgumentException("Unsupported channel index configuration "
-                        + channelIndexMask);
+            // As of S, we accept up to 24 channel index mask.
+            final int fullIndexMask = (1 << AudioSystem.FCC_24) - 1;
+            final int channelIndexCount = Integer.bitCount(channelIndexMask);
+            final boolean accepted = (channelIndexMask & ~fullIndexMask) == 0
+                    && (!AudioFormat.isEncodingLinearFrames(audioFormat)  // compressed OK
+                            || channelIndexCount <= AudioSystem.OUT_CHANNEL_COUNT_MAX); // PCM
+            if (!accepted) {
+                throw new IllegalArgumentException(
+                        "Unsupported channel index mask configuration " + channelIndexMask
+                        + " for encoding " + audioFormat);
             }
-            int channelIndexCount = Integer.bitCount(channelIndexMask);
             if (mChannelCount == 0) {
                  mChannelCount = channelIndexCount;
             } else if (mChannelCount != channelIndexCount) {
@@ -1740,21 +1931,50 @@ public class AudioTrack extends PlayerBase
         mDataLoadMode = mode;
     }
 
+    // General pair map
+    private static final Map<String, Integer> CHANNEL_PAIR_MAP = Map.of(
+            "front", AudioFormat.CHANNEL_OUT_FRONT_LEFT
+                    | AudioFormat.CHANNEL_OUT_FRONT_RIGHT,
+            "back", AudioFormat.CHANNEL_OUT_BACK_LEFT
+                    | AudioFormat.CHANNEL_OUT_BACK_RIGHT,
+            "front of center", AudioFormat.CHANNEL_OUT_FRONT_LEFT_OF_CENTER
+                    | AudioFormat.CHANNEL_OUT_FRONT_RIGHT_OF_CENTER,
+            "side", AudioFormat.CHANNEL_OUT_SIDE_LEFT | AudioFormat.CHANNEL_OUT_SIDE_RIGHT,
+            "top front", AudioFormat.CHANNEL_OUT_TOP_FRONT_LEFT
+                    | AudioFormat.CHANNEL_OUT_TOP_FRONT_RIGHT,
+            "top back", AudioFormat.CHANNEL_OUT_TOP_BACK_LEFT
+                    | AudioFormat.CHANNEL_OUT_TOP_BACK_RIGHT,
+            "top side", AudioFormat.CHANNEL_OUT_TOP_SIDE_LEFT
+                    | AudioFormat.CHANNEL_OUT_TOP_SIDE_RIGHT,
+            "bottom front", AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_LEFT
+                    | AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_RIGHT,
+            "front wide", AudioFormat.CHANNEL_OUT_FRONT_WIDE_LEFT
+                    | AudioFormat.CHANNEL_OUT_FRONT_WIDE_RIGHT);
+
     /**
      * Convenience method to check that the channel configuration (a.k.a channel mask) is supported
      * @param channelConfig the mask to validate
      * @return false if the AudioTrack can't be used with such a mask
      */
-    private static boolean isMultichannelConfigSupported(int channelConfig) {
+    private static boolean isMultichannelConfigSupported(int channelConfig, int encoding) {
         // check for unsupported channels
         if ((channelConfig & SUPPORTED_OUT_CHANNELS) != channelConfig) {
             loge("Channel configuration features unsupported channels");
             return false;
         }
         final int channelCount = AudioFormat.channelCountFromOutChannelMask(channelConfig);
-        if (channelCount > AudioSystem.OUT_CHANNEL_COUNT_MAX) {
-            loge("Channel configuration contains too many channels " +
-                    channelCount + ">" + AudioSystem.OUT_CHANNEL_COUNT_MAX);
+        final int channelCountLimit;
+        try {
+            channelCountLimit = AudioFormat.isEncodingLinearFrames(encoding)
+                    ? AudioSystem.OUT_CHANNEL_COUNT_MAX  // PCM limited to OUT_CHANNEL_COUNT_MAX
+                    : AudioSystem.FCC_24;                // Compressed limited to 24 channels
+        } catch (IllegalArgumentException iae) {
+            loge("Unsupported encoding " + iae);
+            return false;
+        }
+        if (channelCount > channelCountLimit) {
+            loge("Channel configuration contains too many channels for encoding "
+                    + encoding + "(" + channelCount + " > " + channelCountLimit + ")");
             return false;
         }
         // check for unsupported multichannel combinations:
@@ -1766,20 +1986,14 @@ public class AudioTrack extends PlayerBase
                 loge("Front channels must be present in multichannel configurations");
                 return false;
         }
-        final int backPair =
-                AudioFormat.CHANNEL_OUT_BACK_LEFT | AudioFormat.CHANNEL_OUT_BACK_RIGHT;
-        if ((channelConfig & backPair) != 0) {
-            if ((channelConfig & backPair) != backPair) {
-                loge("Rear channels can't be used independently");
+        // Check all pairs to see that they are matched (front duplicated here).
+        for (Map.Entry<String, Integer> e : CHANNEL_PAIR_MAP.entrySet()) {
+            final int positionPair = e.getValue();
+            if ((channelConfig & positionPair) != 0
+                    && (channelConfig & positionPair) != positionPair) {
+                loge("Channel pair (" + e.getKey() + ") cannot be used independently");
                 return false;
             }
-        }
-        final int sidePair =
-                AudioFormat.CHANNEL_OUT_SIDE_LEFT | AudioFormat.CHANNEL_OUT_SIDE_RIGHT;
-        if ((channelConfig & sidePair) != 0
-                && (channelConfig & sidePair) != sidePair) {
-            loge("Side channels can't be used independently");
-            return false;
         }
         return true;
     }
@@ -1823,6 +2037,11 @@ public class AudioTrack extends PlayerBase
         } catch(IllegalStateException ise) {
             // don't raise an exception, we're releasing the resources.
         }
+        if (mAudioPolicy != null) {
+            AudioManager.unregisterAudioPolicyAsyncStatic(mAudioPolicy);
+            mAudioPolicy = null;
+        }
+
         baseRelease();
         native_release();
         synchronized (mPlayStateLock) {
@@ -1834,6 +2053,7 @@ public class AudioTrack extends PlayerBase
 
     @Override
     protected void finalize() {
+        tryToDisableNativeRoutingCallback();
         baseRelease();
         native_finalize();
     }
@@ -2035,8 +2255,9 @@ public class AudioTrack extends PlayerBase
      * It may also be adjusted slightly for internal reasons.
      * If bufferSizeInFrames is less than zero then {@link #ERROR_BAD_VALUE}
      * will be returned.
-     * <p>This method is only supported for PCM audio.
-     * It is not supported for compressed audio tracks.
+     * <p>This method is supported for PCM audio at all API levels.
+     * Compressed audio is supported in API levels 33 and above.
+     * For compressed streams the size of a frame is considered to be exactly one byte.
      *
      * @param bufferSizeInFrames requested buffer size in frames
      * @return the actual buffer size in frames or an error code,
@@ -2271,7 +2492,7 @@ public class AudioTrack extends PlayerBase
             channelCount = 2;
             break;
         default:
-            if (!isMultichannelConfigSupported(channelConfig)) {
+            if (!isMultichannelConfigSupported(channelConfig, audioFormat)) {
                 loge("getMinBufferSize(): Invalid channel configuration.");
                 return ERROR_BAD_VALUE;
             } else {
@@ -2752,6 +2973,10 @@ public class AudioTrack extends PlayerBase
      * For portability, an application should prime the data path to the maximum allowed
      * by writing data until the write() method returns a short transfer count.
      * This allows play() to start immediately, and reduces the chance of underrun.
+     *<p>
+     * As of {@link android.os.Build.VERSION_CODES#S} the minimum level to start playing
+     * can be obtained using {@link #getStartThresholdInFrames()} and set with
+     * {@link #setStartThresholdInFrames(int)}.
      *
      * @throws IllegalStateException if the track isn't properly initialized
      */
@@ -2786,9 +3011,16 @@ public class AudioTrack extends PlayerBase
     }
 
     private void startImpl() {
+        synchronized (mRoutingChangeListeners) {
+            if (!mEnableSelfRoutingMonitor) {
+                mEnableSelfRoutingMonitor = testEnableNativeRoutingCallbacksLocked();
+            }
+        }
         synchronized(mPlayStateLock) {
-            baseStart();
+            baseStart(0); // unknown device at this point
             native_start();
+            // FIXME see b/179218630
+            //baseStart(native_getRoutedDeviceId());
             if (mPlayState == PLAYSTATE_PAUSED_STOPPING) {
                 mPlayState = PLAYSTATE_STOPPING;
             } else {
@@ -2826,6 +3058,7 @@ public class AudioTrack extends PlayerBase
                 mPlayStateLock.notify();
             }
         }
+        tryToDisableNativeRoutingCallback();
     }
 
     /**
@@ -2962,7 +3195,7 @@ public class AudioTrack extends PlayerBase
      */
     public int write(@NonNull byte[] audioData, int offsetInBytes, int sizeInBytes,
             @WriteMode int writeMode) {
-
+        // Note: we allow writes of extended integers and compressed formats from a byte array.
         if (mState == STATE_UNINITIALIZED || mAudioFormat == AudioFormat.ENCODING_PCM_FLOAT) {
             return ERROR_INVALID_OPERATION;
         }
@@ -3076,7 +3309,10 @@ public class AudioTrack extends PlayerBase
     public int write(@NonNull short[] audioData, int offsetInShorts, int sizeInShorts,
             @WriteMode int writeMode) {
 
-        if (mState == STATE_UNINITIALIZED || mAudioFormat == AudioFormat.ENCODING_PCM_FLOAT) {
+        if (mState == STATE_UNINITIALIZED
+                || mAudioFormat == AudioFormat.ENCODING_PCM_FLOAT
+                // use ByteBuffer or byte[] instead for later encodings
+                || mAudioFormat > AudioFormat.ENCODING_LEGACY_SHORT_ARRAY_THRESHOLD) {
             return ERROR_INVALID_OPERATION;
         }
 
@@ -3552,33 +3788,49 @@ public class AudioTrack extends PlayerBase
         if (deviceId == 0) {
             return null;
         }
-        AudioDeviceInfo[] devices =
-                AudioManager.getDevicesStatic(AudioManager.GET_DEVICES_OUTPUTS);
-        for (int i = 0; i < devices.length; i++) {
-            if (devices[i].getId() == deviceId) {
-                return devices[i];
+        return AudioManager.getDeviceForPortId(deviceId, AudioManager.GET_DEVICES_OUTPUTS);
+    }
+
+    private void tryToDisableNativeRoutingCallback() {
+        synchronized (mRoutingChangeListeners) {
+            if (mEnableSelfRoutingMonitor) {
+                mEnableSelfRoutingMonitor = false;
+                testDisableNativeRoutingCallbacksLocked();
             }
         }
-        return null;
     }
 
-    /*
-     * Call BEFORE adding a routing callback handler.
+    /**
+     * Call BEFORE adding a routing callback handler and when enabling self routing listener
+     * @return returns true for success, false otherwise.
      */
     @GuardedBy("mRoutingChangeListeners")
-    private void testEnableNativeRoutingCallbacksLocked() {
-        if (mRoutingChangeListeners.size() == 0) {
-            native_enableDeviceCallback();
+    private boolean testEnableNativeRoutingCallbacksLocked() {
+        if (mRoutingChangeListeners.size() == 0 && !mEnableSelfRoutingMonitor) {
+            try {
+                native_enableDeviceCallback();
+                return true;
+            } catch (IllegalStateException e) {
+                if (Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "testEnableNativeRoutingCallbacks failed", e);
+                }
+            }
         }
+        return false;
     }
 
     /*
-     * Call AFTER removing a routing callback handler.
+     * Call AFTER removing a routing callback handler and when disabling self routing listener.
      */
     @GuardedBy("mRoutingChangeListeners")
     private void testDisableNativeRoutingCallbacksLocked() {
-        if (mRoutingChangeListeners.size() == 0) {
-            native_disableDeviceCallback();
+        if (mRoutingChangeListeners.size() == 0 && !mEnableSelfRoutingMonitor) {
+            try {
+                native_disableDeviceCallback();
+            } catch (IllegalStateException e) {
+                // Fail silently as track state could have changed in between stop
+                // and disabling routing callback
+            }
         }
     }
 
@@ -3594,6 +3846,9 @@ public class AudioTrack extends PlayerBase
     private ArrayMap<AudioRouting.OnRoutingChangedListener,
             NativeRoutingEventHandlerDelegate> mRoutingChangeListeners = new ArrayMap<>();
 
+    @GuardedBy("mRoutingChangeListeners")
+    private boolean mEnableSelfRoutingMonitor;
+
    /**
     * Adds an {@link AudioRouting.OnRoutingChangedListener} to receive notifications of routing
     * changes on this AudioTrack.
@@ -3608,7 +3863,7 @@ public class AudioTrack extends PlayerBase
             Handler handler) {
         synchronized (mRoutingChangeListeners) {
             if (listener != null && !mRoutingChangeListeners.containsKey(listener)) {
-                testEnableNativeRoutingCallbacksLocked();
+                mEnableSelfRoutingMonitor = testEnableNativeRoutingCallbacksLocked();
                 mRoutingChangeListeners.put(
                         listener, new NativeRoutingEventHandlerDelegate(this, listener,
                                 handler != null ? handler : new Handler(mInitializationLooper)));
@@ -3693,6 +3948,7 @@ public class AudioTrack extends PlayerBase
      */
     private void broadcastRoutingChange() {
         AudioManager.resetAudioPortGeneration();
+        baseUpdateDeviceId(getRoutedDevice());
         synchronized (mRoutingChangeListeners) {
             for (NativeRoutingEventHandlerDelegate delegate : mRoutingChangeListeners.values()) {
                 delegate.notifyClient();
@@ -4003,6 +4259,36 @@ public class AudioTrack extends PlayerBase
         }
     }
 
+    /**
+     * Sets a {@link LogSessionId} instance to this AudioTrack for metrics collection.
+     *
+     * @param logSessionId a {@link LogSessionId} instance which is used to
+     *        identify this object to the metrics service. Proper generated
+     *        Ids must be obtained from the Java metrics service and should
+     *        be considered opaque. Use
+     *        {@link LogSessionId#LOG_SESSION_ID_NONE} to remove the
+     *        logSessionId association.
+     * @throws IllegalStateException if AudioTrack not initialized.
+     *
+     */
+    public void setLogSessionId(@NonNull LogSessionId logSessionId) {
+        Objects.requireNonNull(logSessionId);
+        if (mState == STATE_UNINITIALIZED) {
+            throw new IllegalStateException("track not initialized");
+        }
+        String stringId = logSessionId.getStringId();
+        native_setLogSessionId(stringId);
+        mLogSessionId = logSessionId;
+    }
+
+    /**
+     * Returns the {@link LogSessionId}.
+     */
+    @NonNull
+    public LogSessionId getLogSessionId() {
+        return mLogSessionId;
+    }
+
     //---------------------------------------------------------
     // Inner classes
     //--------------------
@@ -4140,9 +4426,9 @@ public class AudioTrack extends PlayerBase
     private native final int native_setup(Object /*WeakReference<AudioTrack>*/ audiotrack_this,
             Object /*AudioAttributes*/ attributes,
             int[] sampleRate, int channelMask, int channelIndexMask, int audioFormat,
-            int buffSizeInBytes, int mode, int[] sessionId, long nativeAudioTrack,
-            boolean offload, int encapsulationMode, Object tunerConfiguration,
-            @NonNull String opPackageName);
+            int buffSizeInBytes, int mode, int[] sessionId, @NonNull Parcel attributionSource,
+            long nativeAudioTrack, boolean offload, int encapsulationMode,
+            Object tunerConfiguration, @NonNull String opPackageName);
 
     private native final void native_finalize();
 
@@ -4238,8 +4524,23 @@ public class AudioTrack extends PlayerBase
     private native int native_get_audio_description_mix_level_db(float[] level);
     private native int native_set_dual_mono_mode(int dualMonoMode);
     private native int native_get_dual_mono_mode(int[] dualMonoMode);
+    private native void native_setLogSessionId(@Nullable String logSessionId);
     private native int native_setStartThresholdInFrames(int startThresholdInFrames);
     private native int native_getStartThresholdInFrames();
+
+    /**
+     * Sets the audio service Player Interface Id.
+     *
+     * The playerIId does not change over the lifetime of the client
+     * Java AudioTrack and is set automatically on creation.
+     *
+     * This call informs the native AudioTrack for metrics logging purposes.
+     *
+     * @param id the value reported by AudioManager when registering the track.
+     *           A value of -1 indicates invalid - the playerIId was never set.
+     * @throws IllegalStateException if AudioTrack not initialized.
+     */
+    private native void native_setPlayerIId(int playerIId);
 
     //---------------------------------------------------------
     // Utility methods

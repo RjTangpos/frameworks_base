@@ -125,9 +125,14 @@ Typeface* Typeface::createWithDifferentBaseWeight(Typeface* src, int weight) {
 }
 
 Typeface* Typeface::createFromFamilies(std::vector<std::shared_ptr<minikin::FontFamily>>&& families,
-                                       int weight, int italic) {
+                                       int weight, int italic, const Typeface* fallback) {
     Typeface* result = new Typeface;
-    result->fFontCollection.reset(new minikin::FontCollection(families));
+    if (fallback == nullptr) {
+        result->fFontCollection = minikin::FontCollection::create(std::move(families));
+    } else {
+        result->fFontCollection =
+                fallback->fFontCollection->createCollectionWithFamilies(std::move(families));
+    }
 
     if (weight == RESOLVE_BY_FONT_TABLE || italic == RESOLVE_BY_FONT_TABLE) {
         int weightFromFont;
@@ -185,14 +190,14 @@ void Typeface::setRobotoTypefaceForTest() {
     sk_sp<SkTypeface> typeface = SkTypeface::MakeFromStream(std::move(fontData));
     LOG_ALWAYS_FATAL_IF(typeface == nullptr, "Failed to make typeface from %s", kRobotoFont);
 
-    std::shared_ptr<minikin::MinikinFont> font = std::make_shared<MinikinFontSkia>(
-            std::move(typeface), data, st.st_size, kRobotoFont, 0,
-            std::vector<minikin::FontVariation>());
-    std::vector<minikin::Font> fonts;
+    std::shared_ptr<minikin::MinikinFont> font =
+            std::make_shared<MinikinFontSkia>(std::move(typeface), 0, data, st.st_size, kRobotoFont,
+                                              0, std::vector<minikin::FontVariation>());
+    std::vector<std::shared_ptr<minikin::Font>> fonts;
     fonts.push_back(minikin::Font::Builder(font).build());
 
-    std::shared_ptr<minikin::FontCollection> collection = std::make_shared<minikin::FontCollection>(
-            std::make_shared<minikin::FontFamily>(std::move(fonts)));
+    std::shared_ptr<minikin::FontCollection> collection =
+            minikin::FontCollection::create(minikin::FontFamily::create(std::move(fonts)));
 
     Typeface* hwTypeface = new Typeface();
     hwTypeface->fFontCollection = collection;

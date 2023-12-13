@@ -33,7 +33,6 @@ import static android.system.OsConstants.S_IWOTH;
 
 import android.annotation.NonNull;
 import android.annotation.SuppressLint;
-import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
@@ -46,7 +45,7 @@ import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructStat;
 import android.util.Log;
-import android.util.Size;
+import android.util.Slog;
 
 import dalvik.system.CloseGuard;
 import dalvik.system.VMRuntime;
@@ -331,6 +330,14 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     }
 
     private static FileDescriptor openInternal(File file, int mode) throws FileNotFoundException {
+        if ((mode & MODE_WRITE_ONLY) != 0 && (mode & MODE_APPEND) == 0
+                && (mode & MODE_TRUNCATE) == 0 && ((mode & MODE_READ_ONLY) == 0)
+                && file != null && file.exists()) {
+            Slog.wtfQuiet(TAG, "ParcelFileDescriptor.open is called with w without t or a or r, "
+                    + "which will have a different behavior beginning in Android Q."
+                    + "\nMode: " + mode + "\nFilename: " + file.getPath());
+        }
+
         final int flags = FileUtils.translateModePfdToPosix(mode) | ifAtLeastQ(O_CLOEXEC);
 
         int realMode = S_IRWXU | S_IRWXG;
@@ -626,6 +633,26 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * Converts a string representing a file mode, such as "rw", into a bitmask suitable for use
      * with {@link #open}.
      * <p>
+     * The argument must define at least one of the following base access modes:
+     * <ul>
+     * <li>"r" indicates the file should be opened in read-only mode, equivalent
+     * to {@link OsConstants#O_RDONLY}.
+     * <li>"w" indicates the file should be opened in write-only mode,
+     * equivalent to {@link OsConstants#O_WRONLY}.
+     * <li>"rw" indicates the file should be opened in read-write mode,
+     * equivalent to {@link OsConstants#O_RDWR}.
+     * </ul>
+     * In addition to a base access mode, the following additional modes may
+     * requested:
+     * <ul>
+     * <li>"a" indicates the file should be opened in append mode, equivalent to
+     * {@link OsConstants#O_APPEND}. Before each write, the file offset is
+     * positioned at the end of the file.
+     * <li>"t" indicates the file should be opened in truncate mode, equivalent
+     * to {@link OsConstants#O_TRUNC}. If the file already exists and is a
+     * regular file and is opened for writing, it will be truncated to length 0.
+     * </ul>
+     *
      * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
      *             or "rwt".
      * @return A bitmask representing the given file mode.

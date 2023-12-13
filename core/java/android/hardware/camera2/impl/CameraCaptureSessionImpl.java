@@ -27,6 +27,7 @@ import android.hardware.camera2.utils.TaskDrainer;
 import android.hardware.camera2.utils.TaskSingleDrainer;
 import android.os.Binder;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
@@ -656,6 +657,21 @@ public class CameraCaptureSessionImpl extends CameraCaptureSession
             }
 
             @Override
+            public void onReadoutStarted(CameraDevice camera,
+                    CaptureRequest request, long timestamp, long frameNumber) {
+                if ((callback != null) && (executor != null)) {
+                    final long ident = Binder.clearCallingIdentity();
+                    try {
+                        executor.execute(() -> callback.onReadoutStarted(
+                                    CameraCaptureSessionImpl.this, request, timestamp,
+                                    frameNumber));
+                    } finally {
+                        Binder.restoreCallingIdentity(ident);
+                    }
+                }
+            }
+
+            @Override
             public void onCapturePartial(CameraDevice camera,
                     CaptureRequest request, android.hardware.camera2.CaptureResult result) {
                 if ((callback != null) && (executor != null)) {
@@ -1002,7 +1018,7 @@ public class CameraCaptureSessionImpl extends CameraCaptureSession
                     // begin transition to unconfigured
                     mDeviceImpl.configureStreamsChecked(/*inputConfig*/null, /*outputs*/null,
                             /*operatingMode*/ ICameraDeviceUser.NORMAL_MODE,
-                            /*sessionParams*/ null);
+                            /*sessionParams*/ null, SystemClock.uptimeMillis());
                 } catch (CameraAccessException e) {
                     // OK: do not throw checked exceptions.
                     Log.e(TAG, mIdString + "Exception while unconfiguring outputs: ", e);

@@ -28,78 +28,83 @@ import android.view.IWindowManager;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.logging.MetricsLogger;
+import com.android.internal.logging.UiEventLogger;
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.util.Preconditions;
 import com.android.keyguard.KeyguardSecurityModel;
 import com.android.keyguard.KeyguardUpdateMonitor;
-import com.android.keyguard.clock.ClockManager;
 import com.android.settingslib.bluetooth.LocalBluetoothManager;
+import com.android.systemui.accessibility.AccessibilityButtonModeObserver;
+import com.android.systemui.accessibility.AccessibilityButtonTargetsObserver;
+import com.android.systemui.accessibility.floatingmenu.AccessibilityFloatingMenuController;
+import com.android.systemui.animation.DialogLaunchAnimator;
 import com.android.systemui.appops.AppOpsController;
 import com.android.systemui.assist.AssistManager;
 import com.android.systemui.broadcast.BroadcastDispatcher;
-import com.android.systemui.bubbles.BubbleController;
 import com.android.systemui.colorextraction.SysuiColorExtractor;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.dock.DockManager;
 import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.fragments.FragmentService;
+import com.android.systemui.hdmi.HdmiCecSetMenuLanguageHelper;
 import com.android.systemui.keyguard.ScreenLifecycle;
 import com.android.systemui.keyguard.WakefulnessLifecycle;
 import com.android.systemui.media.dialog.MediaOutputDialogFactory;
 import com.android.systemui.model.SysUiState;
+import com.android.systemui.navigationbar.NavigationBarController;
+import com.android.systemui.navigationbar.NavigationModeController;
+import com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.DarkIconDispatcher;
 import com.android.systemui.plugins.PluginDependencyProvider;
+import com.android.systemui.plugins.PluginManager;
 import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.power.EnhancedEstimates;
 import com.android.systemui.power.PowerUI;
 import com.android.systemui.privacy.PrivacyItemController;
+import com.android.systemui.qs.ReduceBrightColorsController;
+import com.android.systemui.qs.tiles.dialog.InternetDialogFactory;
 import com.android.systemui.recents.OverviewProxyService;
-import com.android.systemui.recents.Recents;
 import com.android.systemui.screenrecord.RecordingController;
-import com.android.systemui.shared.plugins.PluginManager;
+import com.android.systemui.settings.UserTracker;
+import com.android.systemui.shade.ShadeController;
 import com.android.systemui.shared.system.ActivityManagerWrapper;
 import com.android.systemui.shared.system.DevicePolicyManagerWrapper;
 import com.android.systemui.shared.system.PackageManagerWrapper;
-import com.android.systemui.stackdivider.Divider;
 import com.android.systemui.statusbar.CommandQueue;
-import com.android.systemui.statusbar.NavigationBarController;
 import com.android.systemui.statusbar.NotificationListener;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
 import com.android.systemui.statusbar.NotificationMediaManager;
 import com.android.systemui.statusbar.NotificationRemoteInputManager;
-import com.android.systemui.statusbar.NotificationViewHierarchyManager;
+import com.android.systemui.statusbar.NotificationShadeWindowController;
 import com.android.systemui.statusbar.SmartReplyController;
 import com.android.systemui.statusbar.VibratorHelper;
-import com.android.systemui.statusbar.notification.NotificationEntryManager;
-import com.android.systemui.statusbar.notification.NotificationEntryManager.KeyguardEnvironment;
-import com.android.systemui.statusbar.notification.NotificationFilter;
-import com.android.systemui.statusbar.notification.VisualStabilityManager;
+import com.android.systemui.statusbar.events.PrivacyDotViewController;
+import com.android.systemui.statusbar.events.SystemStatusAnimationScheduler;
+import com.android.systemui.statusbar.notification.collection.render.GroupExpansionManager;
+import com.android.systemui.statusbar.notification.collection.render.GroupMembershipManager;
 import com.android.systemui.statusbar.notification.logging.NotificationLogger;
-import com.android.systemui.statusbar.notification.row.NotificationBlockingHelperManager;
 import com.android.systemui.statusbar.notification.row.NotificationGutsManager;
+import com.android.systemui.statusbar.notification.stack.AmbientState;
+import com.android.systemui.statusbar.notification.stack.NotificationSectionsManager;
 import com.android.systemui.statusbar.phone.AutoHideController;
 import com.android.systemui.statusbar.phone.DozeParameters;
 import com.android.systemui.statusbar.phone.KeyguardDismissUtil;
 import com.android.systemui.statusbar.phone.LightBarController;
 import com.android.systemui.statusbar.phone.LockscreenGestureLogger;
 import com.android.systemui.statusbar.phone.ManagedProfileController;
-import com.android.systemui.statusbar.phone.NavigationModeController;
-import com.android.systemui.statusbar.phone.NotificationGroupAlertTransferHelper;
-import com.android.systemui.statusbar.phone.NotificationGroupManager;
-import com.android.systemui.statusbar.phone.NotificationShadeWindowController;
-import com.android.systemui.statusbar.phone.ShadeController;
-import com.android.systemui.statusbar.phone.StatusBar;
+import com.android.systemui.statusbar.phone.ScreenOffAnimationController;
+import com.android.systemui.statusbar.phone.StatusBarContentInsetsProvider;
 import com.android.systemui.statusbar.phone.StatusBarIconController;
-import com.android.systemui.statusbar.phone.StatusBarWindowController;
+import com.android.systemui.statusbar.phone.SystemUIDialogManager;
 import com.android.systemui.statusbar.policy.AccessibilityController;
 import com.android.systemui.statusbar.policy.AccessibilityManagerWrapper;
-import com.android.systemui.statusbar.policy.BatteryController;
 import com.android.systemui.statusbar.policy.BluetoothController;
 import com.android.systemui.statusbar.policy.CastController;
-import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.DataSaverController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
 import com.android.systemui.statusbar.policy.ExtensionController;
@@ -107,7 +112,6 @@ import com.android.systemui.statusbar.policy.FlashlightController;
 import com.android.systemui.statusbar.policy.HotspotController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.statusbar.policy.LocationController;
-import com.android.systemui.statusbar.policy.NetworkController;
 import com.android.systemui.statusbar.policy.NextAlarmController;
 import com.android.systemui.statusbar.policy.RemoteInputQuickSettingsDisabler;
 import com.android.systemui.statusbar.policy.RotationLockController;
@@ -117,16 +121,15 @@ import com.android.systemui.statusbar.policy.SmartReplyConstants;
 import com.android.systemui.statusbar.policy.UserInfoController;
 import com.android.systemui.statusbar.policy.UserSwitcherController;
 import com.android.systemui.statusbar.policy.ZenModeController;
-import com.android.systemui.tracing.ProtoTracer;
+import com.android.systemui.statusbar.window.StatusBarWindowController;
+import com.android.systemui.telephony.TelephonyListenerManager;
 import com.android.systemui.tuner.TunablePadding.TunablePaddingService;
 import com.android.systemui.tuner.TunerService;
+import com.android.systemui.util.DeviceConfigProxy;
 import com.android.systemui.util.leak.GarbageMonitor;
 import com.android.systemui.util.leak.LeakDetector;
 import com.android.systemui.util.leak.LeakReporter;
 import com.android.systemui.util.sensors.AsyncSensorManager;
-import com.android.systemui.wm.DisplayController;
-import com.android.systemui.wm.DisplayImeController;
-import com.android.systemui.wm.SystemWindows;
 
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
@@ -135,7 +138,6 @@ import javax.inject.Inject;
 import javax.inject.Named;
 
 import dagger.Lazy;
-import dagger.Subcomponent;
 
 /**
  * Class to handle ugly dependencies throughout sysui until we determine the
@@ -152,6 +154,7 @@ import dagger.Subcomponent;
  * they have no clients they should not have any registered resources like bound
  * services, registered receivers, etc.
  */
+@SysUISingleton
 public class Dependency {
     /**
      * Key for getting a the main looper.
@@ -238,8 +241,8 @@ public class Dependency {
     @Inject Lazy<BluetoothController> mBluetoothController;
     @Inject Lazy<LocationController> mLocationController;
     @Inject Lazy<RotationLockController> mRotationLockController;
-    @Inject Lazy<NetworkController> mNetworkController;
     @Inject Lazy<ZenModeController> mZenModeController;
+    @Inject Lazy<HdmiCecSetMenuLanguageHelper> mHdmiCecSetMenuLanguageHelper;
     @Inject Lazy<HotspotController> mHotspotController;
     @Inject Lazy<CastController> mCastController;
     @Inject Lazy<FlashlightController> mFlashlightController;
@@ -247,8 +250,8 @@ public class Dependency {
     @Inject Lazy<UserInfoController> mUserInfoController;
     @Inject Lazy<KeyguardStateController> mKeyguardMonitor;
     @Inject Lazy<KeyguardUpdateMonitor> mKeyguardUpdateMonitor;
-    @Inject Lazy<BatteryController> mBatteryController;
     @Inject Lazy<NightDisplayListener> mNightDisplayListener;
+    @Inject Lazy<ReduceBrightColorsController> mReduceBrightColorsController;
     @Inject Lazy<ManagedProfileController> mManagedProfileController;
     @Inject Lazy<NextAlarmController> mNextAlarmController;
     @Inject Lazy<DataSaverController> mDataSaverController;
@@ -264,7 +267,6 @@ public class Dependency {
     @Inject Lazy<NotificationShadeWindowController> mNotificationShadeWindowController;
     @Inject Lazy<StatusBarWindowController> mTempStatusBarWindowController;
     @Inject Lazy<DarkIconDispatcher> mDarkIconDispatcher;
-    @Inject Lazy<ConfigurationController> mConfigurationController;
     @Inject Lazy<StatusBarIconController> mStatusBarIconController;
     @Inject Lazy<ScreenLifecycle> mScreenLifecycle;
     @Inject Lazy<WakefulnessLifecycle> mWakefulnessLifecycle;
@@ -278,56 +280,46 @@ public class Dependency {
     @Inject Lazy<AccessibilityManagerWrapper> mAccessibilityManagerWrapper;
     @Inject Lazy<SysuiColorExtractor> mSysuiColorExtractor;
     @Inject Lazy<TunablePaddingService> mTunablePaddingService;
-    @Inject Lazy<ForegroundServiceController> mForegroundServiceController;
     @Inject Lazy<UiOffloadThread> mUiOffloadThread;
     @Inject Lazy<PowerUI.WarningsUI> mWarningsUI;
     @Inject Lazy<LightBarController> mLightBarController;
     @Inject Lazy<IWindowManager> mIWindowManager;
     @Inject Lazy<OverviewProxyService> mOverviewProxyService;
     @Inject Lazy<NavigationModeController> mNavBarModeController;
+    @Inject Lazy<AccessibilityButtonModeObserver> mAccessibilityButtonModeObserver;
+    @Inject Lazy<AccessibilityButtonTargetsObserver> mAccessibilityButtonListController;
     @Inject Lazy<EnhancedEstimates> mEnhancedEstimates;
     @Inject Lazy<VibratorHelper> mVibratorHelper;
     @Inject Lazy<IStatusBarService> mIStatusBarService;
     @Inject Lazy<DisplayMetrics> mDisplayMetrics;
     @Inject Lazy<LockscreenGestureLogger> mLockscreenGestureLogger;
-    @Inject Lazy<KeyguardEnvironment> mKeyguardEnvironment;
     @Inject Lazy<ShadeController> mShadeController;
     @Inject Lazy<NotificationRemoteInputManager.Callback> mNotificationRemoteInputManagerCallback;
     @Inject Lazy<AppOpsController> mAppOpsController;
     @Inject Lazy<NavigationBarController> mNavigationBarController;
+    @Inject Lazy<AccessibilityFloatingMenuController> mAccessibilityFloatingMenuController;
     @Inject Lazy<StatusBarStateController> mStatusBarStateController;
     @Inject Lazy<NotificationLockscreenUserManager> mNotificationLockscreenUserManager;
-    @Inject Lazy<NotificationGroupAlertTransferHelper> mNotificationGroupAlertTransferHelper;
-    @Inject Lazy<NotificationGroupManager> mNotificationGroupManager;
-    @Inject Lazy<VisualStabilityManager> mVisualStabilityManager;
     @Inject Lazy<NotificationGutsManager> mNotificationGutsManager;
     @Inject Lazy<NotificationMediaManager> mNotificationMediaManager;
-    @Inject Lazy<NotificationBlockingHelperManager> mNotificationBlockingHelperManager;
     @Inject Lazy<NotificationRemoteInputManager> mNotificationRemoteInputManager;
     @Inject Lazy<SmartReplyConstants> mSmartReplyConstants;
     @Inject Lazy<NotificationListener> mNotificationListener;
     @Inject Lazy<NotificationLogger> mNotificationLogger;
-    @Inject Lazy<NotificationViewHierarchyManager> mNotificationViewHierarchyManager;
-    @Inject Lazy<NotificationFilter> mNotificationFilter;
     @Inject Lazy<KeyguardDismissUtil> mKeyguardDismissUtil;
     @Inject Lazy<SmartReplyController> mSmartReplyController;
     @Inject Lazy<RemoteInputQuickSettingsDisabler> mRemoteInputQuickSettingsDisabler;
-    @Inject Lazy<BubbleController> mBubbleController;
-    @Inject Lazy<NotificationEntryManager> mNotificationEntryManager;
     @Inject Lazy<SensorPrivacyManager> mSensorPrivacyManager;
     @Inject Lazy<AutoHideController> mAutoHideController;
-    @Inject Lazy<ForegroundServiceNotificationListener> mForegroundServiceNotificationListener;
     @Inject Lazy<PrivacyItemController> mPrivacyItemController;
     @Inject @Background Lazy<Looper> mBgLooper;
     @Inject @Background Lazy<Handler> mBgHandler;
     @Inject @Main Lazy<Looper> mMainLooper;
     @Inject @Main Lazy<Handler> mMainHandler;
     @Inject @Named(TIME_TICK_HANDLER_NAME) Lazy<Handler> mTimeTickHandler;
-    @Nullable
     @Inject @Named(LEAK_REPORT_EMAIL_NAME) Lazy<String> mLeakReportEmail;
     @Inject @Main Lazy<Executor> mMainExecutor;
     @Inject @Background Lazy<Executor> mBackgroundExecutor;
-    @Inject Lazy<ClockManager> mClockManager;
     @Inject Lazy<ActivityManagerWrapper> mActivityManagerWrapper;
     @Inject Lazy<DevicePolicyManagerWrapper> mDevicePolicyManagerWrapper;
     @Inject Lazy<PackageManagerWrapper> mPackageManagerWrapper;
@@ -340,15 +332,25 @@ public class Dependency {
     @Inject Lazy<DozeParameters> mDozeParameters;
     @Inject Lazy<IWallpaperManager> mWallpaperManager;
     @Inject Lazy<CommandQueue> mCommandQueue;
-    @Inject Lazy<Recents> mRecents;
-    @Inject Lazy<StatusBar> mStatusBar;
-    @Inject Lazy<DisplayController> mDisplayController;
-    @Inject Lazy<SystemWindows> mSystemWindows;
-    @Inject Lazy<DisplayImeController> mDisplayImeController;
     @Inject Lazy<RecordingController> mRecordingController;
-    @Inject Lazy<ProtoTracer> mProtoTracer;
-    @Inject Lazy<Divider> mDivider;
     @Inject Lazy<MediaOutputDialogFactory> mMediaOutputDialogFactory;
+    @Inject Lazy<DeviceConfigProxy> mDeviceConfigProxy;
+    @Inject Lazy<TelephonyListenerManager> mTelephonyListenerManager;
+    @Inject Lazy<SystemStatusAnimationScheduler> mSystemStatusAnimationSchedulerLazy;
+    @Inject Lazy<PrivacyDotViewController> mPrivacyDotViewControllerLazy;
+    @Inject Lazy<EdgeBackGestureHandler.Factory> mEdgeBackGestureHandlerFactoryLazy;
+    @Inject Lazy<UiEventLogger> mUiEventLogger;
+    @Inject Lazy<StatusBarContentInsetsProvider> mContentInsetsProviderLazy;
+    @Inject Lazy<InternetDialogFactory> mInternetDialogFactory;
+    @Inject Lazy<FeatureFlags> mFeatureFlagsLazy;
+    @Inject Lazy<NotificationSectionsManager> mNotificationSectionsManagerLazy;
+    @Inject Lazy<ScreenOffAnimationController> mScreenOffAnimationController;
+    @Inject Lazy<AmbientState> mAmbientStateLazy;
+    @Inject Lazy<GroupMembershipManager> mGroupMembershipManagerLazy;
+    @Inject Lazy<GroupExpansionManager> mGroupExpansionManagerLazy;
+    @Inject Lazy<SystemUIDialogManager> mSystemUIDialogManagerLazy;
+    @Inject Lazy<DialogLaunchAnimator> mDialogLaunchAnimatorLazy;
+    @Inject Lazy<UserTracker> mUserTrackerLazy;
 
     @Inject
     public Dependency() {
@@ -378,8 +380,6 @@ public class Dependency {
 
         mProviders.put(RotationLockController.class, mRotationLockController::get);
 
-        mProviders.put(NetworkController.class, mNetworkController::get);
-
         mProviders.put(ZenModeController.class, mZenModeController::get);
 
         mProviders.put(HotspotController.class, mHotspotController::get);
@@ -396,9 +396,9 @@ public class Dependency {
 
         mProviders.put(UserInfoController.class, mUserInfoController::get);
 
-        mProviders.put(BatteryController.class, mBatteryController::get);
-
         mProviders.put(NightDisplayListener.class, mNightDisplayListener::get);
+
+        mProviders.put(ReduceBrightColorsController.class, mReduceBrightColorsController::get);
 
         mProviders.put(ManagedProfileController.class, mManagedProfileController::get);
 
@@ -433,8 +433,6 @@ public class Dependency {
 
         mProviders.put(DarkIconDispatcher.class, mDarkIconDispatcher::get);
 
-        mProviders.put(ConfigurationController.class, mConfigurationController::get);
-
         mProviders.put(StatusBarIconController.class, mStatusBarIconController::get);
 
         mProviders.put(ScreenLifecycle.class, mScreenLifecycle::get);
@@ -459,8 +457,6 @@ public class Dependency {
 
         mProviders.put(TunablePaddingService.class, mTunablePaddingService::get);
 
-        mProviders.put(ForegroundServiceController.class, mForegroundServiceController::get);
-
         mProviders.put(UiOffloadThread.class, mUiOffloadThread::get);
 
         mProviders.put(PowerUI.WarningsUI.class, mWarningsUI::get);
@@ -473,6 +469,11 @@ public class Dependency {
 
         mProviders.put(NavigationModeController.class, mNavBarModeController::get);
 
+        mProviders.put(AccessibilityButtonModeObserver.class,
+                mAccessibilityButtonModeObserver::get);
+        mProviders.put(AccessibilityButtonTargetsObserver.class,
+                mAccessibilityButtonListController::get);
+
         mProviders.put(EnhancedEstimates.class, mEnhancedEstimates::get);
 
         mProviders.put(VibratorHelper.class, mVibratorHelper::get);
@@ -483,8 +484,8 @@ public class Dependency {
 
         mProviders.put(LockscreenGestureLogger.class, mLockscreenGestureLogger::get);
 
-        mProviders.put(KeyguardEnvironment.class, mKeyguardEnvironment::get);
         mProviders.put(ShadeController.class, mShadeController::get);
+
         mProviders.put(NotificationRemoteInputManager.Callback.class,
                 mNotificationRemoteInputManagerCallback::get);
 
@@ -492,34 +493,23 @@ public class Dependency {
 
         mProviders.put(NavigationBarController.class, mNavigationBarController::get);
 
+        mProviders.put(AccessibilityFloatingMenuController.class,
+                mAccessibilityFloatingMenuController::get);
+
         mProviders.put(StatusBarStateController.class, mStatusBarStateController::get);
         mProviders.put(NotificationLockscreenUserManager.class,
                 mNotificationLockscreenUserManager::get);
-        mProviders.put(VisualStabilityManager.class, mVisualStabilityManager::get);
-        mProviders.put(NotificationGroupManager.class, mNotificationGroupManager::get);
-        mProviders.put(NotificationGroupAlertTransferHelper.class,
-                mNotificationGroupAlertTransferHelper::get);
         mProviders.put(NotificationMediaManager.class, mNotificationMediaManager::get);
         mProviders.put(NotificationGutsManager.class, mNotificationGutsManager::get);
-        mProviders.put(NotificationBlockingHelperManager.class,
-                mNotificationBlockingHelperManager::get);
         mProviders.put(NotificationRemoteInputManager.class,
                 mNotificationRemoteInputManager::get);
         mProviders.put(SmartReplyConstants.class, mSmartReplyConstants::get);
         mProviders.put(NotificationListener.class, mNotificationListener::get);
         mProviders.put(NotificationLogger.class, mNotificationLogger::get);
-        mProviders.put(NotificationViewHierarchyManager.class,
-                mNotificationViewHierarchyManager::get);
-        mProviders.put(NotificationFilter.class, mNotificationFilter::get);
         mProviders.put(KeyguardDismissUtil.class, mKeyguardDismissUtil::get);
         mProviders.put(SmartReplyController.class, mSmartReplyController::get);
         mProviders.put(RemoteInputQuickSettingsDisabler.class,
                 mRemoteInputQuickSettingsDisabler::get);
-        mProviders.put(BubbleController.class, mBubbleController::get);
-        mProviders.put(NotificationEntryManager.class, mNotificationEntryManager::get);
-        mProviders.put(ForegroundServiceNotificationListener.class,
-                mForegroundServiceNotificationListener::get);
-        mProviders.put(ClockManager.class, mClockManager::get);
         mProviders.put(PrivacyItemController.class, mPrivacyItemController::get);
         mProviders.put(ActivityManagerWrapper.class, mActivityManagerWrapper::get);
         mProviders.put(DevicePolicyManagerWrapper.class, mDevicePolicyManagerWrapper::get);
@@ -533,12 +523,8 @@ public class Dependency {
         mProviders.put(DozeParameters.class, mDozeParameters::get);
         mProviders.put(IWallpaperManager.class, mWallpaperManager::get);
         mProviders.put(CommandQueue.class, mCommandQueue::get);
-        mProviders.put(Recents.class, mRecents::get);
-        mProviders.put(StatusBar.class, mStatusBar::get);
-        mProviders.put(DisplayController.class, mDisplayController::get);
-        mProviders.put(SystemWindows.class, mSystemWindows::get);
-        mProviders.put(DisplayImeController.class, mDisplayImeController::get);
-        mProviders.put(ProtoTracer.class, mProtoTracer::get);
+        mProviders.put(DeviceConfigProxy.class, mDeviceConfigProxy::get);
+        mProviders.put(TelephonyListenerManager.class, mTelephonyListenerManager::get);
 
         // TODO(b/118592525): to support multi-display , we start to add something which is
         //                    per-display, while others may be global. I think it's time to add
@@ -547,11 +533,33 @@ public class Dependency {
         mProviders.put(AutoHideController.class, mAutoHideController::get);
 
         mProviders.put(RecordingController.class, mRecordingController::get);
-        mProviders.put(Divider.class, mDivider::get);
 
         mProviders.put(MediaOutputDialogFactory.class, mMediaOutputDialogFactory::get);
 
-        sDependency = this;
+        mProviders.put(SystemStatusAnimationScheduler.class,
+                mSystemStatusAnimationSchedulerLazy::get);
+        mProviders.put(PrivacyDotViewController.class, mPrivacyDotViewControllerLazy::get);
+        mProviders.put(InternetDialogFactory.class, mInternetDialogFactory::get);
+        mProviders.put(EdgeBackGestureHandler.Factory.class,
+                mEdgeBackGestureHandlerFactoryLazy::get);
+        mProviders.put(UiEventLogger.class, mUiEventLogger::get);
+        mProviders.put(FeatureFlags.class, mFeatureFlagsLazy::get);
+        mProviders.put(StatusBarContentInsetsProvider.class, mContentInsetsProviderLazy::get);
+        mProviders.put(NotificationSectionsManager.class, mNotificationSectionsManagerLazy::get);
+        mProviders.put(ScreenOffAnimationController.class, mScreenOffAnimationController::get);
+        mProviders.put(AmbientState.class, mAmbientStateLazy::get);
+        mProviders.put(GroupMembershipManager.class, mGroupMembershipManagerLazy::get);
+        mProviders.put(GroupExpansionManager.class, mGroupExpansionManagerLazy::get);
+        mProviders.put(SystemUIDialogManager.class, mSystemUIDialogManagerLazy::get);
+        mProviders.put(DialogLaunchAnimator.class, mDialogLaunchAnimatorLazy::get);
+        mProviders.put(UserTracker.class, mUserTrackerLazy::get);
+
+        Dependency.setInstance(this);
+    }
+
+    @VisibleForTesting
+    public static void setInstance(Dependency dependency) {
+        sDependency = dependency;
     }
 
     protected final <T> T getDependency(Class<T> cls) {
@@ -568,17 +576,12 @@ public class Dependency {
         if (obj == null) {
             obj = createDependency(key);
             mDependencies.put(key, obj);
-
-            // TODO: Get dependencies to register themselves instead
-            if (autoRegisterModulesForDump() && obj instanceof Dumpable) {
-                mDumpManager.registerDumpable(obj.getClass().getName(), (Dumpable) obj);
-            }
         }
         return obj;
     }
 
     @VisibleForTesting
-    protected <T> T createDependency(Object cls) {
+    public <T> T createDependency(Object cls) {
         Preconditions.checkArgument(cls instanceof DependencyKey<?> || cls instanceof Class<?>);
 
         @SuppressWarnings("unchecked")
@@ -588,17 +591,6 @@ public class Dependency {
                     + ". " + mProviders.size() + " providers known.");
         }
         return provider.createDependency();
-    }
-
-    // Currently, there are situations in tests where we might create more than one instance of a
-    // thing that should be a singleton: the "real" one (created by Dagger, usually as a result of
-    // inflating a view), and a mocked one (injected into Dependency). If we register the mocked
-    // one, the DumpManager will throw an exception complaining (rightly) that we have too many
-    // things registered with that name. So in tests, we disable the auto-registration until the
-    // root cause is fixed, i.e. inflated views in tests with Dagger dependencies.
-    @VisibleForTesting
-    protected boolean autoRegisterModulesForDump() {
-        return true;
     }
 
     private static Dependency sDependency;
@@ -666,10 +658,5 @@ public class Dependency {
         public String toString() {
             return mDisplayName;
         }
-    }
-
-    @Subcomponent
-    public interface DependencyInjector {
-        void createSystemUI(Dependency dependency);
     }
 }

@@ -18,6 +18,7 @@ package android.view;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.os.Bundle;
@@ -42,6 +43,30 @@ import java.util.List;
  *
  */
 public abstract class ViewStructure {
+
+    /**
+     * Key used for writing active child view information to the content capture bundle.
+     *
+     * The value stored under this key will be an ordered list of Autofill IDs of child views.
+     *
+     * TODO(b/241498401): Add @TestApi in Android U
+     * @hide
+     */
+    public static final String EXTRA_ACTIVE_CHILDREN_IDS =
+            "android.view.ViewStructure.extra.ACTIVE_CHILDREN_IDS";
+
+    /**
+     * Key used for writing the first active child's position to the content capture bundle.
+     *
+     * When active child view information is provided under the
+     * {@link #EXTRA_ACTIVE_CHILDREN_IDS}, the value stored under this key will be the
+     * 0-based position of the first child view in the list relative to the positions of child views
+     * in the containing View's dataset.
+     *
+     * TODO(b/241498401): Add @TestApi in Android U
+     * @hide */
+    public static final String EXTRA_FIRST_ACTIVE_POSITION =
+            "android.view.ViewStructure.extra.FIRST_ACTIVE_POSITION";
 
     /**
      * Set the identifier for this view.
@@ -370,6 +395,15 @@ public abstract class ViewStructure {
      * view associated with this node.
      */
     public void setImportantForAutofill(@AutofillImportance int mode) {}
+
+    /**
+     * Sets the MIME types accepted by this view. See {@link View#getReceiveContentMimeTypes()}.
+     *
+     * <p>Should only be set when the node is used for Autofill or Content Capture purposes - it
+     * will be ignored when used for Assist.
+     */
+    public void setReceiveContentMimeTypes(
+            @SuppressLint("NullableCollection") @Nullable String[] mimeTypes) {}
 
     /**
      * Sets the {@link android.text.InputType} bits of this node.

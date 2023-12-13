@@ -18,30 +18,41 @@ package com.android.internal.app;
 
 import android.content.ComponentName;
 import android.content.Intent;
-import android.os.Bundle;
-import android.os.RemoteCallback;
-
-import com.android.internal.app.IVoiceActionCheckCallback;
-import com.android.internal.app.IVoiceInteractionSessionShowCallback;
-import com.android.internal.app.IVoiceInteractor;
-import com.android.internal.app.IVoiceInteractionSessionListener;
-import android.hardware.soundtrigger.IRecognitionStatusCallback;
 import android.hardware.soundtrigger.KeyphraseMetadata;
-import android.hardware.soundtrigger.ModelParams;
 import android.hardware.soundtrigger.SoundTrigger;
+import android.media.AudioFormat;
+import android.media.permission.Identity;
+import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
+import android.os.PersistableBundle;
+import android.os.RemoteCallback;
+import android.os.SharedMemory;
+import android.service.voice.IVisualQueryDetectionVoiceInteractionCallback;
+import android.service.voice.IMicrophoneHotwordDetectionVoiceInteractionCallback;
 import android.service.voice.IVoiceInteractionService;
 import android.service.voice.IVoiceInteractionSession;
+import android.service.voice.VisibleActivityInfo;
+
+import com.android.internal.app.IHotwordRecognitionStatusCallback;
+import com.android.internal.app.IVoiceActionCheckCallback;
+import com.android.internal.app.IVoiceInteractionSessionListener;
+import com.android.internal.app.IVoiceInteractionSessionShowCallback;
+import com.android.internal.app.IVoiceInteractionSoundTriggerSession;
+import com.android.internal.app.IVoiceInteractor;
+import com.android.internal.app.IVisualQueryDetectionAttentionListener;
+import com.android.internal.app.IVisualQueryRecognitionStatusListener;
 
 interface IVoiceInteractionManagerService {
-    void showSession(in Bundle sessionArgs, int flags);
+    void showSession(in Bundle sessionArgs, int flags, String attributionTag);
     boolean deliverNewSession(IBinder token, IVoiceInteractionSession session,
             IVoiceInteractor interactor);
-    boolean showSessionFromSession(IBinder token, in Bundle sessionArgs, int flags);
+    boolean showSessionFromSession(IBinder token, in Bundle sessionArgs, int flags,
+            String attributionTag);
     boolean hideSessionFromSession(IBinder token);
     int startVoiceActivity(IBinder token, in Intent intent, String resolvedType,
-            String callingFeatureId);
+            String attributionTag);
     int startAssistantActivity(IBinder token, in Intent intent, String resolvedType,
-            String callingFeatureId);
+            String attributionTag, in Bundle bundle);
     void setKeepAwake(IBinder token, boolean keepAwake);
     void closeSystemDialogs(IBinder token);
     void finish(IBinder token);
@@ -88,11 +99,19 @@ interface IVoiceInteractionManagerService {
     int deleteKeyphraseSoundModel(int keyphraseId, in String bcp47Locale);
 
     /**
-     * Gets the properties of the DSP hardware on this device, null if not present.
-     * Caller must be the active voice interaction service via
-     * {@link Settings.Secure.VOICE_INTERACTION_SERVICE}.
+     * Override the persistent enrolled model database with an in-memory
+     * fake for testing purposes.
+     *
+     * @param enabled - {@code true} to enable the test database. {@code false} to enable
+     * the real, persistent database.
+     * @param token - IBinder used to register a death listener to clean-up the override
+     * if tests do not clean up gracefully.
      */
-    SoundTrigger.ModuleProperties getDspModuleProperties();
+    @EnforcePermission("MANAGE_VOICE_KEYPHRASES")
+    @JavaPassthrough(annotation= "@android.annotation.RequiresPermission(" +
+            "android.Manifest.permission.MANAGE_VOICE_KEYPHRASES)")
+    void setModelDatabaseForTestEnabled(boolean enabled, IBinder token);
+
     /**
      * Indicates if there's a keyphrase sound model available for the given keyphrase ID and the
      * user ID of the caller.
@@ -103,6 +122,7 @@ interface IVoiceInteractionManagerService {
      * @param bcp47Locale The BCP47 language tag  for the keyphrase's locale.
      */
     boolean isEnrolledForKeyphrase(int keyphraseId, String bcp47Locale);
+
     /**
      * Generates KeyphraseMetadata for an enrolled sound model based on keyphrase string, locale,
      * and the user ID of the caller.
@@ -116,67 +136,7 @@ interface IVoiceInteractionManagerService {
      */
     KeyphraseMetadata getEnrolledKeyphraseMetadata(String keyphrase, String bcp47Locale);
     /**
-     * Starts a recognition for the given keyphrase.
-     * Caller must be the active voice interaction service via
-     * {@link Settings.Secure.VOICE_INTERACTION_SERVICE}.
-     */
-    int startRecognition(int keyphraseId, in String bcp47Locale,
-            in IRecognitionStatusCallback callback,
-            in SoundTrigger.RecognitionConfig recognitionConfig);
-    /**
-     * Stops a recognition for the given keyphrase.
-     * Caller must be the active voice interaction service via
-     * {@link Settings.Secure.VOICE_INTERACTION_SERVICE}.
-     */
-    int stopRecognition(int keyphraseId, in IRecognitionStatusCallback callback);
-    /**
-     * Set a model specific ModelParams with the given value. This
-     * parameter will keep its value for the duration the model is loaded regardless of starting and
-     * stopping recognition. Once the model is unloaded, the value will be lost.
-     * queryParameter should be checked first before calling this method.
-     * Caller must be the active voice interaction service via
-     * {@link Settings.Secure.VOICE_INTERACTION_SERVICE}.
-     *
-     * @param keyphraseId The unique identifier for the keyphrase.
-     * @param modelParam   ModelParams
-     * @param value        Value to set
-     * @return - {@link SoundTrigger#STATUS_OK} in case of success
-     *         - {@link SoundTrigger#STATUS_NO_INIT} if the native service cannot be reached
-     *         - {@link SoundTrigger#STATUS_BAD_VALUE} invalid input parameter
-     *         - {@link SoundTrigger#STATUS_INVALID_OPERATION} if the call is out of sequence or
-     *           if API is not supported by HAL
-     */
-    int setParameter(int keyphraseId, in ModelParams modelParam, int value);
-    /**
-     * Get a model specific ModelParams. This parameter will keep its value
-     * for the duration the model is loaded regardless of starting and stopping recognition.
-     * Once the model is unloaded, the value will be lost. If the value is not set, a default
-     * value is returned. See ModelParams for parameter default values.
-     * queryParameter should be checked first before calling this method.
-     * Caller must be the active voice interaction service via
-     * {@link Settings.Secure.VOICE_INTERACTION_SERVICE}.
-     *
-     * @param keyphraseId The unique identifier for the keyphrase.
-     * @param modelParam   ModelParams
-     * @return value of parameter
-     */
-    int getParameter(int keyphraseId, in ModelParams modelParam);
-    /**
-     * Determine if parameter control is supported for the given model handle.
-     * This method should be checked prior to calling setParameter or getParameter.
-     * Caller must be the active voice interaction service via
-     * {@link Settings.Secure.VOICE_INTERACTION_SERVICE}.
-     *
-     * @param keyphraseId The unique identifier for the keyphrase.
-     * @param modelParam ModelParams
-     * @return supported range of parameter, null if not supported
-     */
-    @nullable SoundTrigger.ModelParamRange queryParameter(int keyphraseId,
-            in ModelParams modelParam);
-
-    /**
      * @return the component name for the currently active voice interaction service
-     * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
     ComponentName getActiveServiceComponentName();
 
@@ -186,17 +146,21 @@ interface IVoiceInteractionManagerService {
      *
      * @param args the bundle to pass as arguments to the voice interaction session
      * @param sourceFlags flags indicating the source of this show
+     * @param attributionTag the attribution tag of the calling context or {@code null} for default
+     *                       attribution
      * @param showCallback optional callback to be notified when the session was shown
      * @param activityToken optional token of activity that needs to be on top
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
-    boolean showSessionForActiveService(in Bundle args, int sourceFlags,
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
+    boolean showSessionForActiveService(in Bundle args, int sourceFlags, String attributionTag,
             IVoiceInteractionSessionShowCallback showCallback, IBinder activityToken);
 
     /**
      * Hides the session from the active service, if it is showing.
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     void hideCurrentSession();
 
     /**
@@ -204,12 +168,14 @@ interface IVoiceInteractionManagerService {
      * be called if {@link #activeServiceSupportsLaunchFromKeyguard()} returns true.
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     void launchVoiceAssistFromKeyguard();
 
     /**
      * Indicates whether there is a voice session running (but not necessarily showing).
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     boolean isSessionRunning();
 
     /**
@@ -217,6 +183,7 @@ interface IVoiceInteractionManagerService {
      * assist gesture.
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     boolean activeServiceSupportsAssist();
 
     /**
@@ -224,18 +191,21 @@ interface IVoiceInteractionManagerService {
      * from the lockscreen.
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     boolean activeServiceSupportsLaunchFromKeyguard();
 
     /**
      * Called when the lockscreen got shown.
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     void onLockscreenShown();
 
     /**
      * Register a voice interaction listener.
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     void registerVoiceInteractionSessionListener(IVoiceInteractionSessionListener listener);
 
     /**
@@ -243,6 +213,7 @@ interface IVoiceInteractionManagerService {
      * Returns all supported voice actions.
      * @RequiresPermission Manifest.permission.ACCESS_VOICE_INTERACTION_SERVICE
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     void getActiveServiceSupportedActions(in List<String> voiceActions,
      in IVoiceActionCheckCallback callback);
 
@@ -275,6 +246,140 @@ interface IVoiceInteractionManagerService {
      * NOTE: it's only effective when the service itself is available / enabled in the device, so
      * calling setDisable(false) would be a no-op when it isn't.
      */
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     void setDisabled(boolean disabled);
 
+    /**
+     * Creates a session, allowing controlling running sound models on detection hardware.
+     * Caller must provide an identity, used for permission tracking purposes.
+     * The uid/pid elements of the identity will be ignored by the server and replaced with the ones
+     * provided by binder.
+     *
+     * The client argument is any binder owned by the client, used for tracking is death and
+     * cleaning up in this event.
+     */
+    IVoiceInteractionSoundTriggerSession createSoundTriggerSessionAsOriginator(
+            in Identity originatorIdentity,
+            IBinder client,
+            in SoundTrigger.ModuleProperties moduleProperties);
+
+    /**
+     * Lists properties of SoundTrigger modules that can be attached to by
+     * @{link createSoundTriggerSessionAsOriginator}.
+     */
+    List<SoundTrigger.ModuleProperties> listModuleProperties(in Identity originatorIdentity);
+
+    /**
+     * Set configuration and pass read-only data to hotword detection service.
+     *
+     * @param options Application configuration data to provide to the
+     * {@link HotwordDetectionService}. PersistableBundle does not allow any remotable objects or
+     * other contents that can be used to communicate with other processes.
+     * @param sharedMemory The unrestricted data blob to provide to the
+     * {@link HotwordDetectionService}. Use this to provide the hotword models data or other
+     * such data to the trusted process.
+     * @param token Use this to identify which detector calls this method.
+     */
+    @EnforcePermission("MANAGE_HOTWORD_DETECTION")
+    void updateState(
+            in PersistableBundle options,
+            in SharedMemory sharedMemory,
+            in IBinder token);
+
+    /**
+     * Set configuration and pass read-only data to hotword detection service when creating
+     * the detector.
+     *
+     * Caller must provide an identity, used for permission tracking purposes.
+     * The uid/pid elements of the identity will be ignored by the server and replaced with the ones
+     * provided by binder.
+     *
+     * @param options Application configuration data to provide to the
+     * {@link HotwordDetectionService}. PersistableBundle does not allow any remotable objects or
+     * other contents that can be used to communicate with other processes.
+     * @param sharedMemory The unrestricted data blob to provide to the
+     * {@link HotwordDetectionService}. Use this to provide the hotword models data or other
+     * such data to the trusted process.
+     * @param token Use this to identify which detector calls this method.
+     * @param callback Use this to report {@link HotwordDetectionService} status.
+     * @param detectorType Indicate which detector is used.
+     */
+    @EnforcePermission("MANAGE_HOTWORD_DETECTION")
+    void initAndVerifyDetector(
+            in Identity originatorIdentity,
+            in PersistableBundle options,
+            in SharedMemory sharedMemory,
+            in IBinder token,
+            in IHotwordRecognitionStatusCallback callback,
+            int detectorType);
+
+    /**
+     * Destroy the detector callback.
+     *
+     * @param token Indicate which callback will be destroyed.
+     */
+    void destroyDetector(in IBinder token);
+
+    /**
+     * Requests to shutdown hotword detection service.
+     */
+    void shutdownHotwordDetectionService();
+
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
+    void subscribeVisualQueryRecognitionStatus(in IVisualQueryRecognitionStatusListener listener);
+
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
+    void enableVisualQueryDetection(in IVisualQueryDetectionAttentionListener Listener);
+
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
+    void disableVisualQueryDetection();
+
+    void startPerceiving(in IVisualQueryDetectionVoiceInteractionCallback callback);
+
+    void stopPerceiving();
+
+    void startListeningFromMic(
+        in AudioFormat audioFormat,
+        in IMicrophoneHotwordDetectionVoiceInteractionCallback callback);
+
+    void stopListeningFromMic();
+
+    void startListeningFromExternalSource(
+        in ParcelFileDescriptor audioStream,
+        in AudioFormat audioFormat,
+        in PersistableBundle options,
+        in IBinder token,
+        in IMicrophoneHotwordDetectionVoiceInteractionCallback callback);
+
+    /**
+     * Test API to simulate to trigger hardware recognition event for test.
+     */
+    void triggerHardwareRecognitionEventForTest(
+            in SoundTrigger.KeyphraseRecognitionEvent event,
+            in IHotwordRecognitionStatusCallback callback);
+
+    /**
+     * Starts to listen the status of visible activity.
+     */
+    void startListeningVisibleActivityChanged(in IBinder token);
+
+    /**
+     * Stops to listen the status of visible activity.
+     */
+    void stopListeningVisibleActivityChanged(in IBinder token);
+
+    /**
+     * Notifies when the session window is shown or hidden.
+     */
+    void setSessionWindowVisible(in IBinder token, boolean visible);
+
+    /**
+     * Notifies when the Activity lifecycle event changed.
+     *
+     * @param activityToken The token of activity.
+     * @param type The type of lifecycle event of the activity lifecycle.
+     */
+    oneway void notifyActivityEventChanged(
+            in IBinder activityToken,
+            int type);
 }

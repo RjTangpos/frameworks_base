@@ -264,6 +264,13 @@ public class RecoveryController {
      */
     public static final int ERROR_DOWNGRADE_CERTIFICATE = 29;
 
+    /**
+     * Requested key is not available in AndroidKeyStore.
+     *
+     * @hide
+     */
+    public static final int ERROR_KEY_NOT_FOUND = 30;
+
     private final ILockSettings mBinder;
     private final KeyStore mKeyStore;
 
@@ -703,6 +710,9 @@ public class RecoveryController {
         } catch (KeyPermanentlyInvalidatedException | UnrecoverableKeyException e) {
             throw new UnrecoverableKeyException(e.getMessage());
         } catch (ServiceSpecificException e) {
+            if (e.errorCode == ERROR_KEY_NOT_FOUND) {
+                throw new UnrecoverableKeyException(e.getMessage());
+            }
             throw wrapUnexpectedServiceSpecificException(e);
         }
     }
@@ -712,18 +722,10 @@ public class RecoveryController {
      */
     @NonNull Key getKeyFromGrant(@NonNull String grantAlias)
             throws UnrecoverableKeyException, KeyPermanentlyInvalidatedException {
-        if (grantAlias.startsWith(APPLICATION_KEY_GRANT_PREFIX)) {
-            return AndroidKeyStoreProvider
-                    .loadAndroidKeyStoreSecretKeyFromKeystore(
-                            KeyStore2.getInstance(),
-                            getGrantDescriptor(grantAlias));
-        }
-        // TODO(b/171305545): remove KeyStore1 logic.
-        return android.security.keystore.AndroidKeyStoreProvider.loadAndroidKeyStoreKeyFromKeystore(
-            mKeyStore,
-            grantAlias,
-            KeyStore.UID_SELF);
-
+        return AndroidKeyStoreProvider
+                .loadAndroidKeyStoreSecretKeyFromKeystore(
+                        KeyStore2.getInstance(),
+                        getGrantDescriptor(grantAlias));
     }
 
     private static final String APPLICATION_KEY_GRANT_PREFIX = "recoverable_key:";
@@ -778,7 +780,7 @@ public class RecoveryController {
     InternalRecoveryServiceException wrapUnexpectedServiceSpecificException(
             ServiceSpecificException e) {
         if (e.errorCode == ERROR_SERVICE_INTERNAL_ERROR) {
-            return new InternalRecoveryServiceException(e.getMessage());
+            return new InternalRecoveryServiceException(e.getMessage(), e);
         }
 
         // Should never happen. If it does, it's a bug, and we need to update how the method that

@@ -22,6 +22,7 @@ import android.annotation.SystemApi;
 import android.content.Context;
 import android.os.PersistableBundle;
 import android.os.RemoteException;
+import android.telephony.ims.ImsService;
 import android.telephony.ims.ProvisioningManager;
 import android.telephony.ims.RcsClientConfiguration;
 import android.telephony.ims.RcsConfig;
@@ -33,12 +34,21 @@ import android.util.Log;
 import com.android.ims.ImsConfig;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.util.RemoteCallbackListExt;
+import com.android.internal.telephony.util.TelephonyUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
 
 /**
  * Controls the modification of IMS specific configurations. For more information on the supported
@@ -81,21 +91,48 @@ public class ImsConfigImplBase {
         WeakReference<ImsConfigImplBase> mImsConfigImplBaseWeakReference;
         private HashMap<Integer, Integer> mProvisionedIntValue = new HashMap<>();
         private HashMap<Integer, String> mProvisionedStringValue = new HashMap<>();
+        private final Object mLock = new Object();
+        private Executor mExecutor;
 
         @VisibleForTesting
-        public ImsConfigStub(ImsConfigImplBase imsConfigImplBase) {
+        public ImsConfigStub(ImsConfigImplBase imsConfigImplBase, Executor executor) {
+            mExecutor = executor;
             mImsConfigImplBaseWeakReference =
                     new WeakReference<ImsConfigImplBase>(imsConfigImplBase);
         }
 
         @Override
         public void addImsConfigCallback(IImsConfigCallback c) throws RemoteException {
-            getImsConfigImpl().addImsConfigCallback(c);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().addImsConfigCallback(c);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "addImsConfigCallback");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception addImsConfigCallback");
+                throw exceptionRef.get();
+            }
         }
 
         @Override
         public void removeImsConfigCallback(IImsConfigCallback c) throws RemoteException {
-            getImsConfigImpl().removeImsConfigCallback(c);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().removeImsConfigCallback(c);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "removeImsConfigCallback");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception removeImsConfigCallback");
+                throw exceptionRef.get();
+            }
         }
 
         /**
@@ -108,16 +145,34 @@ public class ImsConfigImplBase {
          * unavailable.
          */
         @Override
-        public synchronized int getConfigInt(int item) throws RemoteException {
-            if (mProvisionedIntValue.containsKey(item)) {
-                return mProvisionedIntValue.get(item);
-            } else {
-                int retVal = getImsConfigImpl().getConfigInt(item);
-                if (retVal != ImsConfig.OperationStatusConstants.UNKNOWN) {
-                    updateCachedValue(item, retVal, false);
+        public int getConfigInt(int item) throws RemoteException {
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            int retVal = executeMethodAsyncForResult(()-> {
+                int returnVal = ImsConfig.OperationStatusConstants.UNKNOWN;
+                synchronized (mLock) {
+                    if (mProvisionedIntValue.containsKey(item)) {
+                        return mProvisionedIntValue.get(item);
+                    } else {
+                        try {
+                            returnVal = getImsConfigImpl().getConfigInt(item);
+                            if (returnVal != ImsConfig.OperationStatusConstants.UNKNOWN) {
+                                mProvisionedIntValue.put(item, returnVal);
+                            }
+                        } catch (RemoteException e) {
+                            exceptionRef.set(e);
+                            return returnVal;
+                        }
+                    }
                 }
-                return retVal;
+                return returnVal;
+            }, "getConfigInt");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception getConfigString");
+                throw exceptionRef.get();
             }
+
+            return retVal;
         }
 
         /**
@@ -129,16 +184,34 @@ public class ImsConfigImplBase {
          * @return value in String format.
          */
         @Override
-        public synchronized String getConfigString(int item) throws RemoteException {
-            if (mProvisionedStringValue.containsKey(item)) {
-                return mProvisionedStringValue.get(item);
-            } else {
-                String retVal = getImsConfigImpl().getConfigString(item);
-                if (retVal != null) {
-                    updateCachedValue(item, retVal, false);
+        public String getConfigString(int item) throws RemoteException {
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            String retVal = executeMethodAsyncForResult(()-> {
+                String returnVal = null;
+                synchronized (mLock) {
+                    if (mProvisionedStringValue.containsKey(item)) {
+                        returnVal = mProvisionedStringValue.get(item);
+                    } else {
+                        try {
+                            returnVal = getImsConfigImpl().getConfigString(item);
+                            if (returnVal != null) {
+                                mProvisionedStringValue.put(item, returnVal);
+                            }
+                        } catch (RemoteException e) {
+                            exceptionRef.set(e);
+                            return returnVal;
+                        }
+                    }
                 }
-                return retVal;
+                return returnVal;
+            }, "getConfigString");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception getConfigString");
+                throw exceptionRef.get();
             }
+
+            return retVal;
         }
 
         /**
@@ -153,14 +226,32 @@ public class ImsConfigImplBase {
          * {@link #CONFIG_RESULT_FAILED} or {@link #CONFIG_RESULT_SUCCESS}.
          */
         @Override
-        public synchronized int setConfigInt(int item, int value) throws RemoteException {
-            mProvisionedIntValue.remove(item);
-            int retVal = getImsConfigImpl().setConfig(item, value);
-            if (retVal == ImsConfig.OperationStatusConstants.SUCCESS) {
-                updateCachedValue(item, value, true);
-            } else {
-                Log.d(TAG, "Set provision value of " + item +
-                        " to " + value + " failed with error code " + retVal);
+        public int setConfigInt(int item, int value) throws RemoteException {
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            int retVal = executeMethodAsyncForResult(()-> {
+                int returnVal = ImsConfig.OperationStatusConstants.UNKNOWN;
+                try {
+                    synchronized (mLock) {
+                        mProvisionedIntValue.remove(item);
+                        returnVal = getImsConfigImpl().setConfig(item, value);
+                        if (returnVal == ImsConfig.OperationStatusConstants.SUCCESS) {
+                            mProvisionedIntValue.put(item, value);
+                        } else {
+                            Log.d(TAG, "Set provision value of " + item
+                                    + " to " + value + " failed with error code " + returnVal);
+                        }
+                    }
+                    notifyImsConfigChanged(item, value);
+                    return returnVal;
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                    return returnVal;
+                }
+            }, "setConfigInt");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception setConfigInt");
+                throw exceptionRef.get();
             }
 
             return retVal;
@@ -178,12 +269,30 @@ public class ImsConfigImplBase {
          * {@link #CONFIG_RESULT_FAILED} or {@link #CONFIG_RESULT_SUCCESS}.
          */
         @Override
-        public synchronized int setConfigString(int item, String value)
+        public int setConfigString(int item, String value)
                 throws RemoteException {
-            mProvisionedStringValue.remove(item);
-            int retVal = getImsConfigImpl().setConfig(item, value);
-            if (retVal == ImsConfig.OperationStatusConstants.SUCCESS) {
-                updateCachedValue(item, value, true);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            int retVal = executeMethodAsyncForResult(()-> {
+                int returnVal = ImsConfig.OperationStatusConstants.UNKNOWN;
+                try {
+                    synchronized (mLock) {
+                        mProvisionedStringValue.remove(item);
+                        returnVal = getImsConfigImpl().setConfig(item, value);
+                        if (returnVal == ImsConfig.OperationStatusConstants.SUCCESS) {
+                            mProvisionedStringValue.put(item, value);
+                        }
+                    }
+                    notifyImsConfigChanged(item, value);
+                    return returnVal;
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                    return returnVal;
+                }
+            }, "setConfigString");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception setConfigInt");
+                throw exceptionRef.get();
             }
 
             return retVal;
@@ -191,7 +300,19 @@ public class ImsConfigImplBase {
 
         @Override
         public void updateImsCarrierConfigs(PersistableBundle bundle) throws RemoteException {
-            getImsConfigImpl().updateImsCarrierConfigs(bundle);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().updateImsCarrierConfigs(bundle);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "updateImsCarrierConfigs");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception updateImsCarrierConfigs");
+                throw exceptionRef.get();
+            }
         }
 
         private ImsConfigImplBase getImsConfigImpl() throws RemoteException {
@@ -206,13 +327,37 @@ public class ImsConfigImplBase {
         @Override
         public void notifyRcsAutoConfigurationReceived(byte[] config, boolean isCompressed)
                 throws RemoteException {
-            getImsConfigImpl().onNotifyRcsAutoConfigurationReceived(config, isCompressed);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().onNotifyRcsAutoConfigurationReceived(config, isCompressed);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "notifyRcsAutoConfigurationReceived");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception notifyRcsAutoConfigurationReceived");
+                throw exceptionRef.get();
+            }
         }
 
         @Override
         public void notifyRcsAutoConfigurationRemoved()
                 throws RemoteException {
-            getImsConfigImpl().onNotifyRcsAutoConfigurationRemoved();
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().onNotifyRcsAutoConfigurationRemoved();
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "notifyRcsAutoConfigurationRemoved");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception notifyRcsAutoConfigurationRemoved");
+                throw exceptionRef.get();
+            }
         }
 
         private void notifyImsConfigChanged(int item, int value) throws RemoteException {
@@ -223,40 +368,155 @@ public class ImsConfigImplBase {
             getImsConfigImpl().notifyConfigChanged(item, value);
         }
 
-        protected synchronized void updateCachedValue(int item, int value, boolean notifyChange)
-        throws RemoteException {
-            mProvisionedIntValue.put(item, value);
-            if (notifyChange) {
-                notifyImsConfigChanged(item, value);
+        protected void updateCachedValue(int item, int value) {
+            synchronized (mLock) {
+                mProvisionedIntValue.put(item, value);
             }
         }
 
-        protected synchronized void updateCachedValue(int item, String value,
-                boolean notifyChange) throws RemoteException {
-            mProvisionedStringValue.put(item, value);
-            if (notifyChange) {
-                notifyImsConfigChanged(item, value);
+        protected void updateCachedValue(int item, String value) {
+            synchronized (mLock) {
+                mProvisionedStringValue.put(item, value);
             }
         }
 
         @Override
         public void addRcsConfigCallback(IRcsConfigCallback c) throws RemoteException {
-            getImsConfigImpl().addRcsConfigCallback(c);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().addRcsConfigCallback(c);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "addRcsConfigCallback");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception addRcsConfigCallback");
+                throw exceptionRef.get();
+            }
         }
 
         @Override
         public void removeRcsConfigCallback(IRcsConfigCallback c) throws RemoteException {
-            getImsConfigImpl().removeRcsConfigCallback(c);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().removeRcsConfigCallback(c);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "removeRcsConfigCallback");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception removeRcsConfigCallback");
+                throw exceptionRef.get();
+            }
         }
 
         @Override
         public void triggerRcsReconfiguration() throws RemoteException {
-            getImsConfigImpl().triggerAutoConfiguration();
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().triggerAutoConfiguration();
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "triggerRcsReconfiguration");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception triggerRcsReconfiguration");
+                throw exceptionRef.get();
+            }
         }
 
         @Override
         public void setRcsClientConfiguration(RcsClientConfiguration rcc) throws RemoteException {
-            getImsConfigImpl().setRcsClientConfiguration(rcc);
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    getImsConfigImpl().setRcsClientConfiguration(rcc);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "setRcsClientConfiguration");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception setRcsClientConfiguration");
+                throw exceptionRef.get();
+            }
+        }
+
+        @Override
+        public void notifyIntImsConfigChanged(int item, int value) throws RemoteException {
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    notifyImsConfigChanged(item, value);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "notifyIntImsConfigChanged");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception notifyIntImsConfigChanged");
+                throw exceptionRef.get();
+            }
+        }
+
+        @Override
+        public void notifyStringImsConfigChanged(int item, String value) throws RemoteException {
+            AtomicReference<RemoteException> exceptionRef = new AtomicReference<>();
+            executeMethodAsync(()-> {
+                try {
+                    notifyImsConfigChanged(item, value);
+                } catch (RemoteException e) {
+                    exceptionRef.set(e);
+                }
+            }, "notifyStringImsConfigChanged");
+
+            if (exceptionRef.get() != null) {
+                Log.d(TAG, "ImsConfigImplBase Exception notifyStringImsConfigChanged");
+                throw exceptionRef.get();
+            }
+        }
+
+        /**
+         * Clear cached configuration value.
+         */
+        public void clearCachedValue() {
+            Log.i(TAG, "clearCachedValue");
+            synchronized (mLock) {
+                mProvisionedIntValue.clear();
+                mProvisionedStringValue.clear();
+            }
+        }
+
+        // Call the methods with a clean calling identity on the executor and wait indefinitely for
+        // the future to return.
+        private void executeMethodAsync(Runnable r, String errorLogName) throws RemoteException {
+            try {
+                CompletableFuture.runAsync(
+                        () -> TelephonyUtils.runWithCleanCallingIdentity(r), mExecutor).join();
+            } catch (CancellationException | CompletionException e) {
+                Log.w(TAG, "ImsConfigImplBase Binder - " + errorLogName + " exception: "
+                        + e.getMessage());
+                throw new RemoteException(e.getMessage());
+            }
+        }
+
+        private <T> T executeMethodAsyncForResult(Supplier<T> r,
+                String errorLogName) throws RemoteException {
+            CompletableFuture<T> future = CompletableFuture.supplyAsync(
+                    () -> TelephonyUtils.runWithCleanCallingIdentity(r), mExecutor);
+            try {
+                return future.get();
+            } catch (ExecutionException | InterruptedException e) {
+                Log.w(TAG, "ImsConfigImplBase Binder - " + errorLogName + " exception: "
+                        + e.getMessage());
+                throw new RemoteException(e.getMessage());
+            }
         }
     }
 
@@ -290,18 +550,31 @@ public class ImsConfigImplBase {
     private final RemoteCallbackListExt<IRcsConfigCallback> mRcsCallbacks =
             new RemoteCallbackListExt<>();
     private byte[] mRcsConfigData;
+    private final Object mRcsConfigDataLock = new Object();
     ImsConfigStub mImsConfigStub;
 
     /**
-     * Used for compatibility between older versions of the ImsService.
-     * @hide
+     * Create an ImsConfig using the Executor specified for methods being called by the
+     * framework.
+     * @param executor The executor for the framework to use when executing the methods overridden
+     * by the implementation of ImsConfig.
      */
-    public ImsConfigImplBase(Context context) {
-        mImsConfigStub = new ImsConfigStub(this);
+    public ImsConfigImplBase(@NonNull Executor executor) {
+        mImsConfigStub = new ImsConfigStub(this, executor);
     }
 
+    /**
+     * @hide
+     */
+    public ImsConfigImplBase(@NonNull Context context) {
+        mImsConfigStub = new ImsConfigStub(this, null);
+    }
+
+    /**
+     * Create an ImsConfig using the Executor defined in {@link ImsService#getExecutor}
+     */
     public ImsConfigImplBase() {
-        mImsConfigStub = new ImsConfigStub(this);
+        mImsConfigStub = new ImsConfigStub(this, null);
     }
 
     /**
@@ -330,13 +603,15 @@ public class ImsConfigImplBase {
         if (mCallbacks == null) {
             return;
         }
-        mCallbacks.broadcastAction(c -> {
-            try {
-                c.onIntConfigChanged(item, value);
-            } catch (RemoteException e) {
-                Log.w(TAG, "notifyConfigChanged(int): dead binder in notify, skipping.");
-            }
-        });
+        synchronized (mCallbacks) {
+            mCallbacks.broadcastAction(c -> {
+                try {
+                    c.onIntConfigChanged(item, value);
+                } catch (RemoteException e) {
+                    Log.w(TAG, "notifyConfigChanged(int): dead binder in notify, skipping.");
+                }
+            });
+        }
     }
 
     private void notifyConfigChanged(int item, String value) {
@@ -344,23 +619,33 @@ public class ImsConfigImplBase {
         if (mCallbacks == null) {
             return;
         }
-        mCallbacks.broadcastAction(c -> {
-            try {
-                c.onStringConfigChanged(item, value);
-            } catch (RemoteException e) {
-                Log.w(TAG, "notifyConfigChanged(string): dead binder in notify, skipping.");
-            }
-        });
+        synchronized (mCallbacks) {
+            mCallbacks.broadcastAction(c -> {
+                try {
+                    c.onStringConfigChanged(item, value);
+                } catch (RemoteException e) {
+                    Log.w(TAG, "notifyConfigChanged(string): dead binder in notify, skipping.");
+                }
+            });
+        }
     }
 
     private void addRcsConfigCallback(IRcsConfigCallback c) {
         mRcsCallbacks.register(c);
-        if (mRcsConfigData != null) {
-            try {
-                c.onConfigurationChanged(mRcsConfigData);
-            } catch (RemoteException e) {
-                Log.w(TAG, "dead binder to call onConfigurationChanged, skipping.");
+
+        // This is used to avoid calling the binder out of the synchronized scope.
+        byte[] cloneRcsConfigData;
+        synchronized (mRcsConfigDataLock) {
+            if (mRcsConfigData == null) {
+                return;
             }
+            cloneRcsConfigData = mRcsConfigData.clone();
+        }
+
+        try {
+            c.onConfigurationChanged(cloneRcsConfigData);
+        } catch (RemoteException e) {
+            Log.w(TAG, "dead binder to call onConfigurationChanged, skipping.");
         }
     }
 
@@ -370,35 +655,46 @@ public class ImsConfigImplBase {
 
     private void onNotifyRcsAutoConfigurationReceived(byte[] config, boolean isCompressed) {
         // cache uncompressed config
-        config = isCompressed ? RcsConfig.decompressGzip(config) : config;
-        if (Arrays.equals(mRcsConfigData, config)) {
-            return;
+        final byte[] rcsConfigData = isCompressed ? RcsConfig.decompressGzip(config) : config;
+
+        synchronized (mRcsConfigDataLock) {
+            if (Arrays.equals(mRcsConfigData, config)) {
+                return;
+            }
+            mRcsConfigData = rcsConfigData;
         }
-        mRcsConfigData = config;
 
         // can be null in testing
         if (mRcsCallbacks != null) {
-            mRcsCallbacks.broadcastAction(c -> {
-                try {
-                    c.onConfigurationChanged(mRcsConfigData);
-                } catch (RemoteException e) {
-                    Log.w(TAG, "dead binder in notifyRcsAutoConfigurationReceived, skipping.");
-                }
-            });
+            synchronized (mRcsCallbacks) {
+                mRcsCallbacks.broadcastAction(c -> {
+                    try {
+                        // config is cloned here so modifications to the config passed to the
+                        // vendor do not accidentally modify the cache.
+                        c.onConfigurationChanged(rcsConfigData.clone());
+                    } catch (RemoteException e) {
+                        Log.w(TAG, "dead binder in notifyRcsAutoConfigurationReceived, skipping.");
+                    }
+                });
+            }
         }
         notifyRcsAutoConfigurationReceived(config, isCompressed);
     }
 
     private void onNotifyRcsAutoConfigurationRemoved() {
-        mRcsConfigData = null;
+        synchronized (mRcsConfigDataLock) {
+            mRcsConfigData = null;
+        }
         if (mRcsCallbacks != null) {
-            mRcsCallbacks.broadcastAction(c -> {
-                try {
-                    c.onConfigurationReset();
-                } catch (RemoteException e) {
-                    Log.w(TAG, "dead binder in notifyRcsAutoConfigurationRemoved, skipping.");
-                }
-            });
+            synchronized (mRcsCallbacks) {
+                mRcsCallbacks.broadcastAction(c -> {
+                    try {
+                        c.onConfigurationReset();
+                    } catch (RemoteException e) {
+                        Log.w(TAG, "dead binder in notifyRcsAutoConfigurationRemoved, skipping.");
+                    }
+                });
+            }
         }
         notifyRcsAutoConfigurationRemoved();
     }
@@ -417,8 +713,10 @@ public class ImsConfigImplBase {
      * @param value in Integer format.
      */
     public final void notifyProvisionedValueChanged(int item, int value) {
+        mImsConfigStub.updateCachedValue(item, value);
+
         try {
-            mImsConfigStub.updateCachedValue(item, value, true);
+            mImsConfigStub.notifyImsConfigChanged(item, value);
         } catch (RemoteException e) {
             Log.w(TAG, "notifyProvisionedValueChanged(int): Framework connection is dead.");
         }
@@ -433,8 +731,10 @@ public class ImsConfigImplBase {
      * @param value in String format.
      */
     public final void notifyProvisionedValueChanged(int item, String value) {
+        mImsConfigStub.updateCachedValue(item, value);
+
         try {
-        mImsConfigStub.updateCachedValue(item, value, true);
+            mImsConfigStub.notifyImsConfigChanged(item, value);
         } catch (RemoteException e) {
             Log.w(TAG, "notifyProvisionedValueChanged(string): Framework connection is dead.");
         }
@@ -540,13 +840,15 @@ public class ImsConfigImplBase {
         if (mRcsCallbacks == null) {
             return;
         }
-        mRcsCallbacks.broadcastAction(c -> {
-            try {
-                c.onAutoConfigurationErrorReceived(errorCode, errorString);
-            } catch (RemoteException e) {
-                Log.w(TAG, "dead binder in notifyAutoConfigurationErrorReceived, skipping.");
-            }
-        });
+        synchronized (mRcsCallbacks) {
+            mRcsCallbacks.broadcastAction(c -> {
+                try {
+                    c.onAutoConfigurationErrorReceived(errorCode, errorString);
+                } catch (RemoteException e) {
+                    Log.w(TAG, "dead binder in notifyAutoConfigurationErrorReceived, skipping.");
+                }
+            });
+        }
     }
 
     /**
@@ -564,12 +866,39 @@ public class ImsConfigImplBase {
         if (mRcsCallbacks == null) {
             return;
         }
-        mRcsCallbacks.broadcastAction(c -> {
-            try {
-                c.onPreProvisioningReceived(configXml);
-            } catch (RemoteException e) {
-                Log.w(TAG, "dead binder in notifyPreProvisioningReceived, skipping.");
-            }
-        });
+        synchronized (mRcsCallbacks) {
+            mRcsCallbacks.broadcastAction(c -> {
+                try {
+                    c.onPreProvisioningReceived(configXml);
+                } catch (RemoteException e) {
+                    Log.w(TAG, "dead binder in notifyPreProvisioningReceived, skipping.");
+                }
+            });
+        }
+    }
+
+    /**
+     * Set default Executor from ImsService.
+     * @param executor The default executor for the framework to use when executing the methods
+     * overridden by the implementation of ImsConfig.
+     * @hide
+     */
+    public final void setDefaultExecutor(@NonNull Executor executor) {
+        if (mImsConfigStub.mExecutor == null) {
+            mImsConfigStub.mExecutor = executor;
+        }
+    }
+
+    /**
+     * Clear all cached config data. This will be called when the config data is no longer valid
+     * such as when the SIM was removed.
+     * @hide
+     */
+    public final void clearConfigurationCache() {
+        mImsConfigStub.clearCachedValue();
+
+        synchronized (mRcsConfigDataLock) {
+            mRcsConfigData = null;
+        }
     }
 }

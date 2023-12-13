@@ -171,8 +171,8 @@ public class TelephonyIntents {
      *   if not specified </dd>
      * </dl>
      *
-     * <p class="note">
-     * Requires the READ_PHONE_STATE permission.
+     * <p class="note">This is a sticky broadcast, and therefore requires no permissions to listen
+     * to. Do not add any additional information to this broadcast.
      *
      * <p class="note">This is a protected intent that can only be sent
      * by the system.
@@ -210,23 +210,6 @@ public class TelephonyIntents {
      * {@code android_secret_code://<code>}
      */
     public static final String SECRET_CODE_ACTION = "android.provider.Telephony.SECRET_CODE";
-
-    /**
-     * <p>Broadcast Action: It indicates one column of a subinfo record has been changed
-     * <p class="note">This is a protected intent that can only be sent
-     * by the system.
-     */
-    public static final String ACTION_SUBINFO_CONTENT_CHANGE
-            = "android.intent.action.ACTION_SUBINFO_CONTENT_CHANGE";
-
-    /**
-     * <p>Broadcast Action: It indicates subinfo record update is completed
-     * when SIM inserted state change
-     * <p class="note">This is a protected intent that can only be sent
-     * by the system.
-     */
-    public static final String ACTION_SUBINFO_RECORD_UPDATED
-            = "android.intent.action.ACTION_SUBINFO_RECORD_UPDATED";
 
     /**
      * Broadcast Action: The default subscription has changed.  This has the following

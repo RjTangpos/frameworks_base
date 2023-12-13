@@ -67,7 +67,8 @@ data class RenderInfo(
                     iconMap.put(resourceId, icon)
                 }
             }
-            return RenderInfo(icon!!.constantState.newDrawable(context.resources), fg, bg)
+            return RenderInfo(
+                checkNotNull(icon?.constantState).newDrawable(context.resources), fg, bg)
         }
 
         fun registerComponentIcon(componentName: ComponentName, icon: Drawable) {
@@ -92,7 +93,9 @@ private val deviceColorMap = mapOf<Int, Pair<Int, Int>>(
     (THERMOSTAT_RANGE + TemperatureControlTemplate.MODE_COOL) to
         Pair(R.color.thermo_cool_foreground, R.color.control_enabled_thermo_cool_background),
     DeviceTypes.TYPE_LIGHT
-        to Pair(R.color.light_foreground, R.color.control_enabled_light_background)
+        to Pair(R.color.light_foreground, R.color.control_enabled_light_background),
+    DeviceTypes.TYPE_CAMERA
+        to Pair(R.color.camera_foreground, R.color.control_enabled_default_background)
 ).withDefault {
         Pair(R.color.control_foreground, R.color.control_enabled_default_background)
 }

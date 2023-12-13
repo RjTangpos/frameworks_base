@@ -24,10 +24,11 @@ using ::android::ConfigDescription;
 namespace aapt {
 
 TEST(PseudolocaleGeneratorTest, PseudolocalizeStyledString) {
-  StringPool pool;
-  StyleString original_style;
+  android::StringPool pool;
+  android::StyleString original_style;
   original_style.str = "Hello world!";
-  original_style.spans = {Span{"i", 1, 10}, Span{"b", 2, 3}, Span{"b", 6, 7}};
+  original_style.spans = {android::Span{"i", 1, 10}, android::Span{"b", 2, 3},
+                          android::Span{"b", 6, 7}};
 
   std::unique_ptr<StyledString> new_string = PseudolocalizeStyledString(
       util::make_unique<StyledString>(pool.MakeRef(original_style)).get(),
@@ -48,7 +49,7 @@ TEST(PseudolocaleGeneratorTest, PseudolocalizeStyledString) {
   EXPECT_EQ(std::u16string(u"Hello ").size(), new_string->value->spans[2].first_char);
   EXPECT_EQ(std::u16string(u"Hello w").size(), new_string->value->spans[2].last_char);
 
-  original_style.spans.insert(original_style.spans.begin(), Span{"em", 0, 11u});
+  original_style.spans.insert(original_style.spans.begin(), android::Span{"em", 0, 11u});
 
   new_string = PseudolocalizeStyledString(
       util::make_unique<StyledString>(pool.MakeRef(original_style)).get(),
@@ -71,10 +72,10 @@ TEST(PseudolocaleGeneratorTest, PseudolocalizeStyledString) {
 }
 
 TEST(PseudolocaleGeneratorTest, PseudolocalizeAdjacentNestedTags) {
-  StringPool pool;
-  StyleString original_style;
+  android::StringPool pool;
+  android::StyleString original_style;
   original_style.str = "bold";
-  original_style.spans = {Span{"b", 0, 3}, Span{"i", 0, 3}};
+  original_style.spans = {android::Span{"b", 0, 3}, android::Span{"i", 0, 3}};
 
   std::unique_ptr<StyledString> new_string = PseudolocalizeStyledString(
       util::make_unique<StyledString>(pool.MakeRef(original_style)).get(),
@@ -93,10 +94,10 @@ TEST(PseudolocaleGeneratorTest, PseudolocalizeAdjacentNestedTags) {
 }
 
 TEST(PseudolocaleGeneratorTest, PseudolocalizeAdjacentTagsUnsorted) {
-  StringPool pool;
-  StyleString original_style;
+  android::StringPool pool;
+  android::StyleString original_style;
   original_style.str = "bold";
-  original_style.spans = {Span{"i", 2, 3}, Span{"b", 0, 1}};
+  original_style.spans = {android::Span{"i", 2, 3}, android::Span{"b", 0, 1}};
 
   std::unique_ptr<StyledString> new_string = PseudolocalizeStyledString(
       util::make_unique<StyledString>(pool.MakeRef(original_style)).get(),
@@ -115,11 +116,11 @@ TEST(PseudolocaleGeneratorTest, PseudolocalizeAdjacentTagsUnsorted) {
 }
 
 TEST(PseudolocaleGeneratorTest, PseudolocalizeNestedAndAdjacentTags) {
-  StringPool pool;
-  StyleString original_style;
+  android::StringPool pool;
+  android::StyleString original_style;
   original_style.str = "This sentence is not what you think it is at all.";
-  original_style.spans = {Span{"b", 16u, 19u}, Span{"em", 29u, 47u}, Span{"i", 38u, 40u},
-                          Span{"b", 44u, 47u}};
+  original_style.spans = {android::Span{"b", 16u, 19u}, android::Span{"em", 29u, 47u},
+                          android::Span{"i", 38u, 40u}, android::Span{"b", 44u, 47u}};
 
   std::unique_ptr<StyledString> new_string = PseudolocalizeStyledString(
       util::make_unique<StyledString>(pool.MakeRef(original_style)).get(),
@@ -154,10 +155,10 @@ TEST(PseudolocaleGeneratorTest, PseudolocalizeNestedAndAdjacentTags) {
 }
 
 TEST(PseudolocaleGeneratorTest, PseudolocalizePartsOfString) {
-  StringPool pool;
-  StyleString original_style;
+  android::StringPool pool;
+  android::StyleString original_style;
   original_style.str = "This should NOT be pseudolocalized.";
-  original_style.spans = {Span{"em", 4u, 14u}, Span{"i", 18u, 33u}};
+  original_style.spans = {android::Span{"em", 4u, 14u}, android::Span{"i", 18u, 33u}};
   std::unique_ptr<StyledString> original_string =
       util::make_unique<StyledString>(pool.MakeRef(original_style));
   original_string->untranslatable_sections = {UntranslatableSection{11u, 15u}};
@@ -236,13 +237,14 @@ TEST(PseudolocaleGeneratorTest, PseudolocalizeOnlyDefaultConfigs) {
 
 TEST(PseudolocaleGeneratorTest, PluralsArePseudolocalized) {
   std::unique_ptr<IAaptContext> context = test::ContextBuilder().Build();
-  std::unique_ptr<ResourceTable> table =
-      test::ResourceTableBuilder().SetPackageId("com.pkg", 0x7F).Build();
+  std::unique_ptr<ResourceTable> table = test::ResourceTableBuilder().Build();
   std::unique_ptr<Plural> plural = util::make_unique<Plural>();
   plural->values = {util::make_unique<String>(table->string_pool.MakeRef("zero")),
                     util::make_unique<String>(table->string_pool.MakeRef("one"))};
-  ASSERT_TRUE(table->AddResource(test::ParseNameOrDie("com.pkg:plurals/foo"), ConfigDescription{},
-                                 {}, std::move(plural), context->GetDiagnostics()));
+  ASSERT_TRUE(table->AddResource(NewResourceBuilder(test::ParseNameOrDie("com.pkg:plurals/foo"))
+                                     .SetValue(std::move(plural))
+                                     .Build(),
+                                 context->GetDiagnostics()));
   std::unique_ptr<Plural> expected = util::make_unique<Plural>();
   expected->values = {util::make_unique<String>(table->string_pool.MakeRef("[žéŕö one]")),
                       util::make_unique<String>(table->string_pool.MakeRef("[öñé one]"))};
@@ -252,6 +254,7 @@ TEST(PseudolocaleGeneratorTest, PluralsArePseudolocalized) {
 
   const auto* actual = test::GetValueForConfig<Plural>(table.get(), "com.pkg:plurals/foo",
                                                        test::ParseConfigOrDie("en-rXA"));
+  ASSERT_NE(nullptr, actual);
   EXPECT_TRUE(actual->Equals(expected.get()));
 }
 
@@ -261,9 +264,10 @@ TEST(PseudolocaleGeneratorTest, RespectUntranslateableSections) {
   std::unique_ptr<ResourceTable> table = util::make_unique<ResourceTable>();
 
   {
-    StyleString original_style;
+    android::StyleString original_style;
     original_style.str = "Hello world!";
-    original_style.spans = {Span{"i", 1, 10}, Span{"b", 2, 3}, Span{"b", 6, 7}};
+    original_style.spans = {android::Span{"i", 1, 10}, android::Span{"b", 2, 3},
+                            android::Span{"b", 6, 7}};
 
     auto styled_string =
         util::make_unique<StyledString>(table->string_pool.MakeRef(original_style));
@@ -273,11 +277,14 @@ TEST(PseudolocaleGeneratorTest, RespectUntranslateableSections) {
     auto string = util::make_unique<String>(table->string_pool.MakeRef(original_style.str));
     string->untranslatable_sections.push_back(UntranslatableSection{6u, 11u});
 
-    ASSERT_TRUE(table->AddResource(test::ParseNameOrDie("android:string/foo"), ConfigDescription{},
-                                   {} /* product */, std::move(styled_string),
+    ASSERT_TRUE(table->AddResource(NewResourceBuilder(test::ParseNameOrDie("android:string/foo"))
+                                       .SetValue(std::move(styled_string))
+                                       .Build(),
                                    context->GetDiagnostics()));
-    ASSERT_TRUE(table->AddResource(test::ParseNameOrDie("android:string/bar"), ConfigDescription{},
-                                   {} /* product */, std::move(string), context->GetDiagnostics()));
+    ASSERT_TRUE(table->AddResource(NewResourceBuilder(test::ParseNameOrDie("android:string/bar"))
+                                       .SetValue(std::move(string))
+                                       .Build(),
+                                   context->GetDiagnostics()));
   }
 
   PseudolocaleGenerator generator;

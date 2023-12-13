@@ -13,7 +13,7 @@
      See the License for the specific language governing permissions and
      limitations under the License.
 -->
-<user-types>
+<user-types version="1234">
     <profile-type
         name='android.test.2'
         max-allowed-per-parent='12'
@@ -30,6 +30,21 @@
             <item res='@*android:color/profile_badge_2' />
         </badge-colors>
         <default-restrictions no_remove_user='true' no_bluetooth='true' />
+        <user-properties
+            showInLauncher='2020'
+            startWithParent='false'
+            useParentsContacts='false'
+            crossProfileIntentFilterAccessControl='20'
+            crossProfileIntentResolutionStrategy='0'
+            mediaSharedWithParent='true'
+            credentialShareableWithParent='false'
+            showInSettings='23'
+            inheritDevicePolicy='450'
+            deleteAppWithParent='false'
+        />
     </profile-type>
     <profile-type name='custom.test.1' max-allowed-per-parent='14' />
+
+    <change-user-type from="android.test.1" to="android.test.2" whenVersionLeq="1233" />
+
 </user-types>

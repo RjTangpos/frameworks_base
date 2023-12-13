@@ -23,10 +23,14 @@ import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.annotation.TestApi;
 import android.annotation.UiThread;
+import android.annotation.UserIdInt;
+import android.app.Activity;
+import android.app.Service;
 import android.content.ComponentName;
 import android.content.ContentCaptureOptions;
 import android.content.Context;
@@ -38,6 +42,7 @@ import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.util.Dumpable;
 import android.util.Log;
 import android.util.Slog;
 import android.view.View;
@@ -46,7 +51,8 @@ import android.view.WindowManager;
 import android.view.contentcapture.ContentCaptureSession.FlushReason;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.util.Preconditions;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.util.RingBuffer;
 import com.android.internal.util.SyncResultReceiver;
 
 import java.io.PrintWriter;
@@ -56,13 +62,13 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
 /**
- * <p>The {@link ContentCaptureManager} provides additional ways for for apps to
- * integrate with the content capture subsystem.
+ * <p>Provides additional ways for apps to integrate with the content capture subsystem.
  *
  * <p>Content capture provides real-time, continuous capture of application activity, display and
  * events to an intelligence service that is provided by the Android system. The intelligence
@@ -209,6 +215,13 @@ public final class ContentCaptureManager {
 
     private static final String TAG = ContentCaptureManager.class.getSimpleName();
 
+    /** @hide */
+    public static final boolean DEBUG = false;
+
+    /** @hide */
+    @TestApi
+    public static final String DUMPABLE_NAME = "ContentCaptureManager";
+
     /** Error happened during the data sharing session. */
     public static final int DATA_SHARE_ERROR_UNKNOWN = 1;
 
@@ -268,6 +281,15 @@ public final class ContentCaptureManager {
             "service_explicitly_enabled";
 
     /**
+     * Device config property used by {@code android.widget.AbsListView} to determine whether or
+     * not it should report the positions of its children to Content Capture.
+     *
+     * @hide
+     */
+    public static final String DEVICE_CONFIG_PROPERTY_REPORT_LIST_VIEW_CHILDREN =
+            "report_list_view_children";
+
+    /**
      * Maximum number of events that are buffered before sent to the app.
      *
      * @hide
@@ -323,6 +345,38 @@ public final class ContentCaptureManager {
      */
     public static final String DEVICE_CONFIG_PROPERTY_IDLE_UNBIND_TIMEOUT = "idle_unbind_timeout";
 
+    /**
+     * Sets to disable flush when receiving a VIEW_TREE_APPEARING event.
+     *
+     * @hide
+     */
+    public static final String DEVICE_CONFIG_PROPERTY_DISABLE_FLUSH_FOR_VIEW_TREE_APPEARING =
+            "disable_flush_for_view_tree_appearing";
+
+    /**
+     * Enables the content protection receiver.
+     *
+     * @hide
+     */
+    public static final String DEVICE_CONFIG_PROPERTY_ENABLE_CONTENT_PROTECTION_RECEIVER =
+            "enable_content_protection_receiver";
+
+    /**
+     * Sets the size of the app blocklist for the content protection flow.
+     *
+     * @hide
+     */
+    public static final String DEVICE_CONFIG_PROPERTY_CONTENT_PROTECTION_APPS_BLOCKLIST_SIZE =
+            "content_protection_apps_blocklist_size";
+
+    /**
+     * Sets the size of the in-memory ring buffer for the content protection flow.
+     *
+     * @hide
+     */
+    public static final String DEVICE_CONFIG_PROPERTY_CONTENT_PROTECTION_BUFFER_SIZE =
+            "content_protection_buffer_size";
+
     /** @hide */
     @TestApi
     public static final int LOGGING_LEVEL_OFF = 0;
@@ -353,11 +407,21 @@ public final class ContentCaptureManager {
     public static final int DEFAULT_TEXT_CHANGE_FLUSHING_FREQUENCY_MS = 1_000;
     /** @hide */
     public static final int DEFAULT_LOG_HISTORY_SIZE = 10;
+    /** @hide */
+    public static final boolean DEFAULT_DISABLE_FLUSH_FOR_VIEW_TREE_APPEARING = false;
+    /** @hide */
+    public static final boolean DEFAULT_ENABLE_CONTENT_CAPTURE_RECEIVER = true;
+    /** @hide */
+    public static final boolean DEFAULT_ENABLE_CONTENT_PROTECTION_RECEIVER = false;
+    /** @hide */
+    public static final int DEFAULT_CONTENT_PROTECTION_APPS_BLOCKLIST_SIZE = 5000;
+    /** @hide */
+    public static final int DEFAULT_CONTENT_PROTECTION_BUFFER_SIZE = 150;
 
     private final Object mLock = new Object();
 
     @NonNull
-    private final Context mContext;
+    private final StrippedContext mContext;
 
     @NonNull
     private final IContentCaptureManager mService;
@@ -380,6 +444,12 @@ public final class ContentCaptureManager {
     @GuardedBy("mLock")
     private MainContentCaptureSession mMainSession;
 
+    @Nullable // set on-demand by addDumpable()
+    private Dumper mDumpable;
+
+    // Created here in order to live across activity and session changes
+    @Nullable private final RingBuffer<ContentCaptureEvent> mContentProtectionEventBuffer;
+
     /** @hide */
     public interface ContentCaptureClient {
         /**
@@ -390,13 +460,46 @@ public final class ContentCaptureManager {
     }
 
     /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public static class StrippedContext {
+        @NonNull final String mPackageName;
+        @NonNull final String mContext;
+        final @UserIdInt int mUserId;
+
+        /** @hide */
+        @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
+        public StrippedContext(@NonNull Context context) {
+            mPackageName = context.getPackageName();
+            mContext = context.toString();
+            mUserId = context.getUserId();
+        }
+
+        @Override
+        public String toString() {
+            return mContext;
+        }
+
+        @NonNull
+        public String getPackageName() {
+            return mPackageName;
+        }
+
+        @UserIdInt
+        public int getUserId() {
+            return mUserId;
+        }
+    }
+
+    /** @hide */
     public ContentCaptureManager(@NonNull Context context,
             @NonNull IContentCaptureManager service, @NonNull ContentCaptureOptions options) {
-        mContext = Preconditions.checkNotNull(context, "context cannot be null");
-        mService = Preconditions.checkNotNull(service, "service cannot be null");
-        mOptions = Preconditions.checkNotNull(options, "options cannot be null");
+        Objects.requireNonNull(context, "context cannot be null");
+        mContext = new StrippedContext(context);
+        mService = Objects.requireNonNull(service, "service cannot be null");
+        mOptions = Objects.requireNonNull(options, "options cannot be null");
 
         ContentCaptureHelper.setLoggingLevel(mOptions.loggingLevel);
+        setFlushViewTreeAppearingEventDisabled(mOptions.disableFlushForViewTreeAppearing);
 
         if (sVerbose) Log.v(TAG, "Constructor for " + context.getPackageName());
 
@@ -406,6 +509,16 @@ public final class ContentCaptureManager {
         mHandler = Handler.createAsync(Looper.getMainLooper());
 
         mDataShareAdapterResourceManager = new LocalDataShareAdapterResourceManager();
+
+        if (mOptions.contentProtectionOptions.enableReceiver
+                && mOptions.contentProtectionOptions.bufferSize > 0) {
+            mContentProtectionEventBuffer =
+                    new RingBuffer(
+                            ContentCaptureEvent.class,
+                            mOptions.contentProtectionOptions.bufferSize);
+        } else {
+            mContentProtectionEventBuffer = null;
+        }
     }
 
     /**
@@ -432,10 +545,11 @@ public final class ContentCaptureManager {
     /** @hide */
     @UiThread
     public void onActivityCreated(@NonNull IBinder applicationToken,
-            @NonNull ComponentName activityComponent) {
+            @NonNull IBinder shareableActivityToken, @NonNull ComponentName activityComponent) {
         if (mOptions.lite) return;
         synchronized (mLock) {
-            getMainContentCaptureSession().start(applicationToken, activityComponent, mFlags);
+            getMainContentCaptureSession().start(applicationToken, shareableActivityToken,
+                    activityComponent, mFlags);
         }
     }
 
@@ -476,6 +590,8 @@ public final class ContentCaptureManager {
     /**
      * Returns the component name of the system service that is consuming the captured events for
      * the current user.
+     *
+     * @throws RuntimeException if getting the component name is timed out.
      */
     @Nullable
     public ComponentName getServiceComponentName() {
@@ -633,6 +749,38 @@ public final class ContentCaptureManager {
     }
 
     /**
+     * Explicitly sets enable or disable flush for view tree appearing event.
+     *
+     * @hide
+     */
+    @VisibleForTesting
+    public void setFlushViewTreeAppearingEventDisabled(boolean disabled) {
+        if (sDebug) {
+            Log.d(TAG, "setFlushViewTreeAppearingEventDisabled(): setting to " + disabled);
+        }
+
+        synchronized (mLock) {
+            if (disabled) {
+                mFlags |= ContentCaptureContext.FLAG_DISABLED_FLUSH_FOR_VIEW_TREE_APPEARING;
+            } else {
+                mFlags &= ~ContentCaptureContext.FLAG_DISABLED_FLUSH_FOR_VIEW_TREE_APPEARING;
+            }
+        }
+    }
+
+    /**
+     * Gets whether content capture is needed to flush for view tree appearing event.
+     *
+     * @hide
+     */
+    public boolean getFlushViewTreeAppearingEventDisabled() {
+        synchronized (mLock) {
+            return (mFlags & ContentCaptureContext.FLAG_DISABLED_FLUSH_FOR_VIEW_TREE_APPEARING)
+                    != 0;
+        }
+    }
+
+    /**
      * Gets whether content capture is enabled for the given user.
      *
      * <p>This method is typically used by the content capture service settings page, so it can
@@ -672,7 +820,7 @@ public final class ContentCaptureManager {
      * @param request object specifying what user data should be removed.
      */
     public void removeData(@NonNull DataRemovalRequest request) {
-        Preconditions.checkNotNull(request);
+        Objects.requireNonNull(request);
 
         try {
             mService.removeData(request);
@@ -696,9 +844,9 @@ public final class ContentCaptureManager {
     public void shareData(@NonNull DataShareRequest request,
             @NonNull @CallbackExecutor Executor executor,
             @NonNull DataShareWriteAdapter dataShareWriteAdapter) {
-        Preconditions.checkNotNull(request);
-        Preconditions.checkNotNull(dataShareWriteAdapter);
-        Preconditions.checkNotNull(executor);
+        Objects.requireNonNull(request);
+        Objects.requireNonNull(dataShareWriteAdapter);
+        Objects.requireNonNull(executor);
 
         try {
             mService.shareData(request,
@@ -732,27 +880,119 @@ public final class ContentCaptureManager {
     }
 
     /** @hide */
-    public void dump(String prefix, PrintWriter pw) {
-        pw.print(prefix); pw.println("ContentCaptureManager");
-        final String prefix2 = prefix + "  ";
-        synchronized (mLock) {
-            pw.print(prefix2); pw.print("isContentCaptureEnabled(): ");
-            pw.println(isContentCaptureEnabled());
-            pw.print(prefix2); pw.print("Debug: "); pw.print(sDebug);
-            pw.print(" Verbose: "); pw.println(sVerbose);
-            pw.print(prefix2); pw.print("Context: "); pw.println(mContext);
-            pw.print(prefix2); pw.print("User: "); pw.println(mContext.getUserId());
-            pw.print(prefix2); pw.print("Service: "); pw.println(mService);
-            pw.print(prefix2); pw.print("Flags: "); pw.println(mFlags);
-            pw.print(prefix2); pw.print("Options: "); mOptions.dumpShort(pw); pw.println();
-            if (mMainSession != null) {
-                final String prefix3 = prefix2 + "  ";
-                pw.print(prefix2); pw.println("Main session:");
-                mMainSession.dump(prefix3, pw);
-            } else {
-                pw.print(prefix2); pw.println("No sessions");
+    public void addDumpable(Activity activity) {
+        if (mDumpable == null) {
+            mDumpable = new Dumper();
+        }
+        activity.addDumpable(mDumpable);
+    }
+
+    /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    @Nullable
+    public RingBuffer<ContentCaptureEvent> getContentProtectionEventBuffer() {
+        return mContentProtectionEventBuffer;
+    }
+
+    // NOTE: ContentCaptureManager cannot implement it directly as it would be exposed as public API
+    private final class Dumper implements Dumpable {
+        @Override
+        public void dump(@NonNull PrintWriter pw, @Nullable String[] args) {
+            String prefix = "";
+            pw.print(prefix); pw.println("ContentCaptureManager");
+            final String prefix2 = prefix + "  ";
+            synchronized (mLock) {
+                pw.print(prefix2); pw.print("isContentCaptureEnabled(): ");
+                pw.println(isContentCaptureEnabled());
+                pw.print(prefix2); pw.print("Debug: "); pw.print(sDebug);
+                pw.print(" Verbose: "); pw.println(sVerbose);
+                pw.print(prefix2); pw.print("Context: "); pw.println(mContext);
+                pw.print(prefix2); pw.print("User: "); pw.println(mContext.getUserId());
+                pw.print(prefix2); pw.print("Service: "); pw.println(mService);
+                pw.print(prefix2); pw.print("Flags: "); pw.println(mFlags);
+                pw.print(prefix2); pw.print("Options: "); mOptions.dumpShort(pw); pw.println();
+                if (mMainSession != null) {
+                    final String prefix3 = prefix2 + "  ";
+                    pw.print(prefix2); pw.println("Main session:");
+                    mMainSession.dump(prefix3, pw);
+                } else {
+                    pw.print(prefix2); pw.println("No sessions");
+                }
             }
         }
+
+        @Override
+        public String getDumpableName() {
+            return DUMPABLE_NAME;
+        }
+    }
+
+    /**
+     * Resets the temporary content capture service implementation to the default component.
+     *
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_CONTENT_CAPTURE)
+    public static void resetTemporaryService(@UserIdInt int userId) {
+        final IContentCaptureManager service = getService();
+        if (service == null) {
+            Log.e(TAG, "IContentCaptureManager is null");
+        }
+        try {
+            service.resetTemporaryService(userId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Temporarily sets the content capture service implementation.
+     *
+     * @param userId user Id to set the temporary service on.
+     * @param serviceName name of the new component
+     * @param duration how long the change will be valid (the service will be automatically reset
+     * to the default component after this timeout expires).
+     *
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_CONTENT_CAPTURE)
+    public static void setTemporaryService(
+            @UserIdInt int userId, @NonNull String serviceName, int duration) {
+        final IContentCaptureManager service = getService();
+        if (service == null) {
+            Log.e(TAG, "IContentCaptureManager is null");
+        }
+        try {
+            service.setTemporaryService(userId, serviceName, duration);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Sets whether the default content capture service should be used.
+     *
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_CONTENT_CAPTURE)
+    public static void setDefaultServiceEnabled(@UserIdInt int userId, boolean enabled) {
+        final IContentCaptureManager service = getService();
+        if (service == null) {
+            Log.e(TAG, "IContentCaptureManager is null");
+        }
+        try {
+            service.setDefaultServiceEnabled(userId, enabled);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    private static IContentCaptureManager getService() {
+        return IContentCaptureManager.Stub.asInterface(ServiceManager.getService(
+                Service.CONTENT_CAPTURE_MANAGER_SERVICE));
     }
 
     private interface MyRunnable {
@@ -765,9 +1005,9 @@ public final class ContentCaptureManager {
 
         private DataShareAdapterDelegate(Executor executor, DataShareWriteAdapter adapter,
                 LocalDataShareAdapterResourceManager resourceManager) {
-            Preconditions.checkNotNull(executor);
-            Preconditions.checkNotNull(adapter);
-            Preconditions.checkNotNull(resourceManager);
+            Objects.requireNonNull(executor);
+            Objects.requireNonNull(adapter);
+            Objects.requireNonNull(resourceManager);
 
             resourceManager.initializeForDelegate(this, adapter, executor);
             mResourceManagerReference = new WeakReference<>(resourceManager);

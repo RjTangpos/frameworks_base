@@ -63,7 +63,7 @@ public final class RtpHeaderExtensionType implements Parcelable {
 
     private RtpHeaderExtensionType(Parcel in) {
         mLocalIdentifier = in.readInt();
-        mUri = in.readParcelable(Uri.class.getClassLoader());
+        mUri = in.readParcelable(Uri.class.getClassLoader(), android.net.Uri.class);
     }
 
     public static final @NonNull Creator<RtpHeaderExtensionType> CREATOR =
@@ -132,5 +132,17 @@ public final class RtpHeaderExtensionType implements Parcelable {
     @Override
     public int hashCode() {
         return Objects.hash(mLocalIdentifier, mUri);
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("RtpHeaderExtensionType{mLocalIdentifier=");
+        sb.append(mLocalIdentifier);
+        sb.append(", mUri=");
+        sb.append(mUri);
+        sb.append("}");
+
+        return sb.toString();
     }
 }

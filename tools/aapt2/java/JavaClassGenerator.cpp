@@ -57,14 +57,14 @@ static const std::set<StringPiece> sJavaIdentifiers = {
     "transient",  "try",          "void",      "volatile",   "while",
     "true",       "false",        "null"};
 
-static bool IsValidSymbol(const StringPiece& symbol) {
+static bool IsValidSymbol(StringPiece symbol) {
   return sJavaIdentifiers.find(symbol) == sJavaIdentifiers.end();
 }
 
 // Java symbols can not contain . or -, but those are valid in a resource name.
 // Replace those with '_'.
-std::string JavaClassGenerator::TransformToFieldName(const StringPiece& symbol) {
-  std::string output = symbol.to_string();
+std::string JavaClassGenerator::TransformToFieldName(StringPiece symbol) {
+  std::string output(symbol);
   for (char& c : output) {
     if (c == '.' || c == '-') {
       c = '_';
@@ -84,7 +84,7 @@ std::string JavaClassGenerator::TransformToFieldName(const StringPiece& symbol) 
 // Foo_bar
 static std::string TransformNestedAttr(const ResourceNameRef& attr_name,
                                        const std::string& styleable_class_name,
-                                       const StringPiece& package_name_to_generate) {
+                                       StringPiece package_name_to_generate) {
   std::string output = styleable_class_name;
 
   // We may reference IDs from other packages, so prefix the entry name with
@@ -204,7 +204,7 @@ bool JavaClassGenerator::SkipSymbol(Visibility::Level level) {
 }
 
 // Whether or not to skip writing this symbol.
-bool JavaClassGenerator::SkipSymbol(const Maybe<SymbolTable::Symbol>& symbol) {
+bool JavaClassGenerator::SkipSymbol(const std::optional<SymbolTable::Symbol>& symbol) {
   return !symbol || (options_.types == JavaClassGeneratorOptions::SymbolTypes::kPublic &&
                      !symbol.value().is_public);
 }
@@ -212,24 +212,29 @@ bool JavaClassGenerator::SkipSymbol(const Maybe<SymbolTable::Symbol>& symbol) {
 struct StyleableAttr {
   const Reference* attr_ref = nullptr;
   std::string field_name;
-  Maybe<SymbolTable::Symbol> symbol;
+  std::optional<SymbolTable::Symbol> symbol;
 };
 
 static bool operator<(const StyleableAttr& lhs, const StyleableAttr& rhs) {
-  const ResourceId lhs_id = lhs.attr_ref->id.value_or_default(ResourceId(0));
-  const ResourceId rhs_id = rhs.attr_ref->id.value_or_default(ResourceId(0));
-  if (lhs_id < rhs_id) {
-    return true;
-  } else if (lhs_id > rhs_id) {
-    return false;
-  } else {
+  const ResourceId lhs_id = lhs.attr_ref->id.value_or(ResourceId(0));
+  const ResourceId rhs_id = rhs.attr_ref->id.value_or(ResourceId(0));
+  if (lhs_id == rhs_id) {
     return lhs.attr_ref->name.value() < rhs.attr_ref->name.value();
   }
+  return cmp_ids_dynamic_after_framework(lhs_id, rhs_id);
 }
 
-void JavaClassGenerator::ProcessStyleable(const ResourceNameRef& name, const ResourceId& id,
+static FieldReference GetRFieldReference(const ResourceName& name,
+                                         StringPiece fallback_package_name) {
+  const std::string_view package_name = name.package.empty() ? fallback_package_name : name.package;
+  const std::string entry = JavaClassGenerator::TransformToFieldName(name.entry);
+  return FieldReference(
+      StringPrintf("%s.R.%s.%s", package_name.data(), name.type.to_string().data(), entry.c_str()));
+}
+
+bool JavaClassGenerator::ProcessStyleable(const ResourceNameRef& name, const ResourceId& id,
                                           const Styleable& styleable,
-                                          const StringPiece& package_name_to_generate,
+                                          StringPiece package_name_to_generate,
                                           ClassDefinition* out_class_def,
                                           MethodDefinition* out_rewrite_method,
                                           Printer* r_txt_printer) {
@@ -308,7 +313,8 @@ void JavaClassGenerator::ProcessStyleable(const ResourceNameRef& name, const Res
         return true;
       }
       const StringPiece attr_comment_line = entry.symbol.value().attribute->GetComment();
-      return attr_comment_line.contains("@removed") || attr_comment_line.contains("@hide");
+      return attr_comment_line.find("@removed") != std::string::npos ||
+             attr_comment_line.find("@hide") != std::string::npos;
     });
     documentation_attrs.erase(documentation_remove_iter, documentation_attrs.end());
 
@@ -343,14 +349,29 @@ void JavaClassGenerator::ProcessStyleable(const ResourceNameRef& name, const Res
 
   // Add the ResourceIds to the array member.
   for (size_t i = 0; i < attr_count; i++) {
-    const ResourceId id = sorted_attributes[i].attr_ref->id.value_or_default(ResourceId(0));
-    array_def->AddElement(id);
+    const StyleableAttr& attr = sorted_attributes[i];
+    std::string r_txt_contents;
+    if (attr.symbol && attr.symbol.value().is_dynamic) {
+      if (!attr.attr_ref->name) {
+        error_ = "unable to determine R.java field name of dynamic resource";
+        return false;
+      }
+
+      const FieldReference field_name =
+          GetRFieldReference(attr.attr_ref->name.value(), package_name_to_generate);
+      array_def->AddElement(field_name);
+      r_txt_contents = field_name.ref;
+    } else {
+      const ResourceId attr_id = attr.attr_ref->id.value_or(ResourceId(0));
+      array_def->AddElement(attr_id);
+      r_txt_contents = to_string(attr_id);
+    }
 
     if (r_txt_printer != nullptr) {
       if (i != 0) {
         r_txt_printer->Print(",");
       }
-      r_txt_printer->Print(" ").Print(id.to_string());
+      r_txt_printer->Print(" ").Print(r_txt_contents);
     }
   }
 
@@ -376,7 +397,7 @@ void JavaClassGenerator::ProcessStyleable(const ResourceNameRef& name, const Res
         comment = styleable_attr.symbol.value().attribute->GetComment();
       }
 
-      if (comment.contains("@removed")) {
+      if (comment.find("@removed") != std::string::npos) {
         // Removed attributes are public but hidden from the documentation, so
         // don't emit them as part of the class documentation.
         continue;
@@ -422,19 +443,7 @@ void JavaClassGenerator::ProcessStyleable(const ResourceNameRef& name, const Res
     }
   }
 
-  // If there is a rewrite method to generate, add the statements that rewrite package IDs
-  // for this styleable.
-  if (out_rewrite_method != nullptr) {
-    out_rewrite_method->AppendStatement(
-        StringPrintf("for (int i = 0; i < styleable.%s.length; i++) {", array_field_name.data()));
-    out_rewrite_method->AppendStatement(
-        StringPrintf("  if ((styleable.%s[i] & 0xff000000) == 0) {", array_field_name.data()));
-    out_rewrite_method->AppendStatement(
-        StringPrintf("    styleable.%s[i] = (styleable.%s[i] & 0x00ffffff) | packageIdBits;",
-                     array_field_name.data(), array_field_name.data()));
-    out_rewrite_method->AppendStatement("  }");
-    out_rewrite_method->AppendStatement("}");
-  }
+  return true;
 }
 
 void JavaClassGenerator::ProcessResource(const ResourceNameRef& name, const ResourceId& id,
@@ -442,7 +451,7 @@ void JavaClassGenerator::ProcessResource(const ResourceNameRef& name, const Reso
                                          MethodDefinition* out_rewrite_method,
                                          text::Printer* r_txt_printer) {
   ResourceId real_id = id;
-  if (context_->GetMinSdkVersion() < SDK_O && name.type == ResourceType::kId &&
+  if (context_->GetMinSdkVersion() < SDK_O && name.type.type == ResourceType::kId &&
       id.package_id() > kAppPackageId) {
     // Workaround for feature splits using package IDs > 0x7F.
     // See b/37498913.
@@ -451,8 +460,8 @@ void JavaClassGenerator::ProcessResource(const ResourceNameRef& name, const Reso
 
   const std::string field_name = TransformToFieldName(name.entry);
   if (out_class_def != nullptr) {
-    std::unique_ptr<ResourceMember> resource_member =
-        util::make_unique<ResourceMember>(field_name, real_id);
+    auto resource_member =
+        util::make_unique<ResourceMember>(field_name, real_id, entry.visibility.staged_api);
 
     // Build the comments and annotations for this entry.
     AnnotationProcessor* processor = resource_member->GetCommentBuilder();
@@ -480,7 +489,7 @@ void JavaClassGenerator::ProcessResource(const ResourceNameRef& name, const Reso
 
   if (r_txt_printer != nullptr) {
     r_txt_printer->Print("int ")
-        .Print(to_string(name.type))
+        .Print(name.type.to_string())
         .Print(" ")
         .Print(field_name)
         .Print(" ")
@@ -488,16 +497,15 @@ void JavaClassGenerator::ProcessResource(const ResourceNameRef& name, const Reso
   }
 
   if (out_rewrite_method != nullptr) {
-    const StringPiece& type_str = to_string(name.type);
+    const auto type_str = name.type.to_string();
     out_rewrite_method->AppendStatement(
         StringPrintf("%s.%s = (%s.%s & 0x00ffffff) | packageIdBits;", type_str.data(),
                      field_name.data(), type_str.data(), field_name.data()));
   }
 }
 
-Maybe<std::string> JavaClassGenerator::UnmangleResource(const StringPiece& package_name,
-                                                        const StringPiece& package_name_to_generate,
-                                                        const ResourceEntry& entry) {
+std::optional<std::string> JavaClassGenerator::UnmangleResource(
+    StringPiece package_name, StringPiece package_name_to_generate, const ResourceEntry& entry) {
   if (SkipSymbol(entry.visibility.level)) {
     return {};
   }
@@ -519,14 +527,14 @@ Maybe<std::string> JavaClassGenerator::UnmangleResource(const StringPiece& packa
   return {std::move(unmangled_name)};
 }
 
-bool JavaClassGenerator::ProcessType(const StringPiece& package_name_to_generate,
+bool JavaClassGenerator::ProcessType(StringPiece package_name_to_generate,
                                      const ResourceTablePackage& package,
                                      const ResourceTableType& type,
                                      ClassDefinition* out_type_class_def,
                                      MethodDefinition* out_rewrite_method_def,
                                      Printer* r_txt_printer) {
   for (const auto& entry : type.entries) {
-    const Maybe<std::string> unmangled_name =
+    const std::optional<std::string> unmangled_name =
         UnmangleResource(package.name, package_name_to_generate, *entry);
     if (!unmangled_name) {
       continue;
@@ -534,15 +542,16 @@ bool JavaClassGenerator::ProcessType(const StringPiece& package_name_to_generate
 
     // Create an ID if there is one (static libraries don't need one).
     ResourceId id;
-    if (package.id && type.id && entry->id) {
-      id = ResourceId(package.id.value(), type.id.value(), entry->id.value());
+    if (entry->id) {
+      id = entry->id.value();
     }
 
     // We need to make sure we hide the fact that we are generating kAttrPrivate attributes.
-    const ResourceNameRef resource_name(
-        package_name_to_generate,
-        type.type == ResourceType::kAttrPrivate ? ResourceType::kAttr : type.type,
-        unmangled_name.value());
+    const auto target_type = type.named_type.type == ResourceType::kAttrPrivate
+                                 ? ResourceNamedTypeWithDefaultName(ResourceType::kAttr)
+                                 : type.named_type;
+    const ResourceNameRef resource_name(package_name_to_generate, target_type,
+                                        unmangled_name.value());
 
     // Check to see if the unmangled name is a valid Java name (not a keyword).
     if (!IsValidSymbol(unmangled_name.value())) {
@@ -552,14 +561,13 @@ bool JavaClassGenerator::ProcessType(const StringPiece& package_name_to_generate
       return false;
     }
 
-    if (resource_name.type == ResourceType::kStyleable) {
+    if (resource_name.type.type == ResourceType::kStyleable) {
       CHECK(!entry->values.empty());
-
-      const Styleable* styleable =
-          static_cast<const Styleable*>(entry->values.front()->value.get());
-
-      ProcessStyleable(resource_name, id, *styleable, package_name_to_generate, out_type_class_def,
-                       out_rewrite_method_def, r_txt_printer);
+      const auto styleable = reinterpret_cast<const Styleable*>(entry->values.front()->value.get());
+      if (!ProcessStyleable(resource_name, id, *styleable, package_name_to_generate,
+                            out_type_class_def, out_rewrite_method_def, r_txt_printer)) {
+        return false;
+      }
     } else {
       ProcessResource(resource_name, id, *entry, out_type_class_def, out_rewrite_method_def,
                       r_txt_printer);
@@ -568,7 +576,7 @@ bool JavaClassGenerator::ProcessType(const StringPiece& package_name_to_generate
   return true;
 }
 
-bool JavaClassGenerator::Generate(const StringPiece& package_name_to_generate, OutputStream* out,
+bool JavaClassGenerator::Generate(StringPiece package_name_to_generate, OutputStream* out,
                                   OutputStream* out_r_txt) {
   return Generate(package_name_to_generate, package_name_to_generate, out, out_r_txt);
 }
@@ -582,8 +590,8 @@ static void AppendJavaDocAnnotations(const std::vector<std::string>& annotations
   }
 }
 
-bool JavaClassGenerator::Generate(const StringPiece& package_name_to_generate,
-                                  const StringPiece& out_package_name, OutputStream* out,
+bool JavaClassGenerator::Generate(StringPiece package_name_to_generate,
+                                  StringPiece out_package_name, OutputStream* out,
                                   OutputStream* out_r_txt) {
   ClassDefinition r_class("R", ClassQualifier::kNone, true);
   std::unique_ptr<MethodDefinition> rewrite_method;
@@ -608,8 +616,10 @@ bool JavaClassGenerator::Generate(const StringPiece& package_name_to_generate,
 
   for (const auto& package : table_->packages) {
     for (const auto& type : package->types) {
-      if (type->type == ResourceType::kAttrPrivate) {
-        // We generate these as part of the kAttr type, so skip them here.
+      if (type->named_type.type == ResourceType::kAttrPrivate ||
+          type->named_type.type == ResourceType::kMacro) {
+        // We generate kAttrPrivate as part of the kAttr type, so skip them here.
+        // Macros are not actual resources, so skip them as well.
         continue;
       }
 
@@ -619,7 +629,7 @@ bool JavaClassGenerator::Generate(const StringPiece& package_name_to_generate,
       std::unique_ptr<ClassDefinition> class_def;
       if (out != nullptr) {
         class_def = util::make_unique<ClassDefinition>(
-            to_string(type->type), ClassQualifier::kStatic, force_creation_if_empty);
+            to_string(type->named_type.type), ClassQualifier::kStatic, force_creation_if_empty);
       }
 
       if (!ProcessType(package_name_to_generate, *package, *type, class_def.get(),
@@ -627,10 +637,10 @@ bool JavaClassGenerator::Generate(const StringPiece& package_name_to_generate,
         return false;
       }
 
-      if (type->type == ResourceType::kAttr) {
+      if (type->named_type.type == ResourceType::kAttr) {
         // Also include private attributes in this same class.
-        const ResourceTableType* priv_type = package->FindType(ResourceType::kAttrPrivate);
-        if (priv_type) {
+        if (const ResourceTableType* priv_type =
+                package->FindTypeWithDefaultName(ResourceType::kAttrPrivate)) {
           if (!ProcessType(package_name_to_generate, *package, *priv_type, class_def.get(),
                            rewrite_method.get(), r_txt_printer.get())) {
             return false;
@@ -638,7 +648,7 @@ bool JavaClassGenerator::Generate(const StringPiece& package_name_to_generate,
         }
       }
 
-      if (out != nullptr && type->type == ResourceType::kStyleable && is_public) {
+      if (out != nullptr && type->named_type.type == ResourceType::kStyleable && is_public) {
         // When generating a public R class, we don't want Styleable to be part
         // of the API. It is only emitted for documentation purposes.
         class_def->GetCommentBuilder()->AppendComment("@doconly");

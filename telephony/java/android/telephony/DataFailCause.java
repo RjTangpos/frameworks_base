@@ -125,6 +125,12 @@ public final class DataFailCause {
     public static final int UNSUPPORTED_QCI_VALUE = 0x3B;
     /** Procedure requested by the UE was rejected because the bearer handling is not supported. */
     public static final int BEARER_HANDLING_NOT_SUPPORTED = 0x3C;
+    /**
+     * This cause is used to report a service or option not available event only when no other
+     * cause in the service or option not available class applies.
+     * @hide // TODO: Unhide in U.
+     */
+    public static final int SERVICE_OR_OPTION_NOT_AVAILABLE = 0x3F;
     /** Max number of Packet Data Protocol (PDP) context reached. */
     public static final int ACTIVE_PDP_CONTEXT_MAX_NUMBER_REACHED = 0x41;
     /** Unsupported APN in current public land mobile network (PLMN). */
@@ -981,10 +987,18 @@ public final class DataFailCause {
     /** The ePDG does not support un-authenticated IMSI based emergency PDN bringup **/
     public static final int IWLAN_UNAUTHENTICATED_EMERGENCY_NOT_SUPPORTED = 0x2B2F;
 
-    // Device is unable to establish an IPSec tunnel with the ePDG for any reason
-    // e.g authentication fail or certificate validation or DNS Resolution and timeout failure.
+    // The below error causes are relevant when the device is unable to establish an IPSec tunnel
+    // with the ePDG for any reason, e.g. authentication fail or certificate validation or DNS
+    // Resolution and timeout failure.
 
-    /** IKE configuration error resulting in failure  */
+    /**
+     * The requested service was rejected because of congestion in the network while accessing the
+     * IWLAN ePDG. Defined in 3GPP TS 24.502, Section 9.2.4.2.
+     */
+    public static final int IWLAN_CONGESTION = 0x3C8C;
+
+    // Below IWLAN error codes are defined by the UE and do not relate to any 3GPP spec value
+    /** IKE configuration error resulting in failure */
     public static final int IWLAN_IKEV2_CONFIG_FAILURE = 0x4000;
     /**
      * Sent in the response to an IKE_AUTH message when, for some reason,
@@ -999,6 +1013,59 @@ public final class DataFailCause {
     public static final int IWLAN_DNS_RESOLUTION_NAME_FAILURE = 0x4004;
     /** No response received from the DNS Server due to a timeout*/
     public static final int IWLAN_DNS_RESOLUTION_TIMEOUT = 0x4005;
+    /** Expected to update or bring down an ePDG tunnel, but no tunnel found*/
+    public static final int IWLAN_TUNNEL_NOT_FOUND = 0x4006;
+    /**
+     * Failed to apply tunnel transform
+     *
+     * @hide
+     */
+    public static final int IWLAN_TUNNEL_TRANSFORM_FAILED = 0x4007;
+    /**
+     * IWLAN PDN setup failed due to Wi-Fi lost during IKE tunnel setup,
+     * match exception reported by IKE module
+     *
+     * @hide
+     */
+    public static final int IWLAN_IKE_NETWORK_LOST_EXCEPTION = 0x4008;
+    /**
+     * Carrier-specific error codes during IKEv2 SA setup
+     *
+     * @hide
+     */
+    public static final int IWLAN_IKE_PRIVATE_PROTOCOL_ERROR = 0x4009;
+    /**
+     * IKE Session closed before child session opened
+     *
+     * @hide
+     */
+    public static final int IWLAN_IKE_SESSION_CLOSED_BEFORE_CHILD_SESSION_OPENED = 0x400A;
+    /**
+     * IKE Init timeout, no response from EPDG
+     *
+     * @hide
+     */
+    public static final int IWLAN_IKE_INIT_TIMEOUT = 0x400B;
+    /**
+     * DPD message does not get an ack after the re-tx attempts and duration, i.e., times out.
+     *
+     * @hide
+     */
+    public static final int IWLAN_IKE_DPD_TIMEOUT = 0x400C;
+    /**
+     * The Wi-Fi to Wi-Fi handover of the IMS PDN fails because the network does not respond to the
+     * MOBIKE/rekey mobility message in the expected manner
+     *
+     * @hide
+     */
+    public static final int IWLAN_IKE_MOBILITY_TIMEOUT = 0x400D;
+    /**
+     * IKE client sent "IKE AUTH request 3" to the network but got "Internal address failure" from
+     * the network since no internal addresses can be assigned.
+     *
+     * @hide
+     */
+    public static final int IWLAN_EPDG_INTERNAL_ADDRESS_FAILURE = 0x400E;
 
     // OEM sepecific error codes. To be used by OEMs when they don't
     // want to reveal error code which would be replaced by ERROR_UNSPECIFIED
@@ -1055,6 +1122,41 @@ public final class DataFailCause {
      */
     public static final int HANDOVER_FAILED = 0x10006;
 
+    /**
+     * Enterprise setup failure: duplicate CID in DataCallResponse.
+     *
+     * @hide
+     */
+    public static final int DUPLICATE_CID = 0x10007;
+
+    /**
+     * Enterprise setup failure: no default data connection set up yet.
+     *
+     * @hide
+     */
+    public static final int NO_DEFAULT_DATA = 0x10008;
+
+    /**
+     * Data service is temporarily unavailable.
+     *
+     * @hide
+     */
+    public static final int SERVICE_TEMPORARILY_UNAVAILABLE = 0x10009;
+
+    /**
+     * The request is not supported by the vendor.
+     *
+     * @hide
+     */
+    public static final int REQUEST_NOT_SUPPORTED = 0x1000A;
+
+    /**
+     * An internal setup data error initiated by telephony that no retry should be performed.
+     *
+     * @hide
+     */
+    public static final int NO_RETRY_FAILURE = 0x1000B;
+
     private static final Map<Integer, String> sFailCauseMap;
     static {
         sFailCauseMap = new HashMap<>();
@@ -1100,6 +1202,7 @@ public final class DataFailCause {
         sFailCauseMap.put(ONLY_NON_IP_ALLOWED, "ONLY_NON_IP_ALLOWED");
         sFailCauseMap.put(UNSUPPORTED_QCI_VALUE, "UNSUPPORTED_QCI_VALUE");
         sFailCauseMap.put(BEARER_HANDLING_NOT_SUPPORTED, "BEARER_HANDLING_NOT_SUPPORTED");
+        sFailCauseMap.put(SERVICE_OR_OPTION_NOT_AVAILABLE, "SERVICE_OR_OPTION_NOT_AVAILABLE");
         sFailCauseMap.put(ACTIVE_PDP_CONTEXT_MAX_NUMBER_REACHED,
                 "ACTIVE_PDP_CONTEXT_MAX_NUMBER_REACHED");
         sFailCauseMap.put(UNSUPPORTED_APN_IN_CURRENT_PLMN,
@@ -1426,6 +1529,8 @@ public final class DataFailCause {
         sFailCauseMap.put(IPV6_PREFIX_UNAVAILABLE, "IPV6_PREFIX_UNAVAILABLE");
         sFailCauseMap.put(HANDOFF_PREFERENCE_CHANGED, "HANDOFF_PREFERENCE_CHANGED");
         sFailCauseMap.put(SLICE_REJECTED, "SLICE_REJECTED");
+        sFailCauseMap.put(MATCH_ALL_RULE_NOT_ALLOWED, "MATCH_ALL_RULE_NOT_ALLOWED");
+        sFailCauseMap.put(ALL_MATCHING_RULES_FAILED, "ALL_MATCHING_RULES_FAILED");
         sFailCauseMap.put(IWLAN_PDN_CONNECTION_REJECTION, "IWLAN_PDN_CONNECTION_REJECTION");
         sFailCauseMap.put(IWLAN_MAX_CONNECTION_REACHED, "IWLAN_MAX_CONNECTION_REACHED");
         sFailCauseMap.put(IWLAN_SEMANTIC_ERROR_IN_THE_TFT_OPERATION,
@@ -1454,6 +1559,17 @@ public final class DataFailCause {
         sFailCauseMap.put(IWLAN_IKEV2_CERT_INVALID, "IWLAN_IKEV2_CERT_INVALID");
         sFailCauseMap.put(IWLAN_DNS_RESOLUTION_NAME_FAILURE, "IWLAN_DNS_RESOLUTION_NAME_FAILURE");
         sFailCauseMap.put(IWLAN_DNS_RESOLUTION_TIMEOUT, "IWLAN_DNS_RESOLUTION_TIMEOUT");
+        sFailCauseMap.put(IWLAN_TUNNEL_NOT_FOUND, "IWLAN_TUNNEL_NOT_FOUND");
+        sFailCauseMap.put(IWLAN_TUNNEL_TRANSFORM_FAILED, "IWLAN_TUNNEL_TRANSFORM_FAILED");
+        sFailCauseMap.put(IWLAN_IKE_INIT_TIMEOUT, "IWLAN_IKE_INIT_TIMEOUT");
+        sFailCauseMap.put(IWLAN_IKE_NETWORK_LOST_EXCEPTION, "IWLAN_IKE_NETWORK_LOST_EXCEPTION");
+        sFailCauseMap.put(IWLAN_IKE_PRIVATE_PROTOCOL_ERROR, "IWLAN_IKE_PRIVATE_PROTOCOL_ERROR");
+        sFailCauseMap.put(IWLAN_IKE_SESSION_CLOSED_BEFORE_CHILD_SESSION_OPENED,
+                "IWLAN_IKE_SESSION_CLOSED_BEFORE_CHILD_SESSION_OPENED");
+        sFailCauseMap.put(IWLAN_IKE_DPD_TIMEOUT, "IWLAN_IKE_DPD_TIMEOUT");
+        sFailCauseMap.put(IWLAN_IKE_MOBILITY_TIMEOUT, "IWLAN_IKE_MOBILITY_TIMEOUT");
+        sFailCauseMap.put(IWLAN_EPDG_INTERNAL_ADDRESS_FAILURE,
+                "IWLAN_EPDG_INTERNAL_ADDRESS_FAILURE");
         sFailCauseMap.put(OEM_DCFAILCAUSE_1, "OEM_DCFAILCAUSE_1");
         sFailCauseMap.put(OEM_DCFAILCAUSE_2, "OEM_DCFAILCAUSE_2");
         sFailCauseMap.put(OEM_DCFAILCAUSE_3, "OEM_DCFAILCAUSE_3");
@@ -1481,6 +1597,12 @@ public final class DataFailCause {
         sFailCauseMap.put(UNACCEPTABLE_NETWORK_PARAMETER,
                 "UNACCEPTABLE_NETWORK_PARAMETER");
         sFailCauseMap.put(LOST_CONNECTION, "LOST_CONNECTION");
+        sFailCauseMap.put(HANDOVER_FAILED, "HANDOVER_FAILED");
+        sFailCauseMap.put(DUPLICATE_CID, "DUPLICATE_CID");
+        sFailCauseMap.put(NO_DEFAULT_DATA, "NO_DEFAULT_DATA");
+        sFailCauseMap.put(SERVICE_TEMPORARILY_UNAVAILABLE, "SERVICE_TEMPORARILY_UNAVAILABLE");
+        sFailCauseMap.put(REQUEST_NOT_SUPPORTED, "REQUEST_NOT_SUPPORTED");
+        sFailCauseMap.put(NO_RETRY_FAILURE, "NO_RETRY_FAILURE");
     }
 
     private DataFailCause() {
@@ -1531,6 +1653,7 @@ public final class DataFailCause {
     }
 
     /** @hide */
+    // TODO: Migrated to DataConfigManager
     public static boolean isPermanentFailure(@NonNull Context context,
                                              @DataFailureCause int failCause,
                                              int subId) {
@@ -1562,28 +1685,29 @@ public final class DataFailCause {
                 // If we are not able to find the configuration from carrier config, use the default
                 // ones.
                 if (permanentFailureSet == null) {
-                    permanentFailureSet = new HashSet<Integer>() {
-                        {
-                            add(OPERATOR_BARRED);
-                            add(MISSING_UNKNOWN_APN);
-                            add(UNKNOWN_PDP_ADDRESS_TYPE);
-                            add(USER_AUTHENTICATION);
-                            add(ACTIVATION_REJECT_GGSN);
-                            add(SERVICE_OPTION_NOT_SUPPORTED);
-                            add(SERVICE_OPTION_NOT_SUBSCRIBED);
-                            add(NSAPI_IN_USE);
-                            add(ONLY_IPV4_ALLOWED);
-                            add(ONLY_IPV6_ALLOWED);
-                            add(PROTOCOL_ERRORS);
-                            add(RADIO_POWER_OFF);
-                            add(TETHERED_CALL_ACTIVE);
-                            add(RADIO_NOT_AVAILABLE);
-                            add(UNACCEPTABLE_NETWORK_PARAMETER);
-                            add(SIGNAL_LOST);
-                        }
-                    };
+                    permanentFailureSet = new HashSet<Integer>();
+                    permanentFailureSet.add(OPERATOR_BARRED);
+                    permanentFailureSet.add(MISSING_UNKNOWN_APN);
+                    permanentFailureSet.add(UNKNOWN_PDP_ADDRESS_TYPE);
+                    permanentFailureSet.add(USER_AUTHENTICATION);
+                    permanentFailureSet.add(ACTIVATION_REJECT_GGSN);
+                    permanentFailureSet.add(SERVICE_OPTION_NOT_SUPPORTED);
+                    permanentFailureSet.add(SERVICE_OPTION_NOT_SUBSCRIBED);
+                    permanentFailureSet.add(NSAPI_IN_USE);
+                    permanentFailureSet.add(ONLY_IPV4_ALLOWED);
+                    permanentFailureSet.add(ONLY_IPV6_ALLOWED);
+                    permanentFailureSet.add(PROTOCOL_ERRORS);
+                    permanentFailureSet.add(RADIO_POWER_OFF);
+                    permanentFailureSet.add(TETHERED_CALL_ACTIVE);
+                    permanentFailureSet.add(RADIO_NOT_AVAILABLE);
+                    permanentFailureSet.add(UNACCEPTABLE_NETWORK_PARAMETER);
+                    permanentFailureSet.add(SIGNAL_LOST);
+                    permanentFailureSet.add(DUPLICATE_CID);
+                    permanentFailureSet.add(MATCH_ALL_RULE_NOT_ALLOWED);
+                    permanentFailureSet.add(ALL_MATCHING_RULES_FAILED);
                 }
 
+                permanentFailureSet.add(NO_RETRY_FAILURE);
                 sPermanentFailureCache.put(subId, permanentFailureSet);
             }
 
@@ -1613,8 +1737,8 @@ public final class DataFailCause {
 
     /** @hide */
     public static String toString(@DataFailureCause int dataFailCause) {
-        int cause = getFailCause(dataFailCause);
-        return (cause == UNKNOWN) ? "UNKNOWN(" + dataFailCause + ")" : sFailCauseMap.get(cause);
+        return sFailCauseMap.getOrDefault(dataFailCause, "UNKNOWN") + "(0x"
+                + Integer.toHexString(dataFailCause) + ")";
     }
 
     /** @hide */
@@ -1624,5 +1748,10 @@ public final class DataFailCause {
         } else {
             return UNKNOWN;
         }
+    }
+
+    /** @hide */
+    public static boolean isFailCauseExisting(@DataFailureCause int failCause) {
+        return sFailCauseMap.containsKey(failCause);
     }
 }

@@ -45,24 +45,32 @@ import android.os.StrictMode;
 import android.print.PrintDocumentAdapter;
 import android.util.AttributeSet;
 import android.util.Log;
+import android.util.LongSparseArray;
 import android.util.SparseArray;
 import android.view.DragEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.PointerIcon;
 import android.view.View;
 import android.view.ViewDebug;
 import android.view.ViewGroup;
 import android.view.ViewHierarchyEncoder;
 import android.view.ViewStructure;
 import android.view.ViewTreeObserver;
+import android.view.WindowInsets;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeProvider;
+import android.view.autofill.AutofillId;
 import android.view.autofill.AutofillValue;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inspector.InspectableProperty;
 import android.view.textclassifier.TextClassifier;
+import android.view.translation.TranslationCapability;
+import android.view.translation.TranslationSpec.DataFormat;
+import android.view.translation.ViewTranslationRequest;
+import android.view.translation.ViewTranslationResponse;
 import android.widget.AbsoluteLayout;
 
 import java.io.BufferedWriter;
@@ -72,6 +80,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * A View that displays web pages.
@@ -703,18 +712,20 @@ public class WebView extends AbsoluteLayout
         return mProvider.restoreState(inState);
     }
 
-    /**
-     * Loads the given URL with the specified additional HTTP headers.
+   /**
+     * Loads the given URL with additional HTTP headers, specified as a map from
+     * name to value. Note that if this map contains any of the headers that are
+     * set by default by this WebView, such as those controlling caching, accept
+     * types or the User-Agent, their values may be overridden by this WebView's
+     * defaults.
+     * <p>
+     * Some older WebView implementations require {@code additionalHttpHeaders}
+     * to be mutable.
      * <p>
      * Also see compatibility note on {@link #evaluateJavascript}.
      *
      * @param url the URL of the resource to load
-     * @param additionalHttpHeaders the additional headers to be used in the
-     *            HTTP request for this URL, specified as a map from name to
-     *            value. Note that if this map contains any of the headers
-     *            that are set by default by this WebView, such as those
-     *            controlling caching, accept types or the User-Agent, their
-     *            values may be overridden by this WebView's defaults.
+     * @param additionalHttpHeaders map with additional headers
      */
     public void loadUrl(@NonNull String url, @NonNull Map<String, String> additionalHttpHeaders) {
         checkThread();
@@ -1990,8 +2001,19 @@ public class WebView extends AbsoluteLayout
      * in order to facilitate debugging of web layouts and JavaScript
      * code running inside WebViews. Please refer to WebView documentation
      * for the debugging guide.
-     *
-     * The default is {@code false}.
+     * <p>
+     * In WebView 113.0.5656.0 and later, this is enabled automatically if the
+     * app is declared as
+     * <a href="https://developer.android.com/guide/topics/manifest/application-element#debug">
+     * {@code android:debuggable="true"}</a> in its manifest; otherwise, the
+     * default is {@code false}.
+     * <p>
+     * Enabling web contents debugging allows the state of any WebView in the
+     * app to be inspected and modified by the user via adb. This is a security
+     * liability and should not be enabled in production builds of apps unless
+     * this is an explicitly intended use of the app. More info on
+     * <a href="https://developer.android.com/topic/security/risks/android-debuggable">
+     * secure debug settings</a>.
      *
      * @param enabled whether to enable web contents debugging
      */
@@ -2449,6 +2471,14 @@ public class WebView extends AbsoluteLayout
             WebView.super.startActivityForResult(intent, requestCode);
         }
 
+        /**
+         * @see View#onApplyWindowInsets(WindowInsets)
+         */
+        @Nullable
+        public WindowInsets super_onApplyWindowInsets(@Nullable WindowInsets insets) {
+            return WebView.super.onApplyWindowInsets(insets);
+        }
+
         // ---- Access to non-public methods ----
         public void overScrollBy(int deltaX, int deltaY,
                 int scrollX, int scrollY,
@@ -2843,6 +2873,31 @@ public class WebView extends AbsoluteLayout
         return mProvider.getViewDelegate().isVisibleToUserForAutofill(virtualId);
     }
 
+    @Override
+    @Nullable
+    public void onCreateVirtualViewTranslationRequests(@NonNull long[] virtualIds,
+            @NonNull @DataFormat int[] supportedFormats,
+            @NonNull Consumer<ViewTranslationRequest> requestsCollector) {
+        mProvider.getViewDelegate().onCreateVirtualViewTranslationRequests(virtualIds,
+                supportedFormats, requestsCollector);
+    }
+
+    @Override
+    public void dispatchCreateViewTranslationRequest(@NonNull Map<AutofillId, long[]> viewIds,
+            @NonNull @DataFormat int[] supportedFormats,
+            @Nullable TranslationCapability capability,
+            @NonNull List<ViewTranslationRequest> requests) {
+        super.dispatchCreateViewTranslationRequest(viewIds, supportedFormats, capability, requests);
+        mProvider.getViewDelegate().dispatchCreateViewTranslationRequest(viewIds, supportedFormats,
+                capability, requests);
+    }
+
+    @Override
+    public void onVirtualViewTranslationResponses(
+            @NonNull LongSparseArray<ViewTranslationResponse> response) {
+        mProvider.getViewDelegate().onVirtualViewTranslationResponses(response);
+    }
+
     /** @hide */
     @Override
     public void onInitializeAccessibilityNodeInfoInternal(AccessibilityNodeInfo info) {
@@ -3077,5 +3132,23 @@ public class WebView extends AbsoluteLayout
         encoder.addProperty("webview:title", mProvider.getTitle());
         encoder.addProperty("webview:url", mProvider.getUrl());
         encoder.addProperty("webview:originalUrl", mProvider.getOriginalUrl());
+    }
+
+    @Override
+    public WindowInsets onApplyWindowInsets(WindowInsets insets) {
+        WindowInsets result = mProvider.getViewDelegate().onApplyWindowInsets(insets);
+        if (result == null) return super.onApplyWindowInsets(insets);
+        return result;
+    }
+
+    @Override
+    @Nullable
+    public PointerIcon onResolvePointerIcon(@NonNull MotionEvent event, int pointerIndex) {
+        PointerIcon icon =
+                mProvider.getViewDelegate().onResolvePointerIcon(event, pointerIndex);
+        if (icon != null) {
+            return icon;
+        }
+        return super.onResolvePointerIcon(event, pointerIndex);
     }
 }

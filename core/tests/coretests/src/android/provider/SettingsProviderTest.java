@@ -220,62 +220,6 @@ public class SettingsProviderTest extends AndroidTestCase {
         assertEquals(null, Settings.Bookmarks.getIntentForShortcut(r, '*'));
     }
 
-    @MediumTest
-    public void testParseProviderList() {
-        ContentResolver r = getContext().getContentResolver();
-
-        // We only accept "+value" and "-value"
-        // Test adding a value
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "+test1");
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test1"));
-
-        // Test adding a second value
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "+test2");
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test1"));
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test2"));
-
-        // Test adding a third value
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "+test3");
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test1"));
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test2"));
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test3"));
-
-        // Test deleting the first value in a 3 item list
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "-test1");
-        assertFalse(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test1"));
-
-        // Test deleting the middle value in a 3 item list
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "+test4");
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test2"));
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test3"));
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test4"));
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "-test3");
-        assertFalse(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test3"));
-
-        // Test deleting the last value in a 3 item list
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "+test5");
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test2"));
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test4"));
-        assertTrue(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test5"));
-        Settings.Secure.putString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, "-test5");
-        assertFalse(Settings.Secure.getString(r, Settings.Secure.LOCATION_PROVIDERS_ALLOWED)
-                .contains("test5"));
-     }
-
     private boolean findUser(UserManager um, int userHandle) {
         for (UserInfo user : um.getUsers()) {
             if (user.id == userHandle) {
@@ -401,27 +345,33 @@ public class SettingsProviderTest extends AndroidTestCase {
         try {
             // value is empty
             Bundle results =
-                    r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_GET_CONFIG, name, null);
+                    r.call(Settings.Config.CONTENT_URI,
+                           Settings.CALL_METHOD_GET_CONFIG, name, null);
             assertNull(results.get(Settings.NameValueTable.VALUE));
 
             // save value
-            results = r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, name, args);
+            results = r.call(Settings.Config.CONTENT_URI,
+                             Settings.CALL_METHOD_PUT_CONFIG, name, args);
             assertNull(results);
 
             // value is no longer empty
-            results = r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_GET_CONFIG, name, null);
+            results = r.call(Settings.Config.CONTENT_URI,
+                             Settings.CALL_METHOD_GET_CONFIG, name, null);
             assertEquals(value, results.get(Settings.NameValueTable.VALUE));
 
             // save new value
             args.putString(Settings.NameValueTable.VALUE, newValue);
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, name, args);
+            r.call(Settings.Config.CONTENT_URI,
+                    Settings.CALL_METHOD_PUT_CONFIG, name, args);
 
             // new value is returned
-            results = r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_GET_CONFIG, name, null);
+            results = r.call(Settings.Config.CONTENT_URI,
+                             Settings.CALL_METHOD_GET_CONFIG, name, null);
             assertEquals(newValue, results.get(Settings.NameValueTable.VALUE));
         } finally {
             // clean up
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, name, null);
+            r.call(Settings.Config.CONTENT_URI,
+                    Settings.CALL_METHOD_DELETE_CONFIG, name, null);
         }
     }
 
@@ -435,23 +385,25 @@ public class SettingsProviderTest extends AndroidTestCase {
 
         try {
             // save value
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, name, args);
+            r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, name, args);
 
             // get value
             Bundle results =
-                    r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_GET_CONFIG, name, null);
+                    r.call(Settings.Config.CONTENT_URI,
+                            Settings.CALL_METHOD_GET_CONFIG, name, null);
             assertEquals(value, results.get(Settings.NameValueTable.VALUE));
 
             // delete value
-            results = r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, name,
+            results = r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, name,
                     null);
 
             // value is empty now
-            results = r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_GET_CONFIG, name, null);
+            results = r.call(Settings.Config.CONTENT_URI,
+                            Settings.CALL_METHOD_GET_CONFIG, name, null);
             assertNull(results.get(Settings.NameValueTable.VALUE));
         } finally {
             // clean up
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, name, null);
+            r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, name, null);
         }
     }
 
@@ -469,12 +421,12 @@ public class SettingsProviderTest extends AndroidTestCase {
 
         try {
             // save both values
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, name, args);
+            r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, name, args);
             args.putString(Settings.NameValueTable.VALUE, newValue);
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, newName, args);
+            r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_PUT_CONFIG, newName, args);
 
             // list all values
-            Bundle result = r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_LIST_CONFIG,
+            Bundle result = r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_LIST_CONFIG,
                     null, null);
             Map<String, String> keyValueMap =
                     (HashMap) result.getSerializable(Settings.NameValueTable.VALUE);
@@ -484,14 +436,15 @@ public class SettingsProviderTest extends AndroidTestCase {
 
             // list values for prefix
             args.putString(Settings.CALL_METHOD_PREFIX_KEY, prefix);
-            result = r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_LIST_CONFIG, null, args);
+            result = r.call(Settings.Config.CONTENT_URI,
+                            Settings.CALL_METHOD_LIST_CONFIG, null, args);
             keyValueMap = (HashMap) result.getSerializable(Settings.NameValueTable.VALUE);
             assertThat(keyValueMap, aMapWithSize(1));
             assertEquals(value, keyValueMap.get(name));
         } finally {
             // clean up
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, name, null);
-            r.call(DeviceConfig.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, newName, null);
+            r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, name, null);
+            r.call(Settings.Config.CONTENT_URI, Settings.CALL_METHOD_DELETE_CONFIG, newName, null);
         }
     }
 }

@@ -40,6 +40,8 @@ public class PackageManagerServiceCompilerMapping {
         "bg-dexopt",
         "ab-ota",
         "inactive",
+        "cmdline",
+        "boot-after-mainline-update",
         // "shared" must be the last entry
         "shared"
     };
@@ -141,9 +143,6 @@ public class PackageManagerServiceCompilerMapping {
     }
 
     public static String getReasonName(int reason) {
-        if (reason == PackageManagerService.REASON_UNKNOWN) {
-            return "unknown";
-        }
         if (reason < 0 || reason >= REASON_STRINGS.length) {
             throw new IllegalArgumentException("reason " + reason + " invalid");
         }

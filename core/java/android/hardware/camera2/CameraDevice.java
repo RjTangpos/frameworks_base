@@ -20,6 +20,7 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
+import android.hardware.camera2.params.ExtensionSessionConfiguration;
 import android.hardware.camera2.params.InputConfiguration;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
@@ -140,7 +141,7 @@ public abstract class CameraDevice implements AutoCloseable {
      * parameters. All automatic control is disabled (auto-exposure, auto-white
      * balance, auto-focus), and post-processing parameters are set to preview
      * quality. The manual capture parameters (exposure, sensitivity, and so on)
-     * are set to reasonable defaults, but should be overriden by the
+     * are set to reasonable defaults, but should be overridden by the
      * application depending on the intended use case.
      * This template is guaranteed to be supported on camera devices that support the
      * {@link CameraMetadata#REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR MANUAL_SENSOR}
@@ -282,7 +283,8 @@ public abstract class CameraDevice implements AutoCloseable {
      * @see StreamConfigurationMap#getInputFormats
      * @see StreamConfigurationMap#getInputSizes
      * @see StreamConfigurationMap#getValidOutputFormatsForInput
-     * @see StreamConfigurationMap#getOutputSizes
+     * @see StreamConfigurationMap#getOutputSizes(int)
+     * @see StreamConfigurationMap#getOutputSizes(Class)
      * @see android.media.ImageWriter
      * @see android.media.ImageReader
      * @deprecated Please use {@link
@@ -349,6 +351,72 @@ public abstract class CameraDevice implements AutoCloseable {
             @NonNull CameraCaptureSession.StateCallback callback,
             @Nullable Handler handler)
             throws CameraAccessException;
+
+    /**
+     * Initialize a specific device-specific extension augmented camera capture
+     * session.
+     *
+     * <p>Extension sessions can be used to enable device-specific operation modes like
+     * {@link CameraExtensionCharacteristics#EXTENSION_NIGHT} or
+     * {@link CameraExtensionCharacteristics#EXTENSION_HDR}. These modes are less flexible than the
+     * full camera API, but enable access to more sophisticated processing algorithms that can
+     * capture multi-frame bursts to generate single output images. To query for available
+     * extensions on this device call
+     * {@link CameraExtensionCharacteristics#getSupportedExtensions()}.</p>
+     *
+     * <p>This method will also trigger the setup of the internal
+     * processing pipeline for extension augmented preview and multi-frame
+     * still capture.</p>
+     *
+     * <p>If a prior CameraCaptureSession already exists when this method is called, the previous
+     * session will no longer be able to accept new capture requests and will be closed. Any
+     * in-progress capture requests made on the prior session will be completed before it's closed.
+     * </p>
+     *
+     * <p>The CameraExtensionSession will be active until the client
+     * either calls CameraExtensionSession.close() or creates a new camera
+     * capture session. In both cases all internal resources will be
+     * released, continuous repeating requests stopped and any pending
+     * multi-frame capture requests flushed.</p>
+     *
+     * <p>Note that the CameraExtensionSession currently supports at most wo
+     * multi frame capture surface formats: ImageFormat.JPEG will be supported
+     * by all extensions and ImageFormat.YUV_420_888 may or may not be supported.
+     * Clients must query the multi-frame capture format support using
+     * {@link CameraExtensionCharacteristics#getExtensionSupportedSizes(int, int)}.
+     * For repeating requests CameraExtensionSession supports only
+     * {@link android.graphics.SurfaceTexture} as output. Clients can query the supported resolution
+     * for the repeating request output using
+     * {@link CameraExtensionCharacteristics#getExtensionSupportedSizes(int, Class)
+     * getExtensionSupportedSizes(..., Class)}.</p>
+     *
+     * <p>At the very minimum the initialization expects either one valid output
+     * surface for repeating or one valid output for high-quality single requests registered in the
+     * outputs argument of the extension configuration argument. At the maximum the initialization
+     * will accept two valid output surfaces, one for repeating and the other for single requests.
+     * Additional unsupported surfaces passed to ExtensionSessionConfiguration will cause an
+     * {@link IllegalArgumentException} to be thrown.</p>
+     *
+     * @param extensionConfiguration extension configuration
+     * @throws IllegalArgumentException If both the preview and still
+     *                                  capture surfaces are not set or invalid, or if any of the
+     *                                  registered surfaces do not meet the device-specific
+     *                                  extension requirements such as dimensions and/or
+     *                                  (output format)/(surface type), or if the extension is not
+     *                                  supported, or if any of the output configurations select
+     *                                  a dynamic range different from
+     *                                  {@link android.hardware.camera2.params.DynamicRangeProfiles#STANDARD},
+     *                                  or if any of the output configurations sets a stream use
+     *                                  case different from {@link
+     *                                  android.hardware.camera2.CameraCharacteristics#SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT}.
+     * @see CameraExtensionCharacteristics#getSupportedExtensions
+     * @see CameraExtensionCharacteristics#getExtensionSupportedSizes
+     */
+    public void createExtensionSession(
+            @NonNull ExtensionSessionConfiguration extensionConfiguration)
+            throws CameraAccessException {
+        throw new UnsupportedOperationException("No default implementation");
+    }
 
     /**
      * Standard camera operation mode.
@@ -565,12 +633,14 @@ public abstract class CameraDevice implements AutoCloseable {
      * <style scoped>
      *  #rb { border-right-width: thick; }
      * </style>
+     *
+     * <h5>LEGACY-level guaranteed configurations</h5>
+     *
      * <p>Legacy devices ({@link CameraCharacteristics#INFO_SUPPORTED_HARDWARE_LEVEL}
      * {@code == }{@link CameraMetadata#INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY LEGACY}) support at
      * least the following stream combinations:
      *
      * <table>
-     * <tr><th colspan="7">LEGACY-level guaranteed configurations</th></tr>
      * <tr> <th colspan="2" id="rb">Target 1</th> <th colspan="2" id="rb">Target 2</th>  <th colspan="2" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
      * <tr> <th>Type</th><th id="rb">Max size</th> <th>Type</th><th id="rb">Max size</th> <th>Type</th><th id="rb">Max size</th></tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code MAXIMUM}</td> <td colspan="2" id="rb"></td> <td colspan="2" id="rb"></td> <td>Simple preview, GPU video processing, or no-preview video recording.</td> </tr>
@@ -584,13 +654,14 @@ public abstract class CameraDevice implements AutoCloseable {
      * </table><br>
      * </p>
      *
+     * <h5>LIMITED-level additional guaranteed configurations</h5>
+     *
      * <p>Limited-level ({@link CameraCharacteristics#INFO_SUPPORTED_HARDWARE_LEVEL}
      * {@code == }{@link CameraMetadata#INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED LIMITED}) devices
      * support at least the following stream combinations in addition to those for
      * {@link CameraMetadata#INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY LEGACY} devices:
      *
      * <table>
-     * <tr><th colspan="7">LIMITED-level additional guaranteed configurations</th></tr>
      * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
      * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th></tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV}</td><td id="rb">{@code RECORD }</td> <td colspan="2" id="rb"></td> <td>High-resolution video recording with preview.</td> </tr>
@@ -602,23 +673,26 @@ public abstract class CameraDevice implements AutoCloseable {
      * </table><br>
      * </p>
      *
+     * <h5>FULL-level additional guaranteed configurations</h5>
+     *
      * <p>FULL-level ({@link CameraCharacteristics#INFO_SUPPORTED_HARDWARE_LEVEL}
      * {@code == }{@link CameraMetadata#INFO_SUPPORTED_HARDWARE_LEVEL_FULL FULL}) devices
      * support at least the following stream combinations in addition to those for
      * {@link CameraMetadata#INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED LIMITED} devices:
      *
      * <table>
-     * <tr><th colspan="7">FULL-level additional guaranteed configurations</th></tr>
      * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
      * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th> </tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV}</td><td id="rb">{@code MAXIMUM}</td> <td colspan="2" id="rb"></td> <td>Maximum-resolution GPU processing with preview.</td> </tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td colspan="2" id="rb"></td> <td>Maximum-resolution in-app processing with preview.</td> </tr>
-     * <tr> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td colspan="2" id="rb"></td> <td>Maximum-resolution two-input in-app processsing.</td> </tr>
+     * <tr> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td colspan="2" id="rb"></td> <td>Maximum-resolution two-input in-app processing.</td> </tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MAXIMUM}</td> <td>Video recording with maximum-size video snapshot</td> </tr>
      * <tr> <td>{@code YUV }</td><td id="rb">{@code 640x480}</td> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td>Standard video recording plus maximum-resolution in-app processing.</td> </tr>
      * <tr> <td>{@code YUV }</td><td id="rb">{@code 640x480}</td> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td>Preview plus two-input maximum-resolution in-app processing.</td> </tr>
      * </table><br>
      * </p>
+     *
+     * <h5>RAW-capability additional guaranteed configurations</h5>
      *
      * <p>RAW-capability ({@link CameraCharacteristics#REQUEST_AVAILABLE_CAPABILITIES} includes
      * {@link CameraMetadata#REQUEST_AVAILABLE_CAPABILITIES_RAW RAW}) devices additionally support
@@ -627,7 +701,6 @@ public abstract class CameraDevice implements AutoCloseable {
      * {@link CameraMetadata#INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED LIMITED} devices:
      *
      * <table>
-     * <tr><th colspan="7">RAW-capability additional guaranteed configurations</th></tr>
      * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
      * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th> </tr>
      * <tr> <td>{@code RAW }</td><td id="rb">{@code MAXIMUM}</td> <td colspan="2" id="rb"></td> <td colspan="2" id="rb"></td> <td>No-preview DNG capture.</td> </tr>
@@ -641,6 +714,8 @@ public abstract class CameraDevice implements AutoCloseable {
      * </table><br>
      * </p>
      *
+     * <h5>BURST-capability additional guaranteed configurations</h5>
+     *
      * <p>BURST-capability ({@link CameraCharacteristics#REQUEST_AVAILABLE_CAPABILITIES} includes
      * {@link CameraMetadata#REQUEST_AVAILABLE_CAPABILITIES_BURST_CAPTURE BURST_CAPTURE}) devices
      * support at least the below stream combinations in addition to those for
@@ -650,14 +725,15 @@ public abstract class CameraDevice implements AutoCloseable {
      * support the BURST_CAPTURE capability.
      *
      * <table>
-     * <tr><th colspan="5">BURST-capability additional guaranteed configurations</th></tr>
      * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th rowspan="2">Sample use case(s)</th> </tr>
      * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th> </tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV}</td><td id="rb">{@code MAXIMUM}</td> <td>Maximum-resolution GPU processing with preview.</td> </tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td>Maximum-resolution in-app processing with preview.</td> </tr>
-     * <tr> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td>Maximum-resolution two-input in-app processsing.</td> </tr>
+     * <tr> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM}</td> <td>Maximum-resolution two-input in-app processing.</td> </tr>
      * </table><br>
      * </p>
+     *
+     * <h5>LEVEL-3 additional guaranteed configurations</h5>
      *
      * <p>LEVEL-3 ({@link CameraCharacteristics#INFO_SUPPORTED_HARDWARE_LEVEL}
      * {@code == }{@link CameraMetadata#INFO_SUPPORTED_HARDWARE_LEVEL_3 LEVEL_3})
@@ -667,7 +743,6 @@ public abstract class CameraDevice implements AutoCloseable {
      * {@link CameraMetadata#REQUEST_AVAILABLE_CAPABILITIES_RAW RAW}):
      *
      * <table>
-     * <tr><th colspan="11">LEVEL-3 additional guaranteed configurations</th></tr>
      * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th><th colspan="2" id="rb">Target 4</th><th rowspan="2">Sample use case(s)</th> </tr>
      * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th> </tr>
      * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV}</td><td id="rb">{@code 640x480}</td> <td>{@code YUV}</td><td id="rb">{@code MAXIMUM}</td> <td>{@code RAW}</td><td id="rb">{@code MAXIMUM}</td> <td>In-app viewfinder analysis with dynamic selection of output format.</td> </tr>
@@ -675,14 +750,17 @@ public abstract class CameraDevice implements AutoCloseable {
      * </table><br>
      * </p>
      *
-     *<p>BACKWARD_COMPATIBLE devices capable of streaming concurrently with other devices as described by
-     * {@link android.hardware.camera2.CameraManager#getConcurrentCameraIds} have the
+     * <h5>Concurrent stream guaranteed configurations</h5>
+     *
+     * <p>BACKWARD_COMPATIBLE devices capable of streaming concurrently with other devices as
+     * described by {@link android.hardware.camera2.CameraManager#getConcurrentCameraIds} have the
      * following guaranteed streams (when streaming concurrently with other devices)</p>
+     *
      * <p> Note: The sizes mentioned for these concurrent streams are the maximum sizes guaranteed
      * to be supported. Sizes smaller than these, obtained by {@link StreamConfigurationMap#getOutputSizes} for a particular format, are supported as well. </p>
      *
+     * <p>
      * <table>
-     * <tr><th colspan="5">Concurrent stream guaranteed configurations</th></tr>
      * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th rowspan="2">Sample use case(s)</th> </tr>
      * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th> </tr>
      * <tr> <td>{@code YUV}</td><td id="rb">{@code s1440p}</td>  <td colspan="2" id="rb"></td> <td>In-app video / image processing.</td> </tr>
@@ -708,6 +786,8 @@ public abstract class CameraDevice implements AutoCloseable {
      * streams with {@code Y8} in all guaranteed stream combinations for the device's hardware level
      * and capabilities.</p>
      *
+     * <p>Clients can access the above mandatory stream combination tables via
+     * {@link android.hardware.camera2.params.MandatoryStreamCombination}.</p>
      *
      * <p>Devices capable of outputting HEIC formats ({@link StreamConfigurationMap#getOutputFormats}
      * contains {@link android.graphics.ImageFormat#HEIC}) will support substituting {@code JPEG}
@@ -715,8 +795,183 @@ public abstract class CameraDevice implements AutoCloseable {
      * level and capabilities. Calling createCaptureSession with both JPEG and HEIC outputs is not
      * supported.</p>
      *
-     * <p>Clients can access the above mandatory stream combination tables via
-     * {@link android.hardware.camera2.params.MandatoryStreamCombination}.</p>
+     * <h5>LEGACY-level additional guaranteed combinations with multi-resolution outputs</h5>
+     *
+     * <p>Devices capable of multi-resolution output for a particular format (
+     * {@link android.hardware.camera2.params.MultiResolutionStreamConfigurationMap#getOutputInfo}
+     * returns a non-empty list) support using {@link MultiResolutionImageReader} for MAXIMUM
+     * resolution streams of that format for all mandatory stream combinations. For example,
+     * if a LIMITED camera device supports multi-resolution output streams for both {@code JPEG} and
+     * {@code PRIVATE}, in addition to the stream configurations
+     * in the LIMITED and Legacy table above, the camera device supports the following guaranteed
+     * stream combinations ({@code MULTI_RES} in the Max size column refers to a {@link
+     * MultiResolutionImageReader} created based on the variable max resolutions supported):
+     *
+     * <table>
+     * <tr> <th colspan="2" id="rb">Target 1</th> <th colspan="2" id="rb">Target 2</th>  <th colspan="2" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr> <th>Type</th><th id="rb">Max size</th> <th>Type</th><th id="rb">Max size</th> <th>Type</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code MULTI_RES}</td> <td colspan="2" id="rb"></td> <td colspan="2" id="rb"></td> <td>Simple preview, GPU video processing, or no-preview video recording.</td> </tr>
+     * <tr> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td colspan="2" id="rb"></td> <td colspan="2" id="rb"></td> <td>No-viewfinder still image capture.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td colspan="2" id="rb"></td> <td>Standard still imaging.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td>Still capture plus in-app processing.</td> </tr>
+     * </table><br>
+     * </p>
+     *
+     * <h5>LIMITED-level additional guaranteed configurations with multi-resolution outputs</h5>
+     *
+     * <p>
+     * <table>
+     * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td>Two-input in-app processing with still capture.</td> </tr>
+     * </table><br>
+     * The same logic applies to other hardware levels and capabilities.
+     * </p>
+     *
+     * <h5>Additional guaranteed combinations for ULTRA_HIGH_RESOLUTION sensors</h5>
+     *
+     * <p> Devices with the ULTRA_HIGH_RESOLUTION_SENSOR capability have some additional guarantees
+     * which clients can take advantage of:
+     *
+     * <table>
+     * <tr> <th colspan="3" id="rb">Target 1</th> <th colspan="3" id="rb">Target 2</th>  <th colspan="3" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr> <th>Type</th><th id="rb"> SC Map</th><th id="rb">Max size</th> <th>Type</th><th id="rb"> SC Map</th><th id="rb">Max size</th> <th>Type</th><th id="rb"> SC Map</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code YUV / JPEG / RAW}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td id="rb">{@code PRIV / YUV}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code PREVIEW}</td><td colspan="3" id="rb"></td> <td>Ultra high res still image capture with preview</td> </tr>
+     * <tr> <td>{@code YUV / JPEG / RAW}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td id="rb">{@code PRIV}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PRIV / YUV}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code RECORD}</td> <td>Ultra high res still capture with preview + app based RECORD size analysis</td> </tr>
+     * <tr> <td>{@code YUV / JPEG / RAW}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td id="rb">{@code PRIV}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code JPEG / YUV / RAW}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code MAX}</td> <td>Ultra high res still image capture with preview + default sensor pixel mode analysis stream</td> </tr>
+     * </table><br>
+     * </p>
+     *
+     * <p> Here, SC Map, refers to the {@link StreamConfigurationMap}, the target stream sizes must
+     * be chosen from. {@code DEFAULT} refers to the default sensor pixel mode {@link
+     * StreamConfigurationMap} and {@code MAX_RES} refers to the maximum resolution {@link
+     * StreamConfigurationMap}. For {@code MAX_RES} streams, {@code MAX} in the {@code Max size} column refers to the maximum size from
+     * {@link StreamConfigurationMap#getOutputSizes} and {@link StreamConfigurationMap#getHighResolutionOutputSizes}.
+     * Note: The same capture request must not mix targets from
+     * {@link StreamConfigurationMap}s corresponding to different sensor pixel modes. </p>
+     *
+     * <h5>10-bit output additional guaranteed configurations</h5>
+     *
+     * <p>10-bit output capable
+     * {@link CameraMetadata#REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT}
+     * devices support at least the following stream combinations:
+     *
+     * <table>
+     * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code MAXIMUM}</td> </td> <td colspan="4" id="rb"></td> <td>Simple preview, GPU video processing, or no-preview video recording.</td> </tr>
+     * <tr> <td>{@code YUV}</td><td id="rb">{@code MAXIMUM}</td> </td> <td colspan="4" id="rb"></td> <td>In-application video/image processing.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MAXIMUM }</td> <td colspan="2" id="rb"></td> <td>Standard still imaging.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV }</td><td id="rb">{@code MAXIMUM }</td> <td colspan="2" id="rb"></td> <td>Maximum-resolution in-app processing with preview.</td> </tr>
+     * <tr> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV}</td><td id="rb">{@code MAXIMUM }</td> <td colspan="2" id="rb"></td> <td>Maximum-resolution two-input in-app processing.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV}</td><td id="rb">{@code RECORD }</td> <td colspan="2" id="rb"></td> <td>High-resolution video recording with preview.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV}</td><td id="rb">{@code RECORD }</td> <td>{@code YUV}</td><td id="rb">{@code RECORD }</td> <td>High-resolution recording with in-app snapshot.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV }</td><td id="rb">{@code RECORD }</td> <td>{@code JPEG}</td><td id="rb">{@code RECORD }</td> <td>High-resolution recording with video snapshot.</td> </tr>
+     * </table><br>
+     * </p>
+     *
+     * <p>Here PRIV can be either 8 or 10-bit {@link android.graphics.ImageFormat#PRIVATE} pixel
+     * format. YUV can be either {@link android.graphics.ImageFormat#YUV_420_888} or
+     * {@link android.graphics.ImageFormat#YCBCR_P010}.
+     * For the maximum size column, PREVIEW refers to the best size match to the device's screen
+     * resolution, or to 1080p (1920x1080), whichever is smaller. RECORD refers to the camera
+     * device's maximum supported recording resolution, as determined by
+     * {@link android.media.CamcorderProfile}. MAXIMUM refers to the camera device's maximum output
+     * resolution for that format or target from {@link StreamConfigurationMap#getOutputSizes(int)}.
+     * Do note that invalid combinations such as having a camera surface configured to use pixel
+     * format {@link android.graphics.ImageFormat#YUV_420_888} with a 10-bit profile
+     * will cause a capture session initialization failure.
+     * </p>
+     * <p>{@link android.graphics.ImageFormat#JPEG_R} may also be supported if advertised by
+     * {@link android.hardware.camera2.params.StreamConfigurationMap}. When initializing a capture
+     * session that includes a Jpeg/R camera output clients must consider the following items w.r.t.
+     * the 10-bit mandatory stream combination table:
+     *
+     * <ul>
+     *     <li>To generate the compressed Jpeg/R image a single
+     *     {@link android.graphics.ImageFormat#YCBCR_P010} output will be used internally by
+     *     the camera device.</li>
+     *     <li>On camera devices that are able to support concurrent 10 and 8-bit capture requests
+     *     see {@link android.hardware.camera2.params.DynamicRangeProfiles#getProfileCaptureRequestConstraints}
+     *     an extra {@link android.graphics.ImageFormat#JPEG} will also
+     *     be configured internally to help speed up the encoding process.</li>
+     * </ul>
+     *
+     * Jpeg/R camera outputs will typically be able to support the MAXIMUM device resolution.
+     * Clients can also call {@link StreamConfigurationMap#getOutputSizes(int)} for a complete list
+     * supported sizes.
+     * Camera clients that register a Jpeg/R output within a stream combination that doesn't fit
+     * in the mandatory stream table above can call
+     * {@link CameraDevice#isSessionConfigurationSupported} to ensure that this particular
+     * configuration is supported.</p>
+     *
+     * <h5>STREAM_USE_CASE capability additional guaranteed configurations</h5>
+     *
+     * <p>Devices with the STREAM_USE_CASE capability ({@link
+     * CameraCharacteristics#REQUEST_AVAILABLE_CAPABILITIES} includes {@link
+     * CameraCharacteristics#REQUEST_AVAILABLE_CAPABILITIES_STREAM_USE_CASE}) support below additional
+     * stream combinations:
+     *
+     * <table>
+     * <tr><th colspan="3" id="rb">Target 1</th><th colspan="3" id="rb">Target 2</th><th colspan="3" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr><th>Type</th><th id="rb">Max size</th><th>Usecase</th><th>Type</th><th id="rb">Max size</th><th>Usecase</th><th>Type</th><th id="rb">Max size</th><th>Usecase</th> </tr>
+     * <tr> <td>{@code YUV / PRIV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td colspan="3" id="rb"></td> <td colspan="3" id="rb"></td> <td>Simple preview or in-app image processing</td> </tr>
+     * <tr> <td>{@code YUV / PRIV}</td><td id="rb">{@code RECORD}</td><td id="rb">{@code VIDEO_RECORD}</td> <td colspan="3" id="rb"></td> <td colspan="3" id="rb"></td> <td>Simple video recording or in-app video processing</td> </tr>
+     * <tr> <td>{@code YUV / JPEG}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code STILL_CAPTURE}</td> <td colspan="3" id="rb"></td> <td colspan="3" id="rb"></td> <td>Simple JPEG or YUV still image capture</td> </tr>
+     * <tr> <td>{@code YUV / PRIV}</td><td id="rb">{@code s1440p}</td><td id="rb">{@code PREVIEW_VIDEO_STILL}</td> <td colspan="3" id="rb"></td> <td colspan="3" id="rb"></td> <td>Multi-purpose stream for preview, video and still image capture</td> </tr>
+     * <tr> <td>{@code YUV / PRIV}</td><td id="rb">{@code s1440p}</td><td id="rb">{@code VIDEO_CALL}</td> <td colspan="3" id="rb"></td> <td colspan="3" id="rb"></td> <td>Simple video call</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV / JPEG}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code STILL_CAPTURE}</td> <td colspan="3" id="rb"></td> <td>Preview with JPEG or YUV still image capture</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV / PRIV}</td><td id="rb">{@code RECORD}</td><td id="rb">{@code VIDEO_RECORD}</td> <td colspan="3" id="rb"></td> <td>Preview with video recording or in-app video processing</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td colspan="3" id="rb"></td> <td>Preview with in-application image processing</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV / PRIV}</td><td id="rb">{@code s1440p}</td><td id="rb">{@code VIDEO_CALL}</td> <td colspan="3" id="rb"></td> <td>Preview with video call</td> </tr>
+     * <tr> <td>{@code YUV / PRIV}</td><td id="rb">{@code s1440p}</td><td id="rb">{@code PREVIEW_VIDEO_STILL}</td> <td>{@code YUV / JPEG}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code STILL_CAPTURE}</td> <td colspan="3" id="rb"></td> <td>MultI-purpose stream with JPEG or YUV still capture</td> </tr>
+     * <tr> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code STILL_CAPTURE}</td> <td>{@code JPEG}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code STILL_CAPTURE}</td> <td colspan="3" id="rb"></td> <td>YUV and JPEG concurrent still image capture (for testing)</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV / PRIV}</td><td id="rb">{@code RECORD}</td><td id="rb">{@code VIDEO_RECORD}</td> <td>{@code JPEG}</td><td id="rb">{@code RECORD}</td><td id="rb">{@code STILL_CAPTURE}</td> <td>Preview, video record and JPEG video snapshot</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code STILL_CAPTURE}</td> <td>Preview, in-application image processing, and JPEG still image capture</td> </tr>
+     * </table><br>
+     * </p>
+     *
+     * <h5>STREAM_USE_CASE_CROPPED_RAW capability additional guaranteed configurations</h5>
+     *
+     * <p>Devices that include the {@link CameraMetadata#SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW}
+     * stream use-case in {@link CameraCharacteristics#SCALER_AVAILABLE_STREAM_USE_CASES},
+     * support the additional stream combinations below:
+     *
+     * <table>
+     * <tr><th colspan="3" id="rb">Target 1</th><th colspan="3" id="rb">Target 2</th><th colspan="3" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr><th>Type</th><th id="rb">Max size</th><th>Usecase</th><th>Type</th><th id="rb">Max size</th><th>Usecase</th><th>Type</th><th id="rb">Max size</th><th>Usecase</th> </tr>
+     * <tr> <td>{@code RAW}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code CROPPED_RAW}</td> <td colspan="3" id="rb"></td> <td colspan="3" id="rb"></td> <td>Cropped RAW still capture without preview</td> </tr>
+     * <tr> <td>{@code PRIV / YUV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code RAW}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code CROPPED_RAW}</td> <td colspan="3" id="rb"></td> <td>Preview with cropped RAW still capture</td> </tr>
+     * <tr> <td>{@code PRIV / YUV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV / JPEG}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code STILL_CAPTURE}</td> <td>{@code RAW}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code CROPPED_RAW}</td> <td>Preview with YUV / JPEG and cropped RAW still capture</td> </tr>
+     * <tr> <td>{@code PRIV / YUV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV / YUV}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code VIDEO_RECORD / PREVIEW}</td> <td>{@code RAW}</td><td id="rb">{@code MAXIMUM}</td><td id="rb">{@code CROPPED_RAW}</td> <td>Video recording with preview and cropped RAW still capture</td> </tr>
+     * </table><br>
+     * </p>
+     *
+     * <h5>Preview stabilization guaranteed stream configurations</h5>
+     *
+     * <p>For devices where
+     * {@link CameraCharacteristics#CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES} includes
+     * {@link CameraMetadata#CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION},
+     * the following stream combinations are guaranteed,
+     * for CaptureRequests where {@link CaptureRequest#CONTROL_VIDEO_STABILIZATION_MODE} is set to
+     * {@link CameraMetadata#CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION}
+     *
+     * <table>
+     * <tr><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code PRIV / YUV}</td><td id="rb">{@code s1440p}</td><td colspan="2" id="rb"></td> <td>Stabilized preview, GPU video processing, or no-preview stabilized video recording.</td> </tr>
+     * <tr> <td>{@code PRIV / YUV}</td><td id="rb">{@code s1440p}</td> <td>{@code JPEG / YUV}</td><td id="rb">{@code MAXIMUM }</td><td>Standard still imaging with stabilized preview.</td> </tr>
+     * <tr> <td>{@code PRIV / YUV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code PRIV / YUV}</td><td id="rb">{@code s1440p }</td><td>High-resolution recording with stabilized preview and recording stream.</td> </tr>
+     * </table><br>
+     * </p>
+     *
+     * <p>
+     * For the maximum size column, PREVIEW refers to the best size match to the device's screen
+     * resolution, or to 1080p (1920x1080), whichever is smaller. RECORD refers to the camera
+     * device's maximum supported recording resolution, as determined by
+     * {@link android.media.CamcorderProfile}. MAXIMUM refers to the camera device's maximum output
+     * resolution for that format or target from {@link StreamConfigurationMap#getOutputSizes(int)}.
+     * </p>
      *
      * <p>Since the capabilities of camera devices vary greatly, a given camera device may support
      * target combinations with sizes outside of these guarantees, but this can only be tested for
@@ -801,6 +1056,13 @@ public abstract class CameraDevice implements AutoCloseable {
      * guaranteed output targets that can be submitted in a regular or reprocess
      * {@link CaptureRequest} simultaneously.</p>
      *
+     * <p>Reprocessing with 10-bit output targets on 10-bit capable
+     * {@link CameraCharacteristics#REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT} devices is
+     * not supported. Trying to initialize a repreocessable capture session with one ore more
+     * output configurations set {@link OutputConfiguration#setDynamicRangeProfile} to use
+     * a 10-bit dynamic range profile {@link android.hardware.camera2.params.DynamicRangeProfiles}
+     * will trigger {@link IllegalArgumentException}.</p>
+     *
      * <style scoped>
      *  #rb { border-right-width: thick; }
      * </style>
@@ -877,6 +1139,42 @@ public abstract class CameraDevice implements AutoCloseable {
      * </table><br>
      * </p>
      *
+     * <p>If a camera device supports multi-resolution {@code YUV} input and multi-resolution
+     * {@code YUV} output or supports multi-resolution {@code PRIVATE} input and multi-resolution
+     * {@code PRIVATE} output, the additional mandatory stream combinations for LIMITED and FULL devices are listed
+     * below ({@code MULTI_RES} in the Max size column refers to a
+     * {@link MultiResolutionImageReader} for output, and a multi-resolution
+     * {@link InputConfiguration} for input):
+     * <table>
+     * <tr><th colspan="11">LIMITED-level additional guaranteed configurations for creating a reprocessable capture session with multi-resolution input and multi-resolution outputs<br>({@code PRIV} input is guaranteed only if PRIVATE reprocessing is supported. {@code YUV} input is guaranteed only if YUV reprocessing is supported)</th></tr>
+     * <tr><th colspan="2" id="rb">Input</th><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th><th colspan="2" id="rb">Target 4</th><th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code PRIV}/{@code YUV}</td><td id="rb">{@code MULTI_RES}</td> <td>Same as input</td><td id="rb">{@code MULTI_RES}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td></td><td id="rb"></td> <td></td><td id="rb"></td> <td>No-viewfinder still image reprocessing.</td> </tr>
+     * <tr> <td>{@code PRIV}/{@code YUV}</td><td id="rb">{@code MULTI_RES}</td> <td>Same as input</td><td id="rb">{@code MULTI_RES}</td> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td></td><td id="rb"></td> <td>ZSL(Zero-Shutter-Lag) still imaging.</td> </tr>
+     * <tr> <td>{@code PRIV}/{@code YUV}</td><td id="rb">{@code MULTI_RES}</td> <td>Same as input</td><td id="rb">{@code MULTI_RES}</td> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td></td><td id="rb"></td> <td>ZSL still and in-app processing imaging.</td> </tr>
+     * <tr> <td>{@code PRIV}/{@code YUV}</td><td id="rb">{@code MULTI_RES}</td> <td>Same as input</td><td id="rb">{@code MULTI_RES}</td> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td>ZSL in-app processing with still capture.</td> </tr>
+     * </table><br>
+     * <table>
+     * <tr><th colspan="11">FULL-level additional guaranteed configurations for creating a reprocessable capture session with multi-resolution input and multi-resolution outputs<br>({@code PRIV} input is guaranteed only if PRIVATE reprocessing is supported. {@code YUV} input is guaranteed only if YUV reprocessing is supported)</th></tr>
+     * <tr><th colspan="2" id="rb">Input</th><th colspan="2" id="rb">Target 1</th><th colspan="2" id="rb">Target 2</th><th colspan="2" id="rb">Target 3</th><th colspan="2" id="rb">Target 4</th><th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th><th>Type</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code MULTI_RES}</td> <td>{@code PRIV}</td><td id="rb">{@code MULTI_RES}</td> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV}</td><td id="rb">{@code MULTI_RES}</td> <td></td><td id="rb"></td> <td>Maximum-resolution ZSL in-app processing with regular preview.</td> </tr>
+     * <tr> <td>{@code PRIV}</td><td id="rb">{@code MULTI_RES}</td> <td>{@code PRIV}</td><td id="rb">{@code MULTI_RES}</td> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV}</td><td id="rb">{@code MULTI_RES}</td> <td></td><td id="rb"></td> <td>Maximum-resolution two-input ZSL in-app processing.</td> </tr>
+     * <tr> <td>{@code PRIV}/{@code YUV}</td><td id="rb">{@code MULTI_RES}</td> <td>Same as input</td><td id="rb">{@code MULTI_RES}</td> <td>{@code PRIV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code YUV}</td><td id="rb">{@code PREVIEW}</td> <td>{@code JPEG}</td><td id="rb">{@code MULTI_RES}</td> <td>ZSL still capture and in-app processing.</td> </tr>
+     * </table><br>
+     * <p> Devices with the ULTRA_HIGH_RESOLUTION_SENSOR capability have some additional guarantees
+     * which clients can take advantage of : </p>
+     * <table>
+     * <tr><th colspan="13">Additional guaranteed combinations for ULTRA_HIGH_RESOLUTION sensors (YUV / PRIV inputs are guaranteed only if YUV / PRIVATE reprocessing are supported)</th></tr>
+     * <tr> <th colspan="3" id="rb">Input</th> <th colspan="3" id="rb">Target 1</th> <th colspan="3" id="rb">Target 2</th>  <th colspan="3" id="rb">Target 3</th> <th rowspan="2">Sample use case(s)</th> </tr>
+     * <tr> <th>Type</th><th id="rb"> SC Map</th><th id="rb">Max size</th><th>Type</th><th id="rb"> SC Map</th><th id="rb">Max size</th> <th>Type</th><th id="rb"> SC Map</th><th id="rb">Max size</th> <th>Type</th><th id="rb"> SC Map</th><th id="rb">Max size</th></tr>
+     * <tr> <td>{@code RAW}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td>{@code RAW}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td id="rb">{@code PRIV / YUV}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code PREVIEW}</td><td colspan="3" id="rb"></td> <td>RAW remosaic reprocessing with separate preview</td> </tr>
+     * <tr> <td>{@code RAW}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td>{@code RAW}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td id="rb">{@code PRIV / YUV}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code JPEG / YUV}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td> <td>Ultra high res RAW -> JPEG / YUV with seperate preview</td> </tr>
+     * <tr> <td>{@code YUV / PRIV}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td> <td>{@code YUV / PRIV}</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td><td id="rb">{@code YUV / PRIV}</td><td id="rb">{@code DEFAULT}</td><td id="rb">{@code PREVIEW}</td><td id="rb">{@code JPEG }</td><td id="rb">{@code MAX_RES}</td><td id="rb">{@code MAX}</td> <td> Ultra high res PRIV / YUV -> YUV / JPEG reprocessing with seperate preview</td> </tr>
+     * </table><br>
+     * No additional mandatory stream combinations for RAW capability and LEVEL-3 hardware level.
+     * </p>
+     *
      * <h3>Constrained high-speed recording</h3>
      *
      * <p>The application can use a
@@ -941,13 +1239,17 @@ public abstract class CameraDevice implements AutoCloseable {
      *
      * @throws IllegalArgumentException In case the session configuration is invalid; or the output
      *                                  configurations are empty; or the session configuration
-     *                                  executor is invalid.
+     *                                  executor is invalid;
+     *                                  or the output dynamic range combination is
+     *                                  invalid/unsupported.
      * @throws CameraAccessException In case the camera device is no longer connected or has
      *                               encountered a fatal error.
      * @see #createCaptureSession(List, CameraCaptureSession.StateCallback, Handler)
      * @see #createCaptureSessionByOutputConfigurations
      * @see #createReprocessableCaptureSession
      * @see #createConstrainedHighSpeedCaptureSession
+     * @see OutputConfiguration#setDynamicRangeProfile
+     * @see android.hardware.camera2.params.DynamicRangeProfiles
      */
     public void createCaptureSession(
             SessionConfiguration config) throws CameraAccessException {
@@ -989,7 +1291,7 @@ public abstract class CameraDevice implements AutoCloseable {
      * settings by calling {@link CaptureRequest.Builder#setPhysicalCameraKey}.</p>
      *
      * <p>Individual physical camera settings will only be honored for camera session
-     * that was initialiazed with corresponding physical camera id output configuration
+     * that was initialized with corresponding physical camera id output configuration
      * {@link OutputConfiguration#setPhysicalCameraId} and the same output targets are
      * also attached in the request by {@link CaptureRequest.Builder#addTarget}.</p>
      *
@@ -1038,6 +1340,10 @@ public abstract class CameraDevice implements AutoCloseable {
      * optimal reprocess image quality. For camera devices that support only 1 output
      * {@link Surface}, submitting a reprocess {@link CaptureRequest} with multiple
      * output targets will result in a {@link CaptureFailure}.
+     *
+     * From Android 14 onward, {@link CaptureRequest#CONTROL_CAPTURE_INTENT} will be set to
+     * {@link CameraMetadata#CONTROL_CAPTURE_INTENT_STILL_CAPTURE} by default. Prior to Android 14,
+     * apps will need to explicitly set this key themselves.
      *
      * @param inputResult The capture result of the output image or one of the output images used
      *                       to generate the reprocess input image for this capture request.

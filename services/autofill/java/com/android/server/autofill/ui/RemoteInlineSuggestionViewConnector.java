@@ -54,27 +54,26 @@ final class RemoteInlineSuggestionViewConnector {
     @NonNull
     private final Runnable mOnErrorCallback;
     @NonNull
+    private final Runnable mOnInflateCallback;
+    @NonNull
     private final Consumer<IntentSender> mStartIntentSenderFromClientApp;
 
     RemoteInlineSuggestionViewConnector(
-            @Nullable RemoteInlineSuggestionRenderService remoteRenderService,
-            int userId, int sessionId,
+            @NonNull InlineFillUi.InlineFillUiInfo inlineFillUiInfo,
             @NonNull InlinePresentation inlinePresentation,
-            @Nullable IBinder hostInputToken,
-            int displayId,
             @NonNull Runnable onAutofillCallback,
-            @NonNull Runnable onErrorCallback,
-            @NonNull Consumer<IntentSender> startIntentSenderFromClientApp) {
-        mRemoteRenderService = remoteRenderService;
+            @NonNull InlineFillUi.InlineSuggestionUiCallback uiCallback) {
+        mRemoteRenderService = inlineFillUiInfo.mRemoteRenderService;
         mInlinePresentation = inlinePresentation;
-        mHostInputToken = hostInputToken;
-        mDisplayId = displayId;
-        mUserId = userId;
-        mSessionId = sessionId;
+        mHostInputToken = inlineFillUiInfo.mInlineRequest.getHostInputToken();
+        mDisplayId = inlineFillUiInfo.mInlineRequest.getHostDisplayId();
+        mUserId = inlineFillUiInfo.mUserId;
+        mSessionId = inlineFillUiInfo.mSessionId;
 
         mOnAutofillCallback = onAutofillCallback;
-        mOnErrorCallback = onErrorCallback;
-        mStartIntentSenderFromClientApp = startIntentSenderFromClientApp;
+        mOnErrorCallback = uiCallback::onError;
+        mOnInflateCallback = uiCallback::onInflate;
+        mStartIntentSenderFromClientApp = uiCallback::startIntentSender;
     }
 
     /**
@@ -105,6 +104,10 @@ final class RemoteInlineSuggestionViewConnector {
      */
     public void onError() {
         mOnErrorCallback.run();
+    }
+
+    public void onRender() {
+        mOnInflateCallback.run();
     }
 
     /**

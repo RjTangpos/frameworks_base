@@ -24,7 +24,6 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
-import android.hardware.camera2.legacy.LegacyCameraDevice;
 import android.hardware.camera2.utils.HashCodeHelpers;
 import android.hardware.camera2.utils.SurfaceUtils;
 import android.util.Range;
@@ -42,7 +41,7 @@ import java.util.Set;
  * {@link CameraCharacteristics#SCALER_STREAM_CONFIGURATION_MAP configurations} to set up
  * {@link android.view.Surface Surfaces} for creating a
  * {@link android.hardware.camera2.CameraCaptureSession capture session} with
- * {@link android.hardware.camera2.CameraDevice#createCaptureSession}.
+ * {@link android.hardware.camera2.CameraDevice#createCaptureSession(SessionConfiguration)}.
  * <!-- TODO: link to input stream configuration -->
  *
  * <p>This is the authoritative list for all <!-- input/ -->output formats (and sizes respectively
@@ -63,11 +62,13 @@ import java.util.Set;
  * }</code></pre>
  *
  * @see CameraCharacteristics#SCALER_STREAM_CONFIGURATION_MAP
- * @see CameraDevice#createCaptureSession
+ * @see CameraDevice#createCaptureSession(SessionConfiguration)
  */
 public final class StreamConfigurationMap {
 
     private static final String TAG = "StreamConfigurationMap";
+
+    private static final int MAX_DIMEN_FOR_ROUNDING = 1920; // maximum allowed width for rounding
 
     /**
      * Create a new {@link StreamConfigurationMap}.
@@ -94,6 +95,11 @@ public final class StreamConfigurationMap {
      *        {@link StreamConfigurationDuration}
      * @param heicStallDurations a non-{@code null} array of heic
      *        {@link StreamConfigurationDuration}
+     * @param jpegRConfigurations a non-{@code null} array of Jpeg/R {@link StreamConfiguration}
+     * @param jpegRMinFrameDurations a non-{@code null} array of Jpeg/R
+     *        {@link StreamConfigurationDuration}
+     * @param jpegRStallDurations a non-{@code null} array of Jpeg/R
+     *        {@link StreamConfigurationDuration}
      * @param highSpeedVideoConfigurations an array of {@link HighSpeedVideoConfiguration}, null if
      *        camera device does not support high speed video recording
      * @param listHighResolution a flag indicating whether the device supports BURST_CAPTURE
@@ -116,6 +122,9 @@ public final class StreamConfigurationMap {
             StreamConfiguration[] heicConfigurations,
             StreamConfigurationDuration[] heicMinFrameDurations,
             StreamConfigurationDuration[] heicStallDurations,
+            StreamConfiguration[] jpegRConfigurations,
+            StreamConfigurationDuration[] jpegRMinFrameDurations,
+            StreamConfigurationDuration[] jpegRStallDurations,
             HighSpeedVideoConfiguration[] highSpeedVideoConfigurations,
             ReprocessFormatsMap inputOutputFormatsMap,
             boolean listHighResolution) {
@@ -124,6 +133,7 @@ public final class StreamConfigurationMap {
                     dynamicDepthConfigurations, dynamicDepthMinFrameDurations,
                     dynamicDepthStallDurations,
                     heicConfigurations, heicMinFrameDurations, heicStallDurations,
+                    jpegRConfigurations, jpegRMinFrameDurations, jpegRStallDurations,
                     highSpeedVideoConfigurations, inputOutputFormatsMap, listHighResolution,
                     /*enforceImplementationDefined*/ true);
     }
@@ -153,6 +163,11 @@ public final class StreamConfigurationMap {
      *        {@link StreamConfigurationDuration}
      * @param heicStallDurations a non-{@code null} array of heic
      *        {@link StreamConfigurationDuration}
+     * @param jpegRConfigurations a non-{@code null} array of Jpeg/R {@link StreamConfiguration}
+     * @param jpegRMinFrameDurations a non-{@code null} array of Jpeg/R
+     *        {@link StreamConfigurationDuration}
+     * @param jpegRStallDurations a non-{@code null} array of Jpeg/R
+     *        {@link StreamConfigurationDuration}
      * @param highSpeedVideoConfigurations an array of {@link HighSpeedVideoConfiguration}, null if
      *        camera device does not support high speed video recording
      * @param listHighResolution a flag indicating whether the device supports BURST_CAPTURE
@@ -177,6 +192,9 @@ public final class StreamConfigurationMap {
             StreamConfiguration[] heicConfigurations,
             StreamConfigurationDuration[] heicMinFrameDurations,
             StreamConfigurationDuration[] heicStallDurations,
+            StreamConfiguration[] jpegRConfigurations,
+            StreamConfigurationDuration[] jpegRMinFrameDurations,
+            StreamConfigurationDuration[] jpegRStallDurations,
             HighSpeedVideoConfiguration[] highSpeedVideoConfigurations,
             ReprocessFormatsMap inputOutputFormatsMap,
             boolean listHighResolution,
@@ -241,6 +259,20 @@ public final class StreamConfigurationMap {
                     "heicStallDurations");
         }
 
+
+        if (jpegRConfigurations == null) {
+            mJpegRConfigurations = new StreamConfiguration[0];
+            mJpegRMinFrameDurations = new StreamConfigurationDuration[0];
+            mJpegRStallDurations = new StreamConfigurationDuration[0];
+        } else {
+            mJpegRConfigurations = checkArrayElementsNotNull(jpegRConfigurations,
+                    "jpegRConfigurations");
+            mJpegRMinFrameDurations = checkArrayElementsNotNull(jpegRMinFrameDurations,
+                    "jpegRFrameDurations");
+            mJpegRStallDurations = checkArrayElementsNotNull(jpegRStallDurations,
+                    "jpegRStallDurations");
+        }
+
         if (highSpeedVideoConfigurations == null) {
             mHighSpeedVideoConfigurations = new HighSpeedVideoConfiguration[0];
         } else {
@@ -302,6 +334,17 @@ public final class StreamConfigurationMap {
 
             mHeicOutputFormats.put(config.getFormat(),
                     mHeicOutputFormats.get(config.getFormat()) + 1);
+        }
+
+        // For each Jpeg/R format, track how many sizes there are available to configure
+        for (StreamConfiguration config : mJpegRConfigurations) {
+            if (!config.isOutput()) {
+                // Ignoring input Jpeg/R configs
+                continue;
+            }
+
+            mJpegROutputFormats.put(config.getFormat(),
+                    mJpegROutputFormats.get(config.getFormat()) + 1);
         }
 
         if (configurations != null && enforceImplementationDefined &&
@@ -413,7 +456,7 @@ public final class StreamConfigurationMap {
 
     /**
      * Determine whether or not output surfaces with a particular user-defined format can be passed
-     * {@link CameraDevice#createCaptureSession createCaptureSession}.
+     * {@link CameraDevice#createCaptureSession(SessionConfiguration) createCaptureSession}.
      *
      * <p>This method determines that the output {@code format} is supported by the camera device;
      * each output {@code surface} target may or may not itself support that {@code format}.
@@ -425,7 +468,7 @@ public final class StreamConfigurationMap {
      * @param format an image format from either {@link ImageFormat} or {@link PixelFormat}
      * @return
      *          {@code true} iff using a {@code surface} with this {@code format} will be
-     *          supported with {@link CameraDevice#createCaptureSession}
+     *          supported with {@link CameraDevice#createCaptureSession(SessionConfiguration)}
      *
      * @throws IllegalArgumentException
      *          if the image format was not a defined named constant
@@ -433,7 +476,7 @@ public final class StreamConfigurationMap {
      *
      * @see ImageFormat
      * @see PixelFormat
-     * @see CameraDevice#createCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      */
     public boolean isOutputSupportedFor(int format) {
         checkArgumentFormat(format);
@@ -446,6 +489,8 @@ public final class StreamConfigurationMap {
             return mDynamicDepthOutputFormats.indexOfKey(internalFormat) >= 0;
         } else if (dataspace == HAL_DATASPACE_HEIF) {
             return mHeicOutputFormats.indexOfKey(internalFormat) >= 0;
+        } else if (dataspace == HAL_DATASPACE_JPEG_R) {
+            return mJpegROutputFormats.indexOfKey(internalFormat) >= 0;
         } else {
             return getFormatsMap(/*output*/true).indexOfKey(internalFormat) >= 0;
         }
@@ -476,7 +521,7 @@ public final class StreamConfigurationMap {
      *
      * <p>Generally speaking this means that creating a {@link Surface} from that class <i>may</i>
      * provide a producer endpoint that is suitable to be used with
-     * {@link CameraDevice#createCaptureSession}.</p>
+     * {@link CameraDevice#createCaptureSession(SessionConfiguration)}.</p>
      *
      * <p>Since not all of the above classes support output of all format and size combinations,
      * the particular combination should be queried with {@link #isOutputSupportedFor(Surface)}.</p>
@@ -486,7 +531,7 @@ public final class StreamConfigurationMap {
      *
      * @throws NullPointerException if {@code klass} was {@code null}
      *
-     * @see CameraDevice#createCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      * @see #isOutputSupportedFor(Surface)
      */
     public static <T> boolean isOutputSupportedFor(Class<T> klass) {
@@ -510,8 +555,10 @@ public final class StreamConfigurationMap {
     }
 
     /**
-     * Determine whether or not the {@code surface} in its current state is suitable to be included
-     * in a {@link CameraDevice#createCaptureSession capture session} as an output.
+     * Determine whether or not the {@code surface} in its current
+     * state is suitable to be included in a {@link
+     * CameraDevice#createCaptureSession(SessionConfiguration) capture
+     * session} as an output.
      *
      * <p>Not all surfaces are usable with the {@link CameraDevice}, and not all configurations
      * of that {@code surface} are compatible. Some classes that provide the {@code surface} are
@@ -543,7 +590,7 @@ public final class StreamConfigurationMap {
      * @throws NullPointerException if {@code surface} was {@code null}
      * @throws IllegalArgumentException if the Surface endpoint is no longer valid
      *
-     * @see CameraDevice#createCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      * @see #isOutputSupportedFor(Class)
      */
     public boolean isOutputSupportedFor(Surface surface) {
@@ -560,6 +607,7 @@ public final class StreamConfigurationMap {
                 surfaceDataspace == HAL_DATASPACE_DEPTH ? mDepthConfigurations :
                 surfaceDataspace == HAL_DATASPACE_DYNAMIC_DEPTH ? mDynamicDepthConfigurations :
                 surfaceDataspace == HAL_DATASPACE_HEIF ? mHeicConfigurations :
+                surfaceDataspace == HAL_DATASPACE_JPEG_R ? mJpegRConfigurations :
                 mConfigurations;
         for (StreamConfiguration config : configs) {
             if (config.getFormat() == surfaceFormat && config.isOutput()) {
@@ -568,7 +616,7 @@ public final class StreamConfigurationMap {
                 if (config.getSize().equals(surfaceSize)) {
                     return true;
                 } else if (isFlexible &&
-                        (config.getSize().getWidth() <= LegacyCameraDevice.MAX_DIMEN_FOR_ROUNDING)) {
+                        (config.getSize().getWidth() <= MAX_DIMEN_FOR_ROUNDING)) {
                     return true;
                 }
             }
@@ -577,14 +625,16 @@ public final class StreamConfigurationMap {
     }
 
     /**
-     * Determine whether or not the particular stream configuration is suitable to be included
-     * in a {@link CameraDevice#createCaptureSession capture session} as an output.
+     * Determine whether or not the particular stream configuration is
+     * suitable to be included in a {@link
+     * CameraDevice#createCaptureSession(SessionConfiguration) capture
+     * session} as an output.
      *
      * @param size stream configuration size
      * @param format stream configuration format
      * @return {@code true} if this is supported, {@code false} otherwise
      *
-     * @see CameraDevice#createCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      * @see #isOutputSupportedFor(Class)
      * @hide
      */
@@ -596,6 +646,7 @@ public final class StreamConfigurationMap {
                 dataspace == HAL_DATASPACE_DEPTH ? mDepthConfigurations :
                 dataspace == HAL_DATASPACE_DYNAMIC_DEPTH ? mDynamicDepthConfigurations :
                 dataspace == HAL_DATASPACE_HEIF ? mHeicConfigurations :
+                dataspace == HAL_DATASPACE_JPEG_R ? mJpegRConfigurations :
                 mConfigurations;
         for (StreamConfiguration config : configs) {
             if ((config.getFormat() == internalFormat) && config.isOutput() &&
@@ -780,10 +831,11 @@ public final class StreamConfigurationMap {
      * <li>The fpsMin and fpsMax will be a multiple 30fps.</li>
      * <li>The fpsMin will be no less than 30fps, the fpsMax will be no less than 120fps.</li>
      * <li>At least one range will be a fixed FPS range where fpsMin == fpsMax.</li>
-     * <li>For each fixed FPS range, there will be one corresponding variable FPS range [30,
-     * fps_max]. These kinds of FPS ranges are suitable for preview-only use cases where the
-     * application doesn't want the camera device always produce higher frame rate than the display
-     * refresh rate.</li>
+     * <li>For each fixed FPS range, there will be one corresponding variable FPS range
+     * [30, fps_max] or [60, fps_max]. These kinds of FPS ranges are suitable for preview-only
+     * use cases where the application doesn't want the camera device always produce higher frame
+     * rate than the display refresh rate. Both 30fps and 60fps preview rate will not be
+     * supported for the same recording rate.</li>
      * </p>
      *
      * @return an array of supported high speed video recording FPS ranges The upper bound of
@@ -1017,7 +1069,7 @@ public final class StreamConfigurationMap {
      * <p>The following formats will never have a stall duration:
      * <ul>
      * <li>{@link ImageFormat#YUV_420_888 YUV_420_888}
-     * <li>{@link #isOutputSupportedFor(Class) Implementation-Defined}
+     * <li>{@link ImageFormat#PRIVATE PRIVATE}
      * </ul></p>
      *
      * <p>
@@ -1118,6 +1170,9 @@ public final class StreamConfigurationMap {
                     Arrays.equals(mHeicConfigurations, other.mHeicConfigurations) &&
                     Arrays.equals(mHeicMinFrameDurations, other.mHeicMinFrameDurations) &&
                     Arrays.equals(mHeicStallDurations, other.mHeicStallDurations) &&
+                    Arrays.equals(mJpegRConfigurations, other.mJpegRConfigurations) &&
+                    Arrays.equals(mJpegRMinFrameDurations, other.mJpegRMinFrameDurations) &&
+                    Arrays.equals(mJpegRStallDurations, other.mJpegRStallDurations) &&
                     Arrays.equals(mHighSpeedVideoConfigurations,
                             other.mHighSpeedVideoConfigurations);
         }
@@ -1136,6 +1191,7 @@ public final class StreamConfigurationMap {
                 mDynamicDepthConfigurations, mDynamicDepthMinFrameDurations,
                 mDynamicDepthStallDurations, mHeicConfigurations,
                 mHeicMinFrameDurations, mHeicStallDurations,
+                mJpegRConfigurations, mJpegRMinFrameDurations, mJpegRStallDurations,
                 mHighSpeedVideoConfigurations);
     }
 
@@ -1157,6 +1213,10 @@ public final class StreamConfigurationMap {
                 }
             } else if (internalDataspace == HAL_DATASPACE_HEIF) {
                 if (mHeicOutputFormats.indexOfKey(internalFormat) >= 0) {
+                    return format;
+                }
+            } else if (internalDataspace == HAL_DATASPACE_JPEG_R) {
+                if (mJpegROutputFormats.indexOfKey(internalFormat) >= 0) {
                     return format;
                 }
             } else {
@@ -1319,6 +1379,8 @@ public final class StreamConfigurationMap {
                 return ImageFormat.DEPTH16;
             case HAL_PIXEL_FORMAT_RAW16:
                 return ImageFormat.RAW_DEPTH;
+            case HAL_PIXEL_FORMAT_RAW10:
+                return ImageFormat.RAW_DEPTH10;
             case ImageFormat.JPEG:
                 throw new IllegalArgumentException(
                         "ImageFormat.JPEG is an unknown internal format");
@@ -1361,6 +1423,7 @@ public final class StreamConfigurationMap {
      * <li>ImageFormat.DEPTH_POINT_CLOUD => HAL_PIXEL_FORMAT_BLOB
      * <li>ImageFormat.DEPTH_JPEG => HAL_PIXEL_FORMAT_BLOB
      * <li>ImageFormat.HEIC => HAL_PIXEL_FORMAT_BLOB
+     * <li>ImageFormat.JPEG_R => HAL_PIXEL_FORMAT_BLOB
      * <li>ImageFormat.DEPTH16 => HAL_PIXEL_FORMAT_Y16
      * </ul>
      * </p>
@@ -1387,11 +1450,14 @@ public final class StreamConfigurationMap {
             case ImageFormat.DEPTH_POINT_CLOUD:
             case ImageFormat.DEPTH_JPEG:
             case ImageFormat.HEIC:
+            case ImageFormat.JPEG_R:
                 return HAL_PIXEL_FORMAT_BLOB;
             case ImageFormat.DEPTH16:
                 return HAL_PIXEL_FORMAT_Y16;
             case ImageFormat.RAW_DEPTH:
                 return HAL_PIXEL_FORMAT_RAW16;
+            case ImageFormat.RAW_DEPTH10:
+                return HAL_PIXEL_FORMAT_RAW10;
             default:
                 return format;
         }
@@ -1408,6 +1474,7 @@ public final class StreamConfigurationMap {
      * <li>ImageFormat.DEPTH16 => HAL_DATASPACE_DEPTH
      * <li>ImageFormat.DEPTH_JPEG => HAL_DATASPACE_DYNAMIC_DEPTH
      * <li>ImageFormat.HEIC => HAL_DATASPACE_HEIF
+     * <li>ImageFormat.JPEG_R => HAL_DATASPACE_JPEG_R
      * <li>others => HAL_DATASPACE_UNKNOWN
      * </ul>
      * </p>
@@ -1436,11 +1503,14 @@ public final class StreamConfigurationMap {
             case ImageFormat.DEPTH_POINT_CLOUD:
             case ImageFormat.DEPTH16:
             case ImageFormat.RAW_DEPTH:
+            case ImageFormat.RAW_DEPTH10:
                 return HAL_DATASPACE_DEPTH;
             case ImageFormat.DEPTH_JPEG:
                 return HAL_DATASPACE_DYNAMIC_DEPTH;
             case ImageFormat.HEIC:
                 return HAL_DATASPACE_HEIF;
+            case ImageFormat.JPEG_R:
+                return HAL_DATASPACE_JPEG_R;
             default:
                 return HAL_DATASPACE_UNKNOWN;
         }
@@ -1493,14 +1563,15 @@ public final class StreamConfigurationMap {
                 dataspace == HAL_DATASPACE_DEPTH ? mDepthOutputFormats :
                 dataspace == HAL_DATASPACE_DYNAMIC_DEPTH ? mDynamicDepthOutputFormats :
                 dataspace == HAL_DATASPACE_HEIF ? mHeicOutputFormats :
+                dataspace == HAL_DATASPACE_JPEG_R ? mJpegROutputFormats :
                 highRes ? mHighResOutputFormats :
                 mOutputFormats;
 
         int sizesCount = formatsMap.get(format);
-        if ( ((!output || (dataspace == HAL_DATASPACE_DEPTH ||
+        if ( ((!output || (dataspace == HAL_DATASPACE_DEPTH || dataspace == HAL_DATASPACE_JPEG_R ||
                             dataspace == HAL_DATASPACE_DYNAMIC_DEPTH ||
                             dataspace == HAL_DATASPACE_HEIF)) && sizesCount == 0) ||
-                (output && (dataspace != HAL_DATASPACE_DEPTH &&
+                (output && (dataspace != HAL_DATASPACE_DEPTH && dataspace != HAL_DATASPACE_JPEG_R &&
                             dataspace != HAL_DATASPACE_DYNAMIC_DEPTH &&
                             dataspace != HAL_DATASPACE_HEIF) &&
                  mAllOutputFormats.get(format) == 0)) {
@@ -1514,11 +1585,13 @@ public final class StreamConfigurationMap {
                 (dataspace == HAL_DATASPACE_DEPTH) ? mDepthConfigurations :
                 (dataspace == HAL_DATASPACE_DYNAMIC_DEPTH) ? mDynamicDepthConfigurations :
                 (dataspace == HAL_DATASPACE_HEIF) ? mHeicConfigurations :
+                (dataspace == HAL_DATASPACE_JPEG_R) ? mJpegRConfigurations :
                 mConfigurations;
         StreamConfigurationDuration[] minFrameDurations =
                 (dataspace == HAL_DATASPACE_DEPTH) ? mDepthMinFrameDurations :
                 (dataspace == HAL_DATASPACE_DYNAMIC_DEPTH) ? mDynamicDepthMinFrameDurations :
                 (dataspace == HAL_DATASPACE_HEIF) ? mHeicMinFrameDurations :
+                (dataspace == HAL_DATASPACE_JPEG_R) ? mJpegRMinFrameDurations :
                 mMinFrameDurations;
 
         for (StreamConfiguration config : configurations) {
@@ -1548,7 +1621,7 @@ public final class StreamConfigurationMap {
 
         // Dynamic depth streams can have both fast and also high res modes.
         if ((sizeIndex != sizesCount) && (dataspace == HAL_DATASPACE_DYNAMIC_DEPTH ||
-                dataspace == HAL_DATASPACE_HEIF)) {
+                dataspace == HAL_DATASPACE_HEIF) || (dataspace == HAL_DATASPACE_JPEG_R)) {
 
             if (sizeIndex > sizesCount) {
                 throw new AssertionError(
@@ -1569,7 +1642,7 @@ public final class StreamConfigurationMap {
         return sizes;
     }
 
-    /** Get the list of publically visible output formats; does not include IMPL_DEFINED */
+    /** Get the list of publicly visible output formats */
     private int[] getPublicFormats(boolean output) {
         int[] formats = new int[getPublicFormatCount(output)];
 
@@ -1590,6 +1663,9 @@ public final class StreamConfigurationMap {
             }
             if (mHeicOutputFormats.size() > 0) {
                 formats[i++] = ImageFormat.HEIC;
+            }
+            if (mJpegROutputFormats.size() > 0) {
+                formats[i++] = ImageFormat.JPEG_R;
             }
         }
         if (formats.length != i) {
@@ -1637,12 +1713,14 @@ public final class StreamConfigurationMap {
                         (dataspace == HAL_DATASPACE_DYNAMIC_DEPTH) ?
                         mDynamicDepthMinFrameDurations :
                         (dataspace == HAL_DATASPACE_HEIF) ? mHeicMinFrameDurations :
+                        (dataspace == HAL_DATASPACE_JPEG_R) ? mJpegRMinFrameDurations :
                         mMinFrameDurations;
 
             case DURATION_STALL:
                 return (dataspace == HAL_DATASPACE_DEPTH) ? mDepthStallDurations :
                         (dataspace == HAL_DATASPACE_DYNAMIC_DEPTH) ? mDynamicDepthStallDurations :
                         (dataspace == HAL_DATASPACE_HEIF) ? mHeicStallDurations :
+                        (dataspace == HAL_DATASPACE_JPEG_R) ? mJpegRStallDurations :
                         mStallDurations;
             default:
                 throw new IllegalArgumentException("duration was invalid");
@@ -1657,6 +1735,7 @@ public final class StreamConfigurationMap {
             size += mDepthOutputFormats.size();
             size += mDynamicDepthOutputFormats.size();
             size += mHeicOutputFormats.size();
+            size += mJpegROutputFormats.size();
         }
 
         return size;
@@ -1681,6 +1760,7 @@ public final class StreamConfigurationMap {
                 (dataspace == HAL_DATASPACE_DEPTH) ? mDepthConfigurations :
                 (dataspace == HAL_DATASPACE_DYNAMIC_DEPTH) ? mDynamicDepthConfigurations :
                 (dataspace == HAL_DATASPACE_HEIF) ? mHeicConfigurations :
+                (dataspace == HAL_DATASPACE_JPEG_R) ? mJpegRConfigurations :
                 mConfigurations;
 
         for (int i = 0; i < configurations.length; i++) {
@@ -1714,7 +1794,7 @@ public final class StreamConfigurationMap {
      *
      * <p>{@code ValidOutputFormatsForInput([in:%s(%d), out:%s(%d), ... %s(%d)],
      * ... [in:%s(%d), out:%s(%d), ... %s(%d)])}, where {@code [in:%s(%d), out:%s(%d), ... %s(%d)]}
-     * represents an input fomat and its valid output formats.</p>
+     * represents an input format and its valid output formats.</p>
      *
      * <p>{@code HighSpeedVideoConfigurations([w:%d, h:%d, min_fps:%d, max_fps:%d],
      * ... [w:%d, h:%d, min_fps:%d, max_fps:%d])}, where
@@ -1738,6 +1818,21 @@ public final class StreamConfigurationMap {
         sb.append(")");
 
         return sb.toString();
+    }
+
+    /**
+     * Size comparison method used by size comparators.
+     *
+     * @hide
+     */
+    public static int compareSizes(int widthA, int heightA, int widthB, int heightB) {
+        long left = widthA * (long) heightA;
+        long right = widthB * (long) heightB;
+        if (left == right) {
+            left = widthA;
+            right = widthB;
+        }
+        return (left < right) ? -1 : (left > right ? 1 : 0);
     }
 
     private void appendOutputsString(StringBuilder sb) {
@@ -1837,7 +1932,10 @@ public final class StreamConfigurationMap {
         sb.append(")");
     }
 
-    private String formatToString(int format) {
+    /**
+     * @hide
+     */
+    public static String formatToString(int format) {
         switch (format) {
             case ImageFormat.YV12:
                 return "YV12";
@@ -1877,10 +1975,14 @@ public final class StreamConfigurationMap {
                 return "DEPTH_JPEG";
             case ImageFormat.RAW_DEPTH:
                 return "RAW_DEPTH";
+            case ImageFormat.RAW_DEPTH10:
+                return "RAW_DEPTH10";
             case ImageFormat.PRIVATE:
                 return "PRIVATE";
             case ImageFormat.HEIC:
                 return "HEIC";
+            case ImageFormat.JPEG_R:
+                return "JPEG/R";
             default:
                 return "UNKNOWN";
         }
@@ -1888,7 +1990,8 @@ public final class StreamConfigurationMap {
 
     // from system/core/include/system/graphics.h
     private static final int HAL_PIXEL_FORMAT_RAW16 = 0x20;
-    private static final int HAL_PIXEL_FORMAT_BLOB = 0x21;
+    /** @hide */
+    public static final int HAL_PIXEL_FORMAT_BLOB = 0x21;
     private static final int HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED = 0x22;
     private static final int HAL_PIXEL_FORMAT_YCbCr_420_888 = 0x23;
     private static final int HAL_PIXEL_FORMAT_RAW_OPAQUE = 0x24;
@@ -1902,14 +2005,28 @@ public final class StreamConfigurationMap {
     private static final int HAL_DATASPACE_RANGE_SHIFT = 27;
 
     private static final int HAL_DATASPACE_UNKNOWN = 0x0;
-    private static final int HAL_DATASPACE_V0_JFIF =
+    /** @hide */
+    public static final int HAL_DATASPACE_V0_JFIF =
             (2 << HAL_DATASPACE_STANDARD_SHIFT) |
             (3 << HAL_DATASPACE_TRANSFER_SHIFT) |
             (1 << HAL_DATASPACE_RANGE_SHIFT);
 
-    private static final int HAL_DATASPACE_DEPTH = 0x1000;
-    private static final int HAL_DATASPACE_DYNAMIC_DEPTH = 0x1002;
-    private static final int HAL_DATASPACE_HEIF = 0x1003;
+    /**
+     * @hide
+     */
+    public static final int HAL_DATASPACE_DEPTH = 0x1000;
+    /**
+     * @hide
+     */
+    public static final int HAL_DATASPACE_DYNAMIC_DEPTH = 0x1002;
+    /**
+     * @hide
+     */
+    public static final int HAL_DATASPACE_HEIF = 0x1004;
+    /**
+     * @hide
+     */
+    public static final int HAL_DATASPACE_JPEG_R = 0x1005;
     private static final long DURATION_20FPS_NS = 50000000L;
     /**
      * @see #getDurations(int, int)
@@ -1933,6 +2050,10 @@ public final class StreamConfigurationMap {
     private final StreamConfigurationDuration[] mHeicMinFrameDurations;
     private final StreamConfigurationDuration[] mHeicStallDurations;
 
+    private final StreamConfiguration[] mJpegRConfigurations;
+    private final StreamConfigurationDuration[] mJpegRMinFrameDurations;
+    private final StreamConfigurationDuration[] mJpegRStallDurations;
+
     private final HighSpeedVideoConfiguration[] mHighSpeedVideoConfigurations;
     private final ReprocessFormatsMap mInputOutputFormatsMap;
 
@@ -1954,6 +2075,8 @@ public final class StreamConfigurationMap {
     private final SparseIntArray mDynamicDepthOutputFormats = new SparseIntArray();
     /** internal format -> num heic output sizes mapping, for HAL_DATASPACE_HEIF */
     private final SparseIntArray mHeicOutputFormats = new SparseIntArray();
+    /** internal format -> num Jpeg/R output sizes mapping, for HAL_DATASPACE_JPEG_R */
+    private final SparseIntArray mJpegROutputFormats = new SparseIntArray();
 
     /** High speed video Size -> FPS range count mapping*/
     private final HashMap</*HighSpeedVideoSize*/Size, /*Count*/Integer> mHighSpeedVideoSizeMap =

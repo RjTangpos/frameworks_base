@@ -32,11 +32,11 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManagerInternal;
 import android.os.SystemClock;
+import android.util.IndentingPrintWriter;
 import android.util.proto.ProtoOutputStream;
 
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.LocalServices;
 import com.android.server.job.JobSchedulerService;
 import com.android.server.job.JobSchedulerService.Constants;
@@ -81,8 +81,7 @@ public class StateControllerTest {
         public void maybeStartTrackingJobLocked(JobStatus jobStatus, JobStatus lastJob) {
         }
 
-        public void maybeStopTrackingJobLocked(JobStatus jobStatus, JobStatus incomingJob,
-                boolean forUpdate) {
+        public void maybeStopTrackingJobLocked(JobStatus jobStatus, JobStatus incomingJob) {
         }
 
         public void dumpControllerStateLocked(IndentingPrintWriter pw,
@@ -138,7 +137,7 @@ public class StateControllerTest {
                 .setMinimumLatency(Math.abs(jobId) + 1)
                 .build();
         return JobStatus.createFromJobInfo(
-                jobInfo, CALLING_UID, SOURCE_PACKAGE, SOURCE_USER_ID, testTag);
+                jobInfo, CALLING_UID, SOURCE_PACKAGE, SOURCE_USER_ID, "SCTest", testTag);
     }
 
     @Test

@@ -22,16 +22,17 @@ namespace android {
 namespace uirenderer {
 namespace test {
 
-const DisplayInfo& getDisplayInfo() {
-    static DisplayInfo info = [] {
-        DisplayInfo info;
+const ui::StaticDisplayInfo& getDisplayInfo() {
+    static ui::StaticDisplayInfo info = [] {
+        ui::StaticDisplayInfo info;
 #if HWUI_NULL_GPU
         info.density = 2.f;
 #else
-        const sp<IBinder> token = SurfaceComposerClient::getInternalDisplayToken();
-        LOG_ALWAYS_FATAL_IF(!token, "%s: No internal display", __FUNCTION__);
+        const std::vector<PhysicalDisplayId> ids = SurfaceComposerClient::getPhysicalDisplayIds();
+        LOG_ALWAYS_FATAL_IF(ids.empty(), "%s: No displays", __FUNCTION__);
 
-        const status_t status = SurfaceComposerClient::getDisplayInfo(token, &info);
+        const status_t status =
+                SurfaceComposerClient::getStaticDisplayInfo(ids.front().value, &info);
         LOG_ALWAYS_FATAL_IF(status, "%s: Failed to get display info", __FUNCTION__);
 #endif
         return info;
@@ -40,18 +41,21 @@ const DisplayInfo& getDisplayInfo() {
     return info;
 }
 
-const DisplayConfig& getActiveDisplayConfig() {
-    static DisplayConfig config = [] {
-        DisplayConfig config;
+const ui::DisplayMode& getActiveDisplayMode() {
+    static ui::DisplayMode config = [] {
+        ui::DisplayMode config;
 #if HWUI_NULL_GPU
         config.resolution = ui::Size(1080, 1920);
         config.xDpi = config.yDpi = 320.f;
         config.refreshRate = 60.f;
 #else
-        const sp<IBinder> token = SurfaceComposerClient::getInternalDisplayToken();
+        const std::vector<PhysicalDisplayId> ids = SurfaceComposerClient::getPhysicalDisplayIds();
+        LOG_ALWAYS_FATAL_IF(ids.empty(), "%s: No displays", __FUNCTION__);
+
+        const sp<IBinder> token = SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
         LOG_ALWAYS_FATAL_IF(!token, "%s: No internal display", __FUNCTION__);
 
-        const status_t status = SurfaceComposerClient::getActiveDisplayConfig(token, &config);
+        const status_t status = SurfaceComposerClient::getActiveDisplayMode(token, &config);
         LOG_ALWAYS_FATAL_IF(status, "%s: Failed to get active display config", __FUNCTION__);
 #endif
         return config;

@@ -16,9 +16,12 @@
 
 package android.accounts;
 
+import static android.Manifest.permission.INTERACT_ACROSS_USERS_FULL;
+
 import android.annotation.BroadcastBehavior;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
@@ -27,6 +30,7 @@ import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.annotation.UserHandleAware;
 import android.app.Activity;
+import android.app.PropertyInvalidatedCache;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -34,6 +38,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.IntentSender;
+import android.content.pm.UserPackage;
 import android.content.res.Resources;
 import android.database.SQLException;
 import android.os.Build;
@@ -60,6 +65,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
@@ -334,6 +340,105 @@ public class AccountManager {
     public static final String ACCOUNT_ACCESS_TOKEN_TYPE =
             "com.android.AccountManager.ACCOUNT_ACCESS_TOKEN_TYPE";
 
+    /**
+     * @hide
+    */
+    public static final String CACHE_KEY_ACCOUNTS_DATA_PROPERTY = "cache_key.system_server.accounts_data";
+
+    /**
+     * @hide
+    */
+    public static final int CACHE_ACCOUNTS_DATA_SIZE = 4;
+
+    PropertyInvalidatedCache<UserPackage, Account[]> mAccountsForUserCache =
+                new PropertyInvalidatedCache<UserPackage, Account[]>(
+                CACHE_ACCOUNTS_DATA_SIZE, CACHE_KEY_ACCOUNTS_DATA_PROPERTY) {
+        @Override
+        public Account[] recompute(UserPackage userAndPackage) {
+            try {
+                return mService.getAccountsAsUser(null, userAndPackage.userId, userAndPackage.packageName);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+        @Override
+        public boolean bypass(UserPackage query) {
+            return query.userId < 0;
+        }
+        @Override
+        public boolean resultEquals(Account[] l, Account[] r) {
+            if (l == r) {
+                return true;
+            } else if (l == null || r == null) {
+                return false;
+            } else {
+                return Arrays.equals(l, r);
+            }
+        }
+    };
+
+    /**
+     * @hide
+    */
+    public static final String CACHE_KEY_USER_DATA_PROPERTY = "cache_key.system_server.account_user_data";
+
+    /**
+     * @hide
+     */
+    public static final int CACHE_USER_DATA_SIZE = 4;
+
+    private static final class AccountKeyData {
+        final public Account account;
+        final public String key;
+
+        public AccountKeyData(Account Account, String Key) {
+            this.account = Account;
+            this.key = Key;
+        }
+
+        @Override
+        public boolean equals(@Nullable Object o) {
+            if (o == null) {
+                return false;
+            }
+
+            if (o == this) {
+                return true;
+            }
+
+            if (o.getClass() != getClass()) {
+                return false;
+            }
+
+            AccountKeyData e = (AccountKeyData) o;
+
+            return e.account.equals(account) && e.key.equals(key);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(account,key);
+        }
+    }
+
+    PropertyInvalidatedCache<AccountKeyData, String> mUserDataCache =
+            new PropertyInvalidatedCache<AccountKeyData, String>(CACHE_USER_DATA_SIZE,
+                    CACHE_KEY_USER_DATA_PROPERTY) {
+            @Override
+            public String recompute(AccountKeyData accountKeyData) {
+                Account account = accountKeyData.account;
+                String key = accountKeyData.key;
+
+                if (account == null) throw new IllegalArgumentException("account is null");
+                if (key == null) throw new IllegalArgumentException("key is null");
+                try {
+                    return mService.getUserData(account, key);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+            }
+        };
+
     @UnsupportedAppUsage
     private final Context mContext;
     private final IAccountManager mService;
@@ -510,13 +615,7 @@ public class AccountManager {
      * @return The user data, null if the account, key doesn't exist, or the user is locked
      */
     public String getUserData(final Account account, final String key) {
-        if (account == null) throw new IllegalArgumentException("account is null");
-        if (key == null) throw new IllegalArgumentException("key is null");
-        try {
-            return mService.getUserData(account, key);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return mUserDataCache.query(new AccountKeyData(account,key));
     }
 
     /**
@@ -525,6 +624,9 @@ public class AccountManager {
      * <p>It is safe to call this method from the main thread.
      *
      * <p>No permission is required to call this method.
+     *
+     * <p>Caller targeting API level 34 and above, the results are filtered
+     * by the rules of <a href="/training/basics/intents/package-visibility">package visibility</a>.
      *
      * @return An array of {@link AuthenticatorDescription} for every
      *     authenticator known to the AccountManager service.  Empty (never
@@ -559,7 +661,7 @@ public class AccountManager {
     /**
      * Lists all accounts visible to the caller regardless of type. Equivalent to
      * getAccountsByType(null). These accounts may be visible because the user granted access to the
-     * account, or the AbstractAcccountAuthenticator managing the account did so or because the
+     * account, or the AbstractAccountAuthenticator managing the account did so or because the
      * client shares a signature with the managing AbstractAccountAuthenticator.
      *
      * <div class="caution"><p><b>Caution: </b>This method returns personal and sensitive user data.
@@ -602,11 +704,8 @@ public class AccountManager {
      */
     @NonNull
     public Account[] getAccountsAsUser(int userId) {
-        try {
-            return mService.getAccountsAsUser(null, userId, mContext.getOpPackageName());
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        UserPackage userAndPackage = UserPackage.of(userId, mContext.getOpPackageName());
+        return mAccountsForUserCache.query(userAndPackage);
     }
 
     /**
@@ -651,7 +750,7 @@ public class AccountManager {
 
     /**
      * Lists all accounts of particular type visible to the caller. These accounts may be visible
-     * because the user granted access to the account, or the AbstractAcccountAuthenticator managing
+     * because the user granted access to the account, or the AbstractAccountAuthenticator managing
      * the account did so or because the client shares a signature with the managing
      * AbstractAccountAuthenticator.
      *
@@ -684,7 +783,7 @@ public class AccountManager {
      * Caller targeting API level {@link android.os.Build.VERSION_CODES#O} and above, will get list
      * of accounts made visible to it by user
      * (see {@link #newChooseAccountIntent(Account, List, String[], String,
-     * String, String[], Bundle)}) or AbstractAcccountAuthenticator
+     * String, String[], Bundle)}) or AbstractAccountAuthenticator
      * using {@link #setAccountVisibility}.
      * {@link android.Manifest.permission#GET_ACCOUNTS} permission is not used.
      *
@@ -794,15 +893,24 @@ public class AccountManager {
      * @return An {@link AccountManagerFuture} which resolves to a Boolean, true if the account
      *         exists and has all of the specified features.
      */
+    @UserHandleAware(enabledSinceTargetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            requiresPermissionIfNotCaller = INTERACT_ACROSS_USERS_FULL)
     public AccountManagerFuture<Boolean> hasFeatures(final Account account,
             final String[] features,
             AccountManagerCallback<Boolean> callback, Handler handler) {
+        return hasFeaturesAsUser(account, features, callback, handler, mContext.getUserId());
+    }
+
+    private AccountManagerFuture<Boolean> hasFeaturesAsUser(
+            final Account account, final String[] features,
+            AccountManagerCallback<Boolean> callback, Handler handler, int userId) {
         if (account == null) throw new IllegalArgumentException("account is null");
         if (features == null) throw new IllegalArgumentException("features is null");
         return new Future2Task<Boolean>(handler, callback) {
             @Override
             public void doWork() throws RemoteException {
-                mService.hasFeatures(mResponse, account, features, mContext.getOpPackageName());
+                mService.hasFeatures(
+                        mResponse, account, features, userId, mContext.getOpPackageName());
             }
             @Override
             public Boolean bundleToResult(Bundle bundle) throws AuthenticatorException {
@@ -832,7 +940,7 @@ public class AccountManager {
      * Caller targeting API level {@link android.os.Build.VERSION_CODES#O} and above, will get list
      * of accounts made visible to it by user
      * (see {@link #newChooseAccountIntent(Account, List, String[], String,
-     * String, String[], Bundle)}) or AbstractAcccountAuthenticator
+     * String, String[], Bundle)}) or AbstractAccountAuthenticator
      * using {@link #setAccountVisibility}.
      * {@link android.Manifest.permission#GET_ACCOUNTS} permission is not used.
      *
@@ -908,7 +1016,8 @@ public class AccountManager {
     public boolean addAccountExplicitly(Account account, String password, Bundle userdata) {
         if (account == null) throw new IllegalArgumentException("account is null");
         try {
-            return mService.addAccountExplicitly(account, password, userdata);
+            return mService.addAccountExplicitly(
+                    account, password, userdata, mContext.getOpPackageName());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -934,7 +1043,9 @@ public class AccountManager {
      * @param password The password to associate with the account, null for none
      * @param extras String values to use for the account's userdata, null for none
      * @param visibility Map from packageName to visibility values which will be set before account
-     *        is added. See {@link #getAccountVisibility} for possible values.
+     *        is added. See {@link #getAccountVisibility} for possible values. Declaring
+     *        <a href="/training/basics/intents/package-visibility">package visibility</a> needs for
+     *        package names in the map is needed, if the caller is targeting API level 34 and above.
      *
      * @return True if the account was successfully added, false if the account already exists, the
      *         account is null, or another error occurs.
@@ -945,7 +1056,7 @@ public class AccountManager {
             throw new IllegalArgumentException("account is null");
         try {
             return mService.addAccountExplicitlyWithVisibility(account, password, extras,
-                    visibility);
+                    visibility, mContext.getOpPackageName());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1018,7 +1129,9 @@ public class AccountManager {
      * the specified account.
      *
      * @param account {@link Account} to update visibility
-     * @param packageName Package name of the application to modify account visibility
+     * @param packageName Package name of the application to modify account visibility. Declaring
+     *        <a href="/training/basics/intents/package-visibility">package visibility</a> needs
+     *        for it is needed, if the caller is targeting API level 34 and above.
      * @param visibility New visibility value
      *
      * @return True, if visibility value was successfully updated.
@@ -1050,7 +1163,9 @@ public class AccountManager {
      * @param account {@link Account} to get visibility
      * @param packageName Package name of the application to get account visibility
      *
-     * @return int Visibility of given account.
+     * @return int Visibility of given account. For the caller targeting API level 34 and above,
+     * {@link #VISIBILITY_NOT_VISIBLE} is returned if the given package is filtered by the rules of
+     * <a href="/training/basics/intents/package-visibility">package visibility</a>.
      */
     public @AccountVisibility int getAccountVisibility(Account account, String packageName) {
         if (account == null)
@@ -2323,7 +2438,7 @@ public class AccountManager {
                     onError(ERROR_CODE_INVALID_RESPONSE, "null bundle returned");
                     return;
                 }
-                Intent intent = bundle.getParcelable(KEY_INTENT);
+                Intent intent = bundle.getParcelable(KEY_INTENT, android.content.Intent.class);
                 if (intent != null && mActivity != null) {
                     // since the user provided an Activity we will silently start intents
                     // that we see
@@ -2858,7 +2973,7 @@ public class AccountManager {
 
     /**
      * Adds an {@link OnAccountsUpdateListener} to this instance of the {@link AccountManager}. This
-     * listener will be notified whenever user or AbstractAcccountAuthenticator made changes to
+     * listener will be notified whenever user or AbstractAccountAuthenticator made changes to
      * accounts of any type related to the caller. This method is equivalent to
      * addOnAccountsUpdatedListener(listener, handler, updateImmediately, null)
      *
@@ -2872,7 +2987,7 @@ public class AccountManager {
 
     /**
      * Adds an {@link OnAccountsUpdateListener} to this instance of the {@link AccountManager}. This
-     * listener will be notified whenever user or AbstractAcccountAuthenticator made changes to
+     * listener will be notified whenever user or AbstractAccountAuthenticator made changes to
      * accounts of given types related to the caller -
      * either list of accounts returned by {@link #getAccounts()}
      * was changed, or new account was added for which user can grant access to the caller.
@@ -3178,7 +3293,7 @@ public class AccountManager {
      *         status of the account
      *         </ul>
      *         If no activity was specified and additional information is needed
-     *         from user, the returned Bundle may contains only
+     *         from user, the returned Bundle may only contain
      *         {@link #KEY_INTENT} with the {@link Intent} needed to launch the
      *         actual account creation process. If an error occurred,
      *         {@link AccountManagerFuture#getResult()} throws:
@@ -3215,7 +3330,7 @@ public class AccountManager {
      * @hide
      */
     @SystemApi
-    @RequiresPermission(android.Manifest.permission.INTERACT_ACROSS_USERS_FULL)
+    @RequiresPermission(INTERACT_ACROSS_USERS_FULL)
     public AccountManagerFuture<Bundle> finishSessionAsUser(
             final Bundle sessionBundle,
             final Activity activity,
@@ -3332,5 +3447,39 @@ public class AccountManager {
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * @hide
+     * Calling this will invalidate Local Accounts Data Cache which
+     * forces the next query in any process to recompute the cache
+    */
+    public static void invalidateLocalAccountsDataCaches() {
+        PropertyInvalidatedCache.invalidateCache(CACHE_KEY_ACCOUNTS_DATA_PROPERTY);
+    }
+
+    /**
+     * @hide
+     * Calling this will disable account data caching.
+    */
+    public void disableLocalAccountCaches() {
+        mAccountsForUserCache.disableLocal();
+    }
+
+    /**
+     * @hide
+     * Calling this will invalidate Local Account User Data Cache which
+     * forces the next query in any process to recompute the cache
+    */
+    public static void invalidateLocalAccountUserDataCaches() {
+        PropertyInvalidatedCache.invalidateCache(CACHE_KEY_USER_DATA_PROPERTY);
+    }
+
+    /**
+     * @hide
+     * Calling this will disable user info caching.
+    */
+    public void disableLocalUserInfoCaches() {
+        mUserDataCache.disableLocal();
     }
 }

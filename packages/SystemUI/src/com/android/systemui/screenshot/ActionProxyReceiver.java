@@ -16,13 +16,13 @@
 
 package com.android.systemui.screenshot;
 
-import static com.android.systemui.screenshot.GlobalScreenshot.ACTION_TYPE_EDIT;
-import static com.android.systemui.screenshot.GlobalScreenshot.ACTION_TYPE_SHARE;
-import static com.android.systemui.screenshot.GlobalScreenshot.EXTRA_ACTION_INTENT;
-import static com.android.systemui.screenshot.GlobalScreenshot.EXTRA_DISALLOW_ENTER_PIP;
-import static com.android.systemui.screenshot.GlobalScreenshot.EXTRA_ID;
-import static com.android.systemui.screenshot.GlobalScreenshot.EXTRA_SMART_ACTIONS_ENABLED;
-import static com.android.systemui.statusbar.phone.StatusBar.SYSTEM_DIALOG_REASON_SCREENSHOT;
+import static com.android.systemui.screenshot.ScreenshotController.ACTION_TYPE_EDIT;
+import static com.android.systemui.screenshot.ScreenshotController.ACTION_TYPE_SHARE;
+import static com.android.systemui.screenshot.ScreenshotController.EXTRA_ACTION_INTENT;
+import static com.android.systemui.screenshot.ScreenshotController.EXTRA_DISALLOW_ENTER_PIP;
+import static com.android.systemui.screenshot.ScreenshotController.EXTRA_ID;
+import static com.android.systemui.screenshot.ScreenshotController.EXTRA_SMART_ACTIONS_ENABLED;
+import static com.android.systemui.statusbar.phone.CentralSurfaces.SYSTEM_DIALOG_REASON_SCREENSHOT;
 
 import android.app.ActivityOptions;
 import android.app.PendingIntent;
@@ -30,14 +30,12 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.util.Log;
+import android.view.RemoteAnimationAdapter;
+import android.view.WindowManagerGlobal;
 
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.shared.system.ActivityManagerWrapper;
-import com.android.systemui.statusbar.phone.StatusBar;
-
-import java.util.Optional;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import javax.inject.Inject;
 
@@ -48,58 +46,62 @@ import javax.inject.Inject;
 public class ActionProxyReceiver extends BroadcastReceiver {
     private static final String TAG = "ActionProxyReceiver";
 
-    private static final int CLOSE_WINDOWS_TIMEOUT_MILLIS = 3000;
-    private final StatusBar mStatusBar;
     private final ActivityManagerWrapper mActivityManagerWrapper;
     private final ScreenshotSmartActions mScreenshotSmartActions;
+    private final DisplayTracker mDisplayTracker;
+    private final ActivityStarter mActivityStarter;
 
     @Inject
-    public ActionProxyReceiver(Optional<StatusBar> statusBar,
-            ActivityManagerWrapper activityManagerWrapper,
-            ScreenshotSmartActions screenshotSmartActions) {
-        mStatusBar = statusBar.orElse(null);
+    public ActionProxyReceiver(ActivityManagerWrapper activityManagerWrapper,
+            ScreenshotSmartActions screenshotSmartActions,
+            DisplayTracker displayTracker,
+            ActivityStarter activityStarter) {
         mActivityManagerWrapper = activityManagerWrapper;
         mScreenshotSmartActions = screenshotSmartActions;
+        mDisplayTracker = displayTracker;
+        mActivityStarter = activityStarter;
     }
 
     @Override
     public void onReceive(Context context, final Intent intent) {
         Runnable startActivityRunnable = () -> {
-            try {
-                mActivityManagerWrapper.closeSystemWindows(
-                        SYSTEM_DIALOG_REASON_SCREENSHOT).get(
-                        CLOSE_WINDOWS_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
-            } catch (TimeoutException | InterruptedException | ExecutionException e) {
-                Log.e(TAG, "Unable to share screenshot", e);
-                return;
-            }
+            mActivityManagerWrapper.closeSystemWindows(SYSTEM_DIALOG_REASON_SCREENSHOT);
 
             PendingIntent actionIntent = intent.getParcelableExtra(EXTRA_ACTION_INTENT);
             ActivityOptions opts = ActivityOptions.makeBasic();
             opts.setDisallowEnterPictureInPictureWhileLaunching(
                     intent.getBooleanExtra(EXTRA_DISALLOW_ENTER_PIP, false));
+            opts.setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
             try {
                 actionIntent.send(context, 0, null, null, null, null, opts.toBundle());
+                if (intent.getBooleanExtra(ScreenshotController.EXTRA_OVERRIDE_TRANSITION, false)) {
+                    RemoteAnimationAdapter runner = new RemoteAnimationAdapter(
+                            ScreenshotController.SCREENSHOT_REMOTE_RUNNER, 0, 0);
+                    try {
+                        WindowManagerGlobal.getWindowManagerService()
+                                .overridePendingAppTransitionRemote(runner,
+                                        mDisplayTracker.getDefaultDisplayId());
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error overriding screenshot app transition", e);
+                    }
+                }
             } catch (PendingIntent.CanceledException e) {
                 Log.e(TAG, "Pending intent canceled", e);
             }
 
         };
 
-        if (mStatusBar != null) {
-            mStatusBar.executeRunnableDismissingKeyguard(startActivityRunnable, null,
-                    true /* dismissShade */, true /* afterKeyguardGone */,
-                    true /* deferred */);
-        } else {
-            startActivityRunnable.run();
-        }
+        mActivityStarter.executeRunnableDismissingKeyguard(startActivityRunnable, null,
+                true /* dismissShade */, true /* afterKeyguardGone */,
+                true /* deferred */);
 
         if (intent.getBooleanExtra(EXTRA_SMART_ACTIONS_ENABLED, false)) {
             String actionType = Intent.ACTION_EDIT.equals(intent.getAction())
                     ? ACTION_TYPE_EDIT
                     : ACTION_TYPE_SHARE;
             mScreenshotSmartActions.notifyScreenshotAction(
-                    context, intent.getStringExtra(EXTRA_ID), actionType, false);
+                    intent.getStringExtra(EXTRA_ID), actionType, false, null);
         }
     }
 }

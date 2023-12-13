@@ -18,17 +18,27 @@ package android.media;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.TestApi;
 import android.bluetooth.BluetoothCodecConfig;
+import android.bluetooth.BluetoothLeAudioCodecConfig;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.media.audio.common.AidlConversion;
 import android.media.audiofx.AudioEffect;
 import android.media.audiopolicy.AudioMix;
+import android.media.audiopolicy.AudioProductStrategy;
 import android.os.Build;
+import android.os.IBinder;
+import android.os.Parcel;
+import android.os.Vibrator;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.util.Pair;
+
+import com.android.internal.annotations.GuardedBy;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -38,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 
 /* IF YOU CHANGE ANY OF THE CONSTANTS IN THIS FILE, DO NOT FORGET
  * TO UPDATE THE CORRESPONDING NATIVE GLUE AND AudioManager.java.
@@ -59,7 +70,7 @@ public class AudioSystem
         throw new UnsupportedOperationException("Trying to instantiate AudioSystem");
     }
 
-    /* These values must be kept in sync with system/audio.h */
+    /* These values must be kept in sync with system/media/audio/include/system/audio-hal-enums.h */
     /*
      * If these are modified, please also update Settings.System.VOLUME_SETTINGS
      * and attrs.xml and AudioManager.java.
@@ -101,11 +112,34 @@ public class AudioSystem
      */
     public static final int NUM_STREAMS = 5;
 
-    /** Maximum value for AudioTrack channel count
-     * @hide public for MediaCode only, do not un-hide or change to a numeric literal
+    /*
+     * Framework static final constants that are primitives or Strings
+     * accessed by CTS tests or internal applications must be set from methods
+     * (or in a static block) to prevent Java compile-time replacement.
+     * We set them from methods so they are read from the device framework.
+     * Do not un-hide or change to a numeric literal.
      */
-    public static final int OUT_CHANNEL_COUNT_MAX = native_get_FCC_8();
-    private static native int native_get_FCC_8();
+
+    /** Maximum value for AudioTrack channel count
+     * @hide
+     */
+    public static final int OUT_CHANNEL_COUNT_MAX = native_getMaxChannelCount();
+    private static native int native_getMaxChannelCount();
+
+    /** Maximum value for sample rate, used by AudioFormat.
+     * @hide
+     */
+    public static final int SAMPLE_RATE_HZ_MAX = native_getMaxSampleRate();
+    private static native int native_getMaxSampleRate();
+
+    /** Minimum value for sample rate, used by AudioFormat.
+     * @hide
+     */
+    public static final int SAMPLE_RATE_HZ_MIN = native_getMinSampleRate();
+    private static native int native_getMinSampleRate();
+
+    /** @hide */
+    public static final int FCC_24 = 24; // fixed channel count 24; do not change.
 
     // Expose only the getter method publicly so we can change it in the future
     private static final int NUM_STREAM_TYPES = 12;
@@ -170,7 +204,11 @@ public class AudioSystem
     /** @hide */
     public static final int MODE_CALL_SCREENING     = 4;
     /** @hide */
-    public static final int NUM_MODES               = 5;
+    public static final int MODE_CALL_REDIRECT     = 5;
+    /** @hide */
+    public static final int MODE_COMMUNICATION_REDIRECT  = 6;
+    /** @hide */
+    public static final int NUM_MODES               = 7;
 
     /** @hide */
     public static String modeToString(int mode) {
@@ -182,6 +220,8 @@ public class AudioSystem
             case MODE_NORMAL: return "MODE_NORMAL";
             case MODE_RINGTONE: return "MODE_RINGTONE";
             case MODE_CALL_SCREENING: return "MODE_CALL_SCREENING";
+            case MODE_CALL_REDIRECT: return "MODE_CALL_REDIRECT";
+            case MODE_COMMUNICATION_REDIRECT: return "MODE_COMMUNICATION_REDIRECT";
             default: return "unknown mode (" + mode + ")";
         }
     }
@@ -201,6 +241,11 @@ public class AudioSystem
     public static final int AUDIO_FORMAT_APTX_HD        = 0x21000000;
     /** @hide */
     public static final int AUDIO_FORMAT_LDAC           = 0x23000000;
+    /** @hide */
+    public static final int AUDIO_FORMAT_LC3            = 0x2B000000;
+    /** @hide */
+    public static final int AUDIO_FORMAT_OPUS           = 0x08000000;
+
 
     /** @hide */
     @IntDef(flag = false, prefix = "AUDIO_FORMAT_", value = {
@@ -210,10 +255,29 @@ public class AudioSystem
             AUDIO_FORMAT_SBC,
             AUDIO_FORMAT_APTX,
             AUDIO_FORMAT_APTX_HD,
-            AUDIO_FORMAT_LDAC }
+            AUDIO_FORMAT_LDAC,
+            AUDIO_FORMAT_LC3,
+            AUDIO_FORMAT_OPUS
+           }
     )
     @Retention(RetentionPolicy.SOURCE)
     public @interface AudioFormatNativeEnumForBtCodec {}
+
+    /** @hide */
+    @IntDef(flag = false, prefix = "AUDIO_FORMAT_", value = {
+        AUDIO_FORMAT_LC3}
+    )
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AudioFormatNativeEnumForBtLeAudioCodec {}
+
+    /** @hide */
+    @IntDef(flag = false, prefix = "DEVICE_", value = {
+            DEVICE_OUT_BLUETOOTH_A2DP,
+            DEVICE_OUT_BLE_HEADSET,
+            DEVICE_OUT_BLE_BROADCAST}
+    )
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface BtOffloadDeviceType {}
 
     /**
      * @hide
@@ -227,10 +291,27 @@ public class AudioSystem
             case AUDIO_FORMAT_APTX: return BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX;
             case AUDIO_FORMAT_APTX_HD: return BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX_HD;
             case AUDIO_FORMAT_LDAC: return BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC;
+            case AUDIO_FORMAT_LC3: return BluetoothCodecConfig.SOURCE_CODEC_TYPE_LC3;
+            case AUDIO_FORMAT_OPUS: return BluetoothCodecConfig.SOURCE_CODEC_TYPE_OPUS;
             default:
                 Log.e(TAG, "Unknown audio format 0x" + Integer.toHexString(audioFormat)
                         + " for conversion to BT codec");
                 return BluetoothCodecConfig.SOURCE_CODEC_TYPE_INVALID;
+        }
+    }
+
+    /**
+     * @hide
+     * Convert audio format enum values to Bluetooth LE audio codec values
+     */
+    public static int audioFormatToBluetoothLeAudioSourceCodec(
+            @AudioFormatNativeEnumForBtLeAudioCodec int audioFormat) {
+        switch (audioFormat) {
+            case AUDIO_FORMAT_LC3: return BluetoothLeAudioCodecConfig.SOURCE_CODEC_TYPE_LC3;
+            default:
+                Log.e(TAG, "Unknown audio format 0x" + Integer.toHexString(audioFormat)
+                        + " for conversion to BT LE audio codec");
+                return BluetoothLeAudioCodecConfig.SOURCE_CODEC_TYPE_INVALID;
         }
     }
 
@@ -252,6 +333,10 @@ public class AudioSystem
                 return AudioSystem.AUDIO_FORMAT_APTX_HD;
             case BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC:
                 return AudioSystem.AUDIO_FORMAT_LDAC;
+            case BluetoothCodecConfig.SOURCE_CODEC_TYPE_LC3:
+                return AudioSystem.AUDIO_FORMAT_LC3;
+            case BluetoothCodecConfig.SOURCE_CODEC_TYPE_OPUS:
+                return AudioSystem.AUDIO_FORMAT_OPUS;
             default:
                 Log.e(TAG, "Unknown BT codec 0x" + Integer.toHexString(btCodec)
                         + " for conversion to audio format");
@@ -352,6 +437,24 @@ public class AudioSystem
                 return "AUDIO_FORMAT_LHDC_LL";
             case /* AUDIO_FORMAT_APTX_TWSP       */ 0x2A000000:
                 return "AUDIO_FORMAT_APTX_TWSP";
+            case /* AUDIO_FORMAT_LC3             */ 0x2B000000:
+                return "AUDIO_FORMAT_LC3";
+            case /* AUDIO_FORMAT_MPEGH           */ 0x2C000000:
+                return "AUDIO_FORMAT_MPEGH";
+            case /* AUDIO_FORMAT_IEC60958        */ 0x2D000000:
+                return "AUDIO_FORMAT_IEC60958";
+            case /* AUDIO_FORMAT_DTS_UHD         */ 0x2E000000:
+                return "AUDIO_FORMAT_DTS_UHD";
+            case /* AUDIO_FORMAT_DRA             */ 0x2F000000:
+                return "AUDIO_FORMAT_DRA";
+            case /* AUDIO_FORMAT_APTX_ADAPTIVE_QLEA */ 0x30000000:
+                return "AUDIO_FORMAT_APTX_ADAPTIVE_QLEA";
+            case /* AUDIO_FORMAT_APTX_ADAPTIVE_R4   */ 0x31000000:
+                return "AUDIO_FORMAT_APTX_ADAPTIVE_R4";
+            case /* AUDIO_FORMAT_DTS_HD_MA       */ 0x32000000:
+                return "AUDIO_FORMAT_DTS_HD_MA";
+            case /* AUDIO_FORMAT_DTS_UHD_P2      */ 0x33000000:
+                return "AUDIO_FORMAT_DTS_UHD_P2";
 
             /* Aliases */
             case /* AUDIO_FORMAT_PCM_16_BIT        */ 0x1:
@@ -424,6 +527,14 @@ public class AudioSystem
                 return "AUDIO_FORMAT_MAT_2_0"; // (MAT | MAT_SUB_2_0)
             case /* AUDIO_FORMAT_MAT_2_1           */ 0x24000003:
                 return "AUDIO_FORMAT_MAT_2_1"; // (MAT | MAT_SUB_2_1)
+            case /* AUDIO_FORMAT_MPEGH_SUB_BL_L3   */ 0x2C000013:
+                return "AUDIO_FORMAT_MPEGH_SUB_BL_L3";
+            case /* AUDIO_FORMAT_MPEGH_SUB_BL_L4   */ 0x2C000014:
+                return "AUDIO_FORMAT_MPEGH_SUB_BL_L4";
+            case /* AUDIO_FORMAT_MPEGH_SUB_LC_L3   */ 0x2C000023:
+                return "AUDIO_FORMAT_MPEGH_SUB_LC_L3";
+            case /* AUDIO_FORMAT_MPEGH_SUB_LC_L4   */ 0x2C000024:
+                return "AUDIO_FORMAT_MPEGH_SUB_LC_L4";
             default:
                 return "AUDIO_FORMAT_(" + audioFormat + ")";
         }
@@ -711,6 +822,74 @@ public class AudioSystem
         }
     }
 
+    /**
+     * @hide
+     * Handles events from the audio policy manager about routing events
+     */
+    public interface RoutingUpdateCallback {
+        /**
+         * Callback to notify a routing update event occurred
+         */
+        void onRoutingUpdated();
+    }
+
+    @GuardedBy("AudioSystem.class")
+    private static RoutingUpdateCallback sRoutingUpdateCallback;
+
+    /** @hide */
+    public static void setRoutingCallback(RoutingUpdateCallback cb) {
+        synchronized (AudioSystem.class) {
+            sRoutingUpdateCallback = cb;
+            native_register_routing_callback();
+        }
+    }
+
+    private static void routingCallbackFromNative() {
+        final RoutingUpdateCallback cb;
+        synchronized (AudioSystem.class) {
+            cb = sRoutingUpdateCallback;
+        }
+        if (cb == null) {
+            Log.e(TAG, "routing update from APM was not captured");
+            return;
+        }
+        cb.onRoutingUpdated();
+    }
+
+    /**
+     * @hide
+     * Handles requests from the audio policy manager to (re-)initialize the volume ranges
+     */
+    public interface VolumeRangeInitRequestCallback {
+        /**
+         * Callback to notify volume ranges need to be initialized
+         */
+        void onVolumeRangeInitializationRequested();
+    }
+
+    @GuardedBy("AudioSystem.class")
+    private static VolumeRangeInitRequestCallback sVolRangeInitReqCallback;
+
+    /** @hide */
+    public static void setVolumeRangeInitRequestCallback(VolumeRangeInitRequestCallback cb) {
+        synchronized (AudioSystem.class) {
+            sVolRangeInitReqCallback = cb;
+            native_register_vol_range_init_req_callback();
+        }
+    }
+
+    private static void volRangeInitReqCallbackFromNative() {
+        final VolumeRangeInitRequestCallback cb;
+        synchronized (AudioSystem.class) {
+            cb = sVolRangeInitReqCallback;
+        }
+        if (cb == null) {
+            Log.e(TAG, "APM requested volume range initialization, but no callback found");
+            return;
+        }
+        cb.onVolumeRangeInitializationRequested();
+    }
+
     /*
      * Error codes used by public APIs (AudioTrack, AudioRecord, AudioManager ...)
      * Must be kept in sync with frameworks/base/core/jni/android_media_AudioErrors.h
@@ -782,7 +961,8 @@ public class AudioSystem
      */
 
     //
-    // audio device definitions: must be kept in sync with values in system/core/audio.h
+    // audio device definitions: must be kept in sync with values
+    // in system/media/audio/include/system/audio-hal-enums.h
     //
     /** @hide */
     public static final int DEVICE_NONE = 0x0;
@@ -850,6 +1030,8 @@ public class AudioSystem
     /** @hide */
     public static final int DEVICE_OUT_HDMI_ARC = 0x40000;
     /** @hide */
+    public static final int DEVICE_OUT_HDMI_EARC = 0x40001;
+    /** @hide */
     public static final int DEVICE_OUT_SPDIF = 0x80000;
     /** @hide */
     @UnsupportedAppUsage
@@ -869,9 +1051,13 @@ public class AudioSystem
     /** @hide */
     public static final int DEVICE_OUT_HEARING_AID = 0x8000000;
     /** @hide */
+    public static final int DEVICE_OUT_ECHO_CANCELLER = 0x10000000;
+    /** @hide */
     public static final int DEVICE_OUT_BLE_HEADSET = 0x20000000;
     /** @hide */
     public static final int DEVICE_OUT_BLE_SPEAKER = 0x20000001;
+    /** @hide */
+    public static final int DEVICE_OUT_BLE_BROADCAST = 0x20000002;
 
     /** @hide */
     public static final int DEVICE_OUT_DEFAULT = DEVICE_BIT_DEFAULT;
@@ -919,6 +1105,7 @@ public class AudioSystem
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_TELEPHONY_TX);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_LINE);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_HDMI_ARC);
+        DEVICE_OUT_ALL_SET.add(DEVICE_OUT_HDMI_EARC);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_SPDIF);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_FM);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_AUX_LINE);
@@ -928,8 +1115,10 @@ public class AudioSystem
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_PROXY);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_USB_HEADSET);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_HEARING_AID);
+        DEVICE_OUT_ALL_SET.add(DEVICE_OUT_ECHO_CANCELLER);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_BLE_HEADSET);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_BLE_SPEAKER);
+        DEVICE_OUT_ALL_SET.add(DEVICE_OUT_BLE_BROADCAST);
         DEVICE_OUT_ALL_SET.add(DEVICE_OUT_DEFAULT);
 
         DEVICE_OUT_ALL_A2DP_SET = new HashSet<>();
@@ -950,6 +1139,7 @@ public class AudioSystem
         DEVICE_OUT_ALL_HDMI_SYSTEM_AUDIO_SET = new HashSet<>();
         DEVICE_OUT_ALL_HDMI_SYSTEM_AUDIO_SET.add(DEVICE_OUT_AUX_LINE);
         DEVICE_OUT_ALL_HDMI_SYSTEM_AUDIO_SET.add(DEVICE_OUT_HDMI_ARC);
+        DEVICE_OUT_ALL_HDMI_SYSTEM_AUDIO_SET.add(DEVICE_OUT_HDMI_EARC);
         DEVICE_OUT_ALL_HDMI_SYSTEM_AUDIO_SET.add(DEVICE_OUT_SPDIF);
 
         DEVICE_ALL_HDMI_SYSTEM_AUDIO_AND_SPEAKER_SET = new HashSet<>();
@@ -959,6 +1149,7 @@ public class AudioSystem
         DEVICE_OUT_ALL_BLE_SET = new HashSet<>();
         DEVICE_OUT_ALL_BLE_SET.add(DEVICE_OUT_BLE_HEADSET);
         DEVICE_OUT_ALL_BLE_SET.add(DEVICE_OUT_BLE_SPEAKER);
+        DEVICE_OUT_ALL_BLE_SET.add(DEVICE_OUT_BLE_BROADCAST);
     }
 
     // input devices
@@ -1031,6 +1222,8 @@ public class AudioSystem
     /** @hide */
     public static final int DEVICE_IN_HDMI_ARC = DEVICE_BIT_IN | 0x8000000;
     /** @hide */
+    public static final int DEVICE_IN_HDMI_EARC = DEVICE_BIT_IN | 0x8000001;
+    /** @hide */
     public static final int DEVICE_IN_ECHO_REFERENCE = DEVICE_BIT_IN | 0x10000000;
     /** @hide */
     public static final int DEVICE_IN_BLE_HEADSET = DEVICE_BIT_IN | 0x20000000;
@@ -1044,6 +1237,9 @@ public class AudioSystem
     public static final Set<Integer> DEVICE_IN_ALL_SCO_SET;
     /** @hide */
     public static final Set<Integer> DEVICE_IN_ALL_USB_SET;
+    /** @hide */
+    public static final Set<Integer> DEVICE_IN_ALL_BLE_SET;
+
     static {
         DEVICE_IN_ALL_SET = new HashSet<>();
         DEVICE_IN_ALL_SET.add(DEVICE_IN_COMMUNICATION);
@@ -1071,6 +1267,7 @@ public class AudioSystem
         DEVICE_IN_ALL_SET.add(DEVICE_IN_USB_HEADSET);
         DEVICE_IN_ALL_SET.add(DEVICE_IN_BLUETOOTH_BLE);
         DEVICE_IN_ALL_SET.add(DEVICE_IN_HDMI_ARC);
+        DEVICE_IN_ALL_SET.add(DEVICE_IN_HDMI_EARC);
         DEVICE_IN_ALL_SET.add(DEVICE_IN_ECHO_REFERENCE);
         DEVICE_IN_ALL_SET.add(DEVICE_IN_BLE_HEADSET);
         DEVICE_IN_ALL_SET.add(DEVICE_IN_DEFAULT);
@@ -1082,6 +1279,66 @@ public class AudioSystem
         DEVICE_IN_ALL_USB_SET.add(DEVICE_IN_USB_ACCESSORY);
         DEVICE_IN_ALL_USB_SET.add(DEVICE_IN_USB_DEVICE);
         DEVICE_IN_ALL_USB_SET.add(DEVICE_IN_USB_HEADSET);
+
+        DEVICE_IN_ALL_BLE_SET = new HashSet<>();
+        DEVICE_IN_ALL_BLE_SET.add(DEVICE_IN_BLE_HEADSET);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothDevice(int deviceType) {
+        return isBluetoothA2dpOutDevice(deviceType)
+                || isBluetoothScoDevice(deviceType)
+                || isBluetoothLeDevice(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothOutDevice(int deviceType) {
+        return isBluetoothA2dpOutDevice(deviceType)
+                || isBluetoothScoOutDevice(deviceType)
+                || isBluetoothLeOutDevice(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothInDevice(int deviceType) {
+        return isBluetoothScoInDevice(deviceType)
+                || isBluetoothLeInDevice(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothA2dpOutDevice(int deviceType) {
+        return DEVICE_OUT_ALL_A2DP_SET.contains(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothScoOutDevice(int deviceType) {
+        return DEVICE_OUT_ALL_SCO_SET.contains(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothScoInDevice(int deviceType) {
+        return DEVICE_IN_ALL_SCO_SET.contains(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothScoDevice(int deviceType) {
+        return isBluetoothScoOutDevice(deviceType)
+                || isBluetoothScoInDevice(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothLeOutDevice(int deviceType) {
+        return DEVICE_OUT_ALL_BLE_SET.contains(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothLeInDevice(int deviceType) {
+        return DEVICE_IN_ALL_BLE_SET.contains(deviceType);
+    }
+
+    /** @hide */
+    public static boolean isBluetoothLeDevice(int deviceType) {
+        return isBluetoothLeOutDevice(deviceType)
+                || isBluetoothLeInDevice(deviceType);
     }
 
     /** @hide */
@@ -1125,7 +1382,8 @@ public class AudioSystem
     /** @hide */ public static final String DEVICE_OUT_REMOTE_SUBMIX_NAME = "remote_submix";
     /** @hide */ public static final String DEVICE_OUT_TELEPHONY_TX_NAME = "telephony_tx";
     /** @hide */ public static final String DEVICE_OUT_LINE_NAME = "line";
-    /** @hide */ public static final String DEVICE_OUT_HDMI_ARC_NAME = "hmdi_arc";
+    /** @hide */ public static final String DEVICE_OUT_HDMI_ARC_NAME = "hdmi_arc";
+    /** @hide */ public static final String DEVICE_OUT_HDMI_EARC_NAME = "hdmi_earc";
     /** @hide */ public static final String DEVICE_OUT_SPDIF_NAME = "spdif";
     /** @hide */ public static final String DEVICE_OUT_FM_NAME = "fm_transmitter";
     /** @hide */ public static final String DEVICE_OUT_AUX_LINE_NAME = "aux_line";
@@ -1135,8 +1393,10 @@ public class AudioSystem
     /** @hide */ public static final String DEVICE_OUT_PROXY_NAME = "proxy";
     /** @hide */ public static final String DEVICE_OUT_USB_HEADSET_NAME = "usb_headset";
     /** @hide */ public static final String DEVICE_OUT_HEARING_AID_NAME = "hearing_aid_out";
+    /** @hide */ public static final String DEVICE_OUT_ECHO_CANCELLER_NAME = "echo_canceller";
     /** @hide */ public static final String DEVICE_OUT_BLE_HEADSET_NAME = "ble_headset";
     /** @hide */ public static final String DEVICE_OUT_BLE_SPEAKER_NAME = "ble_speaker";
+    /** @hide */ public static final String DEVICE_OUT_BLE_BROADCAST_NAME = "ble_broadcast";
 
     /** @hide */ public static final String DEVICE_IN_COMMUNICATION_NAME = "communication";
     /** @hide */ public static final String DEVICE_IN_AMBIENT_NAME = "ambient";
@@ -1164,6 +1424,7 @@ public class AudioSystem
     /** @hide */ public static final String DEVICE_IN_BLUETOOTH_BLE_NAME = "bt_ble";
     /** @hide */ public static final String DEVICE_IN_ECHO_REFERENCE_NAME = "echo_reference";
     /** @hide */ public static final String DEVICE_IN_HDMI_ARC_NAME = "hdmi_arc";
+    /** @hide */ public static final String DEVICE_IN_HDMI_EARC_NAME = "hdmi_earc";
     /** @hide */ public static final String DEVICE_IN_BLE_HEADSET_NAME = "ble_headset";
 
     /** @hide */
@@ -1209,6 +1470,8 @@ public class AudioSystem
             return DEVICE_OUT_LINE_NAME;
         case DEVICE_OUT_HDMI_ARC:
             return DEVICE_OUT_HDMI_ARC_NAME;
+        case DEVICE_OUT_HDMI_EARC:
+            return DEVICE_OUT_HDMI_EARC_NAME;
         case DEVICE_OUT_SPDIF:
             return DEVICE_OUT_SPDIF_NAME;
         case DEVICE_OUT_FM:
@@ -1227,13 +1490,17 @@ public class AudioSystem
             return DEVICE_OUT_USB_HEADSET_NAME;
         case DEVICE_OUT_HEARING_AID:
             return DEVICE_OUT_HEARING_AID_NAME;
+        case DEVICE_OUT_ECHO_CANCELLER:
+            return DEVICE_OUT_ECHO_CANCELLER_NAME;
         case DEVICE_OUT_BLE_HEADSET:
             return DEVICE_OUT_BLE_HEADSET_NAME;
         case DEVICE_OUT_BLE_SPEAKER:
             return DEVICE_OUT_BLE_SPEAKER_NAME;
+        case DEVICE_OUT_BLE_BROADCAST:
+            return DEVICE_OUT_BLE_BROADCAST_NAME;
         case DEVICE_OUT_DEFAULT:
         default:
-            return Integer.toString(device);
+            return "0x" + Integer.toHexString(device);
         }
     }
 
@@ -1293,6 +1560,8 @@ public class AudioSystem
             return DEVICE_IN_ECHO_REFERENCE_NAME;
         case DEVICE_IN_HDMI_ARC:
             return DEVICE_IN_HDMI_ARC_NAME;
+        case DEVICE_IN_HDMI_EARC:
+            return DEVICE_IN_HDMI_EARC_NAME;
         case DEVICE_IN_BLE_HEADSET:
             return DEVICE_IN_BLE_HEADSET_NAME;
         case DEVICE_IN_DEFAULT:
@@ -1405,6 +1674,10 @@ public class AudioSystem
     // usage for AudioRecord.startRecordingSync(), must match AudioSystem::sync_event_t
     /** @hide */ public static final int SYNC_EVENT_NONE = 0;
     /** @hide */ public static final int SYNC_EVENT_PRESENTATION_COMPLETE = 1;
+    /** @hide
+     *  Not used by native implementation.
+     *  See {@link AudioRecord.Builder#setSharedAudioEvent(MediaSyncEvent) */
+    public static final int SYNC_EVENT_SHARE_AUDIO_HISTORY = 100;
 
     /**
      * @hide
@@ -1412,9 +1685,24 @@ public class AudioSystem
      *     {@link #AUDIO_STATUS_ERROR} or {@link #AUDIO_STATUS_SERVER_DIED}
      */
     @UnsupportedAppUsage
-    public static native int setDeviceConnectionState(int device, int state,
-                                                      String device_address, String device_name,
-                                                      int codecFormat);
+    public static int setDeviceConnectionState(AudioDeviceAttributes attributes, int state,
+            int codecFormat) {
+        android.media.audio.common.AudioPort port =
+                AidlConversion.api2aidl_AudioDeviceAttributes_AudioPort(attributes);
+        Parcel parcel = Parcel.obtain();
+        port.writeToParcel(parcel, 0);
+        parcel.setDataPosition(0);
+        try {
+            return setDeviceConnectionState(state, parcel, codecFormat);
+        } finally {
+            parcel.recycle();
+        }
+    }
+    /**
+     * @hide
+     */
+    @UnsupportedAppUsage
+    public static native int setDeviceConnectionState(int state, Parcel parcel, int codecFormat);
     /** @hide */
     @UnsupportedAppUsage
     public static native int getDeviceConnectionState(int device, String device_address);
@@ -1495,9 +1783,63 @@ public class AudioSystem
     /** @hide */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static native boolean getMasterMute();
-    /** @hide */
+    /** @hide
+     * Only used (unsupported) for legacy apps.
+     * @deprecated on {@link android.os.Build.VERSION_CODES#T} as new devices
+     *             will have multi-bit device types.
+     *             Use {@link AudioManager#getDevicesForAttributes(AudioAttributes)} instead.
+     */
     @UnsupportedAppUsage
-    public static native int getDevicesForStream(int stream);
+    @Deprecated
+    public static int getDevicesForStream(int stream) {
+        final AudioAttributes attr =
+                AudioProductStrategy.getAudioAttributesForStrategyWithLegacyStreamType(stream);
+        return getDeviceMaskFromSet(generateAudioDeviceTypesSet(
+                getDevicesForAttributes(attr, true /* forVolume */)));
+    }
+
+    /** @hide
+     * Conversion from a device set to a bit mask.
+     *
+     * Legacy compatibility method (use a device list instead of a bit mask).
+     * Conversion to bit mask skips multi-bit (S and later) internal device types
+     * (e.g. AudioSystem.DEVICE_OUT* or AudioManager.DEVICE_OUT*) for legacy
+     * compatibility reasons.  Legacy apps will not understand these new device types
+     * and it will raise false matches with old device types.
+     */
+    public static int getDeviceMaskFromSet(@NonNull Set<Integer> deviceSet) {
+        int deviceMask = DEVICE_NONE; // zero.
+        int deviceInChecksum = DEVICE_BIT_IN;
+        for (Integer device : deviceSet) {
+            if ((device & (device - 1) & ~DEVICE_BIT_IN) != 0) {
+                Log.v(TAG, "getDeviceMaskFromSet skipping multi-bit device value " + device);
+                continue;
+            }
+            deviceMask |= device;
+            deviceInChecksum &= device;
+        }
+        // Validate that deviceSet is either ALL input devices or ALL output devices.
+        // We check that the "OR" of all the DEVICE_BIT_INs == the "AND" of all DEVICE_BIT_INs.
+        if (!deviceSet.isEmpty() && deviceInChecksum != (deviceMask & DEVICE_BIT_IN)) {
+            Log.e(TAG, "getDeviceMaskFromSet: Invalid set: " + deviceSetToString(deviceSet));
+        }
+        return deviceMask;
+    }
+
+    /** @hide */
+    @NonNull
+    public static String deviceSetToString(@NonNull Set<Integer> devices) {
+        int n = 0;
+        StringBuilder sb = new StringBuilder();
+        for (Integer device : devices) {
+            if (n++ > 0) {
+                sb.append(", ");
+            }
+            sb.append(AudioSystem.getDeviceName(device));
+            sb.append("(" + Integer.toHexString(device) + ")");
+        }
+        return sb.toString();
+    }
 
     /**
      * @hide
@@ -1508,13 +1850,14 @@ public class AudioSystem
      *   otherwise (typically one device, except for duplicated paths).
      */
     public static @NonNull ArrayList<AudioDeviceAttributes> getDevicesForAttributes(
-            @NonNull AudioAttributes attributes) {
+            @NonNull AudioAttributes attributes, boolean forVolume) {
         Objects.requireNonNull(attributes);
         final AudioDeviceAttributes[] devices = new AudioDeviceAttributes[MAX_DEVICE_ROUTING];
-        final int res = getDevicesForAttributes(attributes, devices);
+        final int res = getDevicesForAttributes(attributes, devices, forVolume);
         final ArrayList<AudioDeviceAttributes> routeDevices = new ArrayList<>();
         if (res != SUCCESS) {
-            Log.e(TAG, "error " + res + " in getDevicesForAttributes for " + attributes);
+            Log.e(TAG, "error " + res + " in getDevicesForAttributes attributes: " + attributes
+                    + " forVolume: " + forVolume);
             return routeDevices;
         }
 
@@ -1533,7 +1876,8 @@ public class AudioSystem
     private static final int MAX_DEVICE_ROUTING = 4;
 
     private static native int getDevicesForAttributes(@NonNull AudioAttributes aa,
-                                                      @NonNull AudioDeviceAttributes[] devices);
+                                                      @NonNull AudioDeviceAttributes[] devices,
+                                                      boolean forVolume);
 
     /** @hide returns true if master mono is enabled. */
     public static native boolean getMasterMono();
@@ -1544,9 +1888,11 @@ public class AudioSystem
 
     /** @hide returns master balance value in range -1.f -> 1.f, where 0.f is dead center. */
     @TestApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_SETTINGS)
     public static native float getMasterBalance();
     /** @hide Changes the audio balance of the device. */
     @TestApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_SETTINGS)
     public static native int setMasterBalance(float balance);
 
     // helpers for android.media.AudioManager.getProperty(), see description there for meaning
@@ -1565,6 +1911,8 @@ public class AudioSystem
     /** @hide */
     @UnsupportedAppUsage
     public static native int checkAudioFlinger();
+    /** @hide */
+    public static native void setAudioFlingerBinder(IBinder audioFlinger);
 
     /** @hide */
     public static native int listAudioPorts(ArrayList<AudioPort> ports, int[] generation);
@@ -1588,6 +1936,10 @@ public class AudioSystem
     private static native final void native_register_dynamic_policy_callback();
     // declare this instance as having a recording configuration update callback handler
     private static native final void native_register_recording_callback();
+    // declare this instance as having a routing update callback handler
+    private static native void native_register_routing_callback();
+    // declare this instance as having a volume range init request handler
+    private static native void native_register_vol_range_init_req_callback();
 
     // must be kept in sync with value in include/system/audio.h
     /** @hide */ public static final int AUDIO_HW_SYNC_INVALID = 0;
@@ -1630,37 +1982,75 @@ public class AudioSystem
      */
     public static native int setAllowedCapturePolicy(int uid, int flags);
 
-    static boolean isOffloadSupported(@NonNull AudioFormat format, @NonNull AudioAttributes attr) {
-        return native_is_offload_supported(format.getEncoding(), format.getSampleRate(),
+    /**
+     * @hide
+     * Direct playback modes supported by audio HAL implementation.
+     */
+    public static final int DIRECT_NOT_SUPPORTED = 0;
+    public static final int DIRECT_OFFLOAD_SUPPORTED = 1;
+    public static final int DIRECT_OFFLOAD_GAPLESS_SUPPORTED = 3;
+    public static final int DIRECT_BITSTREAM_SUPPORTED = 4;
+
+    /**
+     * @hide
+     * Compressed audio offload decoding modes supported by audio HAL implementation.
+     * Keep in sync with system/media/include/media/audio.h.
+     */
+    public static final int OFFLOAD_NOT_SUPPORTED = DIRECT_NOT_SUPPORTED;
+    public static final int OFFLOAD_SUPPORTED = DIRECT_OFFLOAD_SUPPORTED;
+    public static final int OFFLOAD_GAPLESS_SUPPORTED = 2;
+
+    /**
+     * @hide
+     * Returns how direct playback of an audio format is currently available on the device.
+     * @param format the audio format (codec, sample rate, channels) being checked.
+     * @param attributes the {@link AudioAttributes} to be used for playback
+     * @return the direct playback mode available with given format and attributes. Any combination
+     *         of {@link #DIRECT_NOT_SUPPORTED}, {@link #DIRECT_OFFLOAD_SUPPORTED},
+     *         {@link #DIRECT_OFFLOAD_GAPLESS_SUPPORTED} and {@link #DIRECT_BITSTREAM_SUPPORTED}.
+     */
+    public static native int getDirectPlaybackSupport(
+            @NonNull AudioFormat format, @NonNull AudioAttributes attributes);
+
+    static int getOffloadSupport(@NonNull AudioFormat format, @NonNull AudioAttributes attr) {
+        return native_get_offload_support(format.getEncoding(), format.getSampleRate(),
                 format.getChannelMask(), format.getChannelIndexMask(),
                 attr.getVolumeControlStream());
     }
 
-    private static native boolean native_is_offload_supported(int encoding, int sampleRate,
+    private static native int native_get_offload_support(int encoding, int sampleRate,
             int channelMask, int channelIndexMask, int streamType);
 
     /** @hide */
     public static native int getMicrophones(ArrayList<MicrophoneInfo> microphonesInfo);
 
     /** @hide */
-    public static native int getSurroundFormats(Map<Integer, Boolean> surroundFormats,
-                                                boolean reported);
+    public static native int getSurroundFormats(Map<Integer, Boolean> surroundFormats);
+
+    /** @hide */
+    public static native int getReportedSurroundFormats(ArrayList<Integer> surroundFormats);
 
     /**
      * @hide
-     * Returns a list of audio formats (codec) supported on the A2DP offload path.
+     * Returns a list of audio formats (codec) supported on the A2DP and LE audio offload path.
      */
-    public static native int getHwOffloadEncodingFormatsSupportedForA2DP(
-            ArrayList<Integer> formatList);
+    public static native int getHwOffloadFormatsSupportedForBluetoothMedia(
+            @BtOffloadDeviceType int deviceType, ArrayList<Integer> formatList);
 
     /** @hide */
     public static native int setSurroundFormatEnabled(int audioFormat, boolean enabled);
 
     /**
      * @hide
-     * Communicate UID of active assistant to audio policy service.
+     * Communicate UIDs of the active assistant to audio policy service.
      */
-    public static native int setAssistantUid(int uid);
+    public static native int setActiveAssistantServicesUids(int[] uids);
+
+    /**
+     * @hide
+     * Communicate UIDs of assistant to audio policy service.
+     */
+    public static native int setAssistantServicesUids(int[] uids);
 
     /**
      * @hide
@@ -1680,6 +2070,12 @@ public class AudioSystem
      * @see AudioManager#isHapticPlaybackSupported()
      */
     public static native boolean isHapticPlaybackSupported();
+
+    /**
+     * @hide
+     * @see AudioManager#isUltrasoundSupported()
+     */
+    public static native boolean isUltrasoundSupported();
 
     /**
      * @hide
@@ -1732,12 +2128,46 @@ public class AudioSystem
 
     /**
      * @hide
+     * Remove device as role for product strategy.
+     * @param strategy the id of the strategy to configure
+     * @param role the role of the devices
+     * @param devices the list of devices to be removed as role for the given strategy
+     * @return {@link #SUCCESS} if successfully set
+     */
+    public static int removeDevicesRoleForStrategy(
+            int strategy, int role, @NonNull List<AudioDeviceAttributes> devices) {
+        if (devices.isEmpty()) {
+            return BAD_VALUE;
+        }
+        int[] types = new int[devices.size()];
+        String[] addresses = new String[devices.size()];
+        for (int i = 0; i < devices.size(); ++i) {
+            types[i] = devices.get(i).getInternalType();
+            addresses[i] = devices.get(i).getAddress();
+        }
+        return removeDevicesRoleForStrategy(strategy, role, types, addresses);
+    }
+
+    /**
+     * @hide
      * Remove devices as role for the strategy
+     * @param strategy the id of the strategy to configure
+     * @param role the role of the devices
+     * @param types all device types
+     * @param addresses all device addresses
+     * @return {@link #SUCCESS} if successfully removed
+     */
+    public static native int removeDevicesRoleForStrategy(
+            int strategy, int role, @NonNull int[] types, @NonNull String[] addresses);
+
+    /**
+     * @hide
+     * Remove all devices as role for the strategy
      * @param strategy the id of the strategy to configure
      * @param role the role of the devices
      * @return {@link #SUCCESS} if successfully removed
      */
-    public static native int removeDevicesRoleForStrategy(int strategy, int role);
+    public static native int clearDevicesRoleForStrategy(int strategy, int role);
 
     /**
      * @hide
@@ -1761,7 +2191,7 @@ public class AudioSystem
             types[i] = devices.get(i).getInternalType();
             if (types[i] == AudioSystem.DEVICE_NONE) {
                 types[i] = AudioDeviceInfo.convertDeviceTypeToInternalInputDevice(
-                        devices.get(i).getType());
+                        devices.get(i).getType(), devices.get(i).getAddress());
             }
             addresses[i] = devices.get(i).getAddress();
         }
@@ -1879,6 +2309,77 @@ public class AudioSystem
     public static native int getDevicesForRoleAndCapturePreset(
             int capturePreset, int role, @NonNull List<AudioDeviceAttributes> devices);
 
+    /**
+     * @hide
+     * Set the vibrators' information. The value will be used to initialize HapticGenerator.
+     * @param vibrators a list of all available vibrators
+     * @return command completion status
+     */
+    public static native int setVibratorInfos(@NonNull List<Vibrator> vibrators);
+
+    /**
+     * @hide
+     * If a spatializer effect is present on the platform, this will return an
+     * ISpatializer interface to control this feature.
+     * If no spatializer is present, a null interface is returned.
+     * The INativeSpatializerCallback passed must not be null.
+     * Only one ISpatializer interface can exist at a given time. The native audio policy
+     * service will reject the request if an interface was already acquired and previous owner
+     * did not die or call ISpatializer.release().
+     * @param callback the callback to receive state updates if the ISpatializer
+     *        interface is acquired.
+     * @return the ISpatializer interface made available to control the
+     *        platform spatializer
+     */
+    @Nullable
+    public static ISpatializer getSpatializer(INativeSpatializerCallback callback) {
+        return ISpatializer.Stub.asInterface(nativeGetSpatializer(callback));
+    }
+    private static native IBinder nativeGetSpatializer(INativeSpatializerCallback callback);
+
+    /**
+     * @hide
+     * Queries if some kind of spatialization will be performed if the audio playback context
+     * described by the provided arguments is present.
+     * The context is made of:
+     * - The audio attributes describing the playback use case.
+     * - The audio configuration describing the audio format, channels, sampling rate ...
+     * - The devices describing the sink audio device selected for playback.
+     * All arguments are optional and only the specified arguments are used to match against
+     * supported criteria. For instance, supplying no argument will tell if spatialization is
+     * supported or not in general.
+     * @param attributes audio attributes describing the playback use case
+     * @param format audio configuration describing the audio format, channels, sampling rate...
+     * @param devices the sink audio device selected for playback
+     * @return true if spatialization is enabled for this context, false otherwise.
+     */
+    public static native boolean canBeSpatialized(AudioAttributes attributes,
+                                              AudioFormat format,
+                                              AudioDeviceAttributes[] devices);
+
+    /**
+     * @hide
+     * Register the sound dose callback with the audio server and returns the binder to the
+     * ISoundDose interface.
+     *
+     * @return ISoundDose interface with registered callback.
+     */
+    @Nullable
+    public static ISoundDose getSoundDoseInterface(ISoundDoseCallback callback) {
+        return ISoundDose.Stub.asInterface(nativeGetSoundDose(callback));
+    }
+
+    private static native IBinder nativeGetSoundDose(ISoundDoseCallback callback);
+
+    /**
+     * @hide
+     * @param attributes audio attributes describing the playback use case
+     * @param audioProfilesList the list of AudioProfiles that can be played as direct output
+     * @return {@link #SUCCESS} if the list of AudioProfiles was successfully created (can be empty)
+     */
+    public static native int getDirectProfilesForAttributes(@NonNull AudioAttributes attributes,
+            @NonNull ArrayList<AudioProfile> audioProfilesList);
+
     // Items shared with audio service
 
     /**
@@ -1924,10 +2425,10 @@ public class AudioSystem
     public static int[] DEFAULT_STREAM_VOLUME = new int[] {
         4,  // STREAM_VOICE_CALL
         7,  // STREAM_SYSTEM
-        5,  // STREAM_RING
+        5,  // STREAM_RING           // configured in AudioService by config_audio_notif_vol_default
         5, // STREAM_MUSIC
         6,  // STREAM_ALARM
-        5,  // STREAM_NOTIFICATION
+        5,  // STREAM_NOTIFICATION   // configured in AudioService by config_audio_ring_vol_default
         7,  // STREAM_BLUETOOTH_SCO
         7,  // STREAM_SYSTEM_ENFORCED
         5, // STREAM_DTMF
@@ -1937,7 +2438,8 @@ public class AudioSystem
     };
 
     /** @hide */
-    public static String streamToString(int stream) {
+    @TestApi
+    public static @NonNull String streamToString(int stream) {
         if (stream >= 0 && stream < STREAM_NAMES.length) return STREAM_NAMES[stream];
         if (stream == AudioManager.USE_DEFAULT_STREAM_TYPE) return "USE_DEFAULT_STREAM_TYPE";
         return "UNKNOWN_STREAM_" + stream;
@@ -1982,18 +2484,15 @@ public class AudioSystem
 
     /**
      * @hide
-     * Return a set of audio device types from a bit mask audio device type, which may
+     * Return a set of audio device types from a list of audio device attributes, which may
      * represent multiple audio device types.
-     * FIXME: Remove this when getting ride of bit mask usage of audio device types.
      */
-    public static Set<Integer> generateAudioDeviceTypesSet(int types) {
-        Set<Integer> deviceTypes = new HashSet<>();
-        Set<Integer> allDeviceTypes =
-                (types & DEVICE_BIT_IN) == 0 ? DEVICE_OUT_ALL_SET : DEVICE_IN_ALL_SET;
-        for (int deviceType : allDeviceTypes) {
-            if ((types & deviceType) == deviceType) {
-                deviceTypes.add(deviceType);
-            }
+    @NonNull
+    public static Set<Integer> generateAudioDeviceTypesSet(
+            @NonNull List<AudioDeviceAttributes> deviceList) {
+        Set<Integer> deviceTypes = new TreeSet<>();
+        for (AudioDeviceAttributes device : deviceList) {
+            deviceTypes.add(device.getInternalType());
         }
         return deviceTypes;
     }
@@ -2004,7 +2503,7 @@ public class AudioSystem
      */
     public static Set<Integer> intersectionAudioDeviceTypes(
             @NonNull Set<Integer> a, @NonNull Set<Integer> b) {
-        Set<Integer> intersection = new HashSet<>(a);
+        Set<Integer> intersection = new TreeSet<>(a);
         intersection.retainAll(b);
         return intersection;
     }
@@ -2015,6 +2514,14 @@ public class AudioSystem
      */
     public static boolean isSingleAudioDeviceType(@NonNull Set<Integer> types, int type) {
         return types.size() == 1 && types.contains(type);
+    }
+
+    /**
+     * @hide
+     * Return true if the audio device type is a Bluetooth LE Audio device.
+     */
+    public static boolean isLeAudioDeviceType(int type) {
+        return DEVICE_OUT_ALL_BLE_SET.contains(type);
     }
 
     /** @hide */
@@ -2032,5 +2539,66 @@ public class AudioSystem
      * Keep in sync with core/jni/android_media_DeviceCallback.h.
      */
     final static int NATIVE_EVENT_ROUTING_CHANGE = 1000;
-}
 
+    /**
+     * @hide
+     * Query the mixer attributes that can be set as preferred mixer attributes for the given
+     * device.
+     */
+    public static native int getSupportedMixerAttributes(
+            int deviceId, @NonNull List<AudioMixerAttributes> mixerAttrs);
+
+    /**
+     * @hide
+     * Set preferred mixer attributes for a given device when playing particular
+     * audio attributes.
+     */
+    public static native int setPreferredMixerAttributes(
+            @NonNull AudioAttributes attributes,
+            int portId,
+            int uid,
+            @NonNull AudioMixerAttributes mixerAttributes);
+
+    /**
+     * @hide
+     * Get preferred mixer attributes that is previously set via
+     * {link #setPreferredMixerAttributes}.
+     */
+    public static native int getPreferredMixerAttributes(
+            @NonNull AudioAttributes attributes, int portId,
+            List<AudioMixerAttributes> mixerAttributesList);
+
+    /**
+     * @hide
+     * Clear preferred mixer attributes that is previously set via
+     * {@link #setPreferredMixerAttributes}
+     */
+    public static native int clearPreferredMixerAttributes(
+            @NonNull AudioAttributes attributes, int portId, int uid);
+
+
+    /**
+     * Requests if the implementation supports controlling the latency modes
+     * over the Bluetooth A2DP or LE Audio links.
+     *
+     * @return true if supported, false otherwise
+     *
+     * @hide
+     */
+    public static native boolean supportsBluetoothVariableLatency();
+
+    /**
+     * Enables or disables the variable Bluetooth latency control mechanism in the
+     * audio framework and the audio HAL. This does not apply to the latency mode control
+     * on the spatializer output as this is a built-in feature.
+     *
+     * @hide
+     */
+    public static native int setBluetoothVariableLatencyEnabled(boolean enabled);
+
+    /**
+     * Indicates if the variable Bluetooth latency control mechanism is enabled or disabled.
+     * @hide
+     */
+    public static native boolean isBluetoothVariableLatencyEnabled();
+}

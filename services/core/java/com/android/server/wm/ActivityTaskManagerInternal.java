@@ -21,20 +21,28 @@ import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.ActivityManager;
 import android.app.AppProtoEnums;
+import android.app.BackgroundStartPrivileges;
 import android.app.IActivityManager;
+import android.app.IAppTask;
 import android.app.IApplicationThread;
+import android.app.ITaskStackListener;
 import android.app.ProfilerInfo;
 import android.content.ComponentName;
 import android.content.IIntentSender;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.res.CompatibilityInfo;
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.LocaleList;
 import android.os.RemoteException;
 import android.service.voice.IVoiceInteractionSession;
+import android.util.IntArray;
 import android.util.proto.ProtoOutputStream;
+import android.window.TaskSnapshot;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.IVoiceInteractor;
 import com.android.server.am.PendingIntentRecord;
 import com.android.server.am.UserState;
@@ -137,6 +145,13 @@ public abstract class ActivityTaskManagerInternal {
         void acquire(int displayId);
 
         /**
+         * Acquires a sleep token.
+         * @param displayId The display to apply to.
+         * @param isSwappingDisplay Whether the display is swapping to another physical display.
+         */
+        void acquire(int displayId, boolean isSwappingDisplay);
+
+        /**
          * Releases the sleep token.
          * @param displayId The display to apply to.
          */
@@ -162,22 +177,18 @@ public abstract class ActivityTaskManagerInternal {
             IVoiceInteractor mInteractor);
 
     /**
-     * Returns the top activity from each of the currently visible stacks. The first entry will be
-     * the focused activity.
+     * Returns the top activity from each of the currently visible root tasks, and the related task
+     * id. The first entry will be the focused activity.
+     *
+     * <p>NOTE: If the top activity is in the split screen, the other activities in the same split
+     * screen will also be returned.
      */
-    public abstract List<IBinder> getTopVisibleActivities();
+    public abstract List<ActivityAssistInfo> getTopVisibleActivities();
 
     /**
      * Returns whether {@code uid} has any resumed activity.
      */
     public abstract boolean hasResumedActivity(int uid);
-
-    /**
-     * Notify listeners that contents are drawn for the first time on a single task display.
-     *
-     * @param displayId An ID of the display on which contents are drawn.
-     */
-    public abstract void notifySingleTaskDisplayDrawn(int displayId);
 
     /**
      * Start activity {@code intents} as if {@code packageName/featureId} on user {@code userId} did
@@ -211,14 +222,27 @@ public abstract class ActivityTaskManagerInternal {
             String callingPackage, @Nullable String callingFeatureId, Intent[] intents,
             String[] resolvedTypes, IBinder resultTo, SafeActivityOptions options, int userId,
             boolean validateIncomingUser, PendingIntentRecord originatingPendingIntent,
-            boolean allowBackgroundActivityStart);
+            BackgroundStartPrivileges backgroundStartPrivileges);
 
     public abstract int startActivityInPackage(int uid, int realCallingPid, int realCallingUid,
             String callingPackage, @Nullable String callingFeaturId, Intent intent,
             String resolvedType, IBinder resultTo, String resultWho, int requestCode,
             int startFlags, SafeActivityOptions options, int userId, Task inTask, String reason,
             boolean validateIncomingUser, PendingIntentRecord originatingPendingIntent,
-            boolean allowBackgroundActivityStart);
+            BackgroundStartPrivileges backgroundStartPrivileges);
+
+    /**
+     * Callback to be called on certain activity start scenarios.
+     *
+     * @see BackgroundActivityStartCallback
+     */
+    public abstract void setBackgroundActivityStartCallback(
+            @Nullable BackgroundActivityStartCallback callback);
+
+    /**
+     * Sets the list of UIDs that contain an active accessibility service.
+     */
+    public abstract void setAccessibilityServiceUids(IntArray uids);
 
     /**
      * Start activity {@code intent} without calling user-id check.
@@ -233,21 +257,6 @@ public abstract class ActivityTaskManagerInternal {
             int startFlags, @Nullable Bundle options, int userId);
 
     /**
-     * Called when Keyguard flags might have changed.
-     *
-     * @param callback Callback to run after activity visibilities have been reevaluated. This can
-     *                 be used from window manager so that when the callback is called, it's
-     *                 guaranteed that all apps have their visibility updated accordingly.
-     * @param displayId The id of the display where the keyguard flags changed.
-     */
-    public abstract void notifyKeyguardFlagsChanged(@Nullable Runnable callback, int displayId);
-
-    /**
-     * Called when the trusted state of Keyguard has changed.
-     */
-    public abstract void notifyKeyguardTrustedChanged();
-
-    /**
      * Called after virtual display Id is updated by
      * {@link com.android.server.vr.Vr2dDisplay} with a specific
      * {@param vr2dDisplayId}.
@@ -255,12 +264,14 @@ public abstract class ActivityTaskManagerInternal {
     public abstract void setVr2dDisplayId(int vr2dDisplayId);
 
     /**
-     * Set focus on an activity.
-     * @param token The IApplicationToken for the activity
+     * Registers a {@link ScreenObserver}.
      */
-    public abstract void setFocusedActivity(IBinder token);
-
     public abstract void registerScreenObserver(ScreenObserver observer);
+
+    /**
+     * Unregisters the given {@link ScreenObserver}.
+     */
+    public abstract void unregisterScreenObserver(ScreenObserver observer);
 
     /**
      * Returns is the caller has the same uid as the Recents component
@@ -273,15 +284,17 @@ public abstract class ActivityTaskManagerInternal {
     public abstract boolean isRecentsComponentHomeActivity(int userId);
 
     /**
-     * Cancels any currently running recents animation.
+     * Returns true if the app can close system dialogs. Otherwise it either throws a {@link
+     * SecurityException} or returns false with a logcat message depending on whether the app
+     * targets SDK level {@link android.os.Build.VERSION_CODES#S} or not.
      */
-    public abstract void cancelRecentsAnimation(boolean restoreHomeStackPosition);
+    public abstract boolean checkCanCloseSystemDialogs(int pid, int uid,
+            @Nullable String packageName);
 
     /**
-     * This enforces {@code func} can only be called if either the caller is Recents activity or
-     * has {@code permission}.
+     * Returns whether the app can close system dialogs or not.
      */
-    public abstract void enforceCallerIsRecentsOrHasPermission(String permission, String func);
+    public abstract boolean canCloseSystemDialogs(int pid, int uid);
 
     /**
      * Called after the voice interaction service has changed.
@@ -290,8 +303,16 @@ public abstract class ActivityTaskManagerInternal {
 
     /**
      * Called when the device changes its dreaming state.
+     *
+     * @param activeDreamComponent The currently active dream. If null, the device is not dreaming.
      */
-    public abstract void notifyDreamStateChanged(boolean dreaming);
+    public abstract void notifyActiveDreamChanged(@Nullable ComponentName activeDreamComponent);
+
+    /**
+     * Starts a dream activity in the DreamService's process.
+     */
+    public abstract IAppTask startDreamActivity(@NonNull Intent intent, int callingUid,
+            int callingPid);
 
     /**
      * Set a uid that is allowed to bypass stopped app switches, launching an app
@@ -316,11 +337,10 @@ public abstract class ActivityTaskManagerInternal {
     public abstract void onProcessRemoved(String name, int uid);
     public abstract void onCleanUpApplicationRecord(WindowProcessController proc);
     public abstract int getTopProcessState();
-    public abstract boolean isHeavyWeightProcess(WindowProcessController proc);
+    public abstract boolean useTopSchedGroupForTopProcess();
     public abstract void clearHeavyWeightProcessIfEquals(WindowProcessController proc);
     public abstract void finishHeavyWeightApp();
 
-    public abstract boolean isDreaming();
     public abstract boolean isSleeping();
     public abstract boolean isShuttingDown();
     public abstract boolean shuttingDown(boolean booted, int timeout);
@@ -331,8 +351,8 @@ public abstract class ActivityTaskManagerInternal {
     public abstract void onProcessMapped(int pid, WindowProcessController proc);
     public abstract void onProcessUnMapped(int pid);
 
-    public abstract void onPackageDataCleared(String name);
-    public abstract void onPackageUninstalled(String name);
+    public abstract void onPackageDataCleared(String name, int userId);
+    public abstract void onPackageUninstalled(String name, int userId);
     public abstract void onPackageAdded(String name, boolean replacing);
     public abstract void onPackageReplaced(ApplicationInfo aInfo);
 
@@ -341,13 +361,18 @@ public abstract class ActivityTaskManagerInternal {
     public final class ActivityTokens {
         private final @NonNull IBinder mActivityToken;
         private final @NonNull IBinder mAssistToken;
+        private final @NonNull IBinder mShareableActivityToken;
         private final @NonNull IApplicationThread mAppThread;
+        private final int mUid;
 
         public ActivityTokens(@NonNull IBinder activityToken,
-                @NonNull IBinder assistToken, @NonNull IApplicationThread appThread) {
+                @NonNull IBinder assistToken, @NonNull IApplicationThread appThread,
+                @NonNull IBinder shareableActivityToken, int uid) {
             mActivityToken = activityToken;
             mAssistToken = assistToken;
             mAppThread = appThread;
+            mShareableActivityToken = shareableActivityToken;
+            mUid = uid;
         }
 
         /**
@@ -365,33 +390,47 @@ public abstract class ActivityTaskManagerInternal {
         }
 
         /**
+         * @return The sharable activity token..
+         */
+        public @NonNull IBinder getShareableActivityToken() {
+            return mShareableActivityToken;
+        }
+
+        /**
          * @return The assist token.
          */
         public @NonNull IApplicationThread getApplicationThread() {
             return mAppThread;
         }
-    }
 
-    /**
-     * Set the corresponding display information for the process global configuration. To be called
-     * when we need to show IME on a different display.
-     *
-     * @param pid The process id associated with the IME window.
-     * @param displayId The ID of the display showing the IME.
-     */
-    public abstract void onImeWindowSetOnDisplay(int pid, int displayId);
+        /**
+         * @return The UID of the activity
+         */
+        public int getUid() {
+            return mUid;
+        }
+    }
 
     public abstract void sendActivityResult(int callingUid, IBinder activityToken,
             String resultWho, int requestCode, int resultCode, Intent data);
     public abstract void clearPendingResultForActivity(
             IBinder activityToken, WeakReference<PendingIntentRecord> pir);
 
+    /** Returns the component name of the activity token. */
+    @Nullable
+    public abstract ComponentName getActivityName(IBinder activityToken);
+
     /**
-     * @return the activity token and IApplicationThread for the top activity in the task or null
-     * if there isn't a top activity with a valid process.
+     * Returns non-finishing Activity that have a process attached for the given task and the token
+     * with the activity token and the IApplicationThread or null if there is no Activity with a
+     * valid process. Given the null token for the task will return the top Activity in the task.
+     *
+     * @param taskId the Activity task id.
+     * @param token the Activity token, set null if get top Activity for the given task id.
      */
     @Nullable
-    public abstract ActivityTokens getTopActivityForTask(int taskId);
+    public abstract ActivityTokens getAttachedNonFinishingActivityForTask(int taskId,
+            IBinder token);
 
     public abstract IIntentSender getIntentSender(int type, String packageName,
             @Nullable String featureId, int callingUid, int userId, IBinder token, String resultWho,
@@ -419,8 +458,6 @@ public abstract class ActivityTaskManagerInternal {
             boolean allowInstrumenting, boolean fromHomeKey);
     /** Start home activities on all displays that support system decorations. */
     public abstract boolean startHomeOnAllDisplays(int userId, String reason);
-    /** @return true if the given process is the factory test process. */
-    public abstract boolean isFactoryTestProcess(WindowProcessController wpc);
     public abstract void updateTopComponentForFactoryTest();
     public abstract void handleAppDied(WindowProcessController wpc, boolean restarting,
             Runnable finishInstrumentationCallback);
@@ -447,7 +484,7 @@ public abstract class ActivityTaskManagerInternal {
     public abstract boolean attachApplication(WindowProcessController wpc) throws RemoteException;
 
     /** @see IActivityManager#notifyLockedProfile(int) */
-    public abstract void notifyLockedProfile(@UserIdInt int userId, int currentUserId);
+    public abstract void notifyLockedProfile(@UserIdInt int userId);
 
     /** @see IActivityManager#startConfirmDeviceCredentialIntent(Intent, Bundle) */
     public abstract void startConfirmDeviceCredentialIntent(Intent intent, Bundle options);
@@ -455,18 +492,10 @@ public abstract class ActivityTaskManagerInternal {
     /** Writes current activity states to the proto stream. */
     public abstract void writeActivitiesToProto(ProtoOutputStream proto);
 
-    /**
-     * Saves the current activity manager state and includes the saved state in the next dump of
-     * activity manager.
-     */
-    public abstract void saveANRState(String reason);
-
-    /** Clears the previously saved activity manager ANR state. */
-    public abstract void clearSavedANRState();
-
-    /** Dump the current state based on the command. */
+    /** Dump the current state based on the command and filters. */
     public abstract void dump(String cmd, FileDescriptor fd, PrintWriter pw, String[] args,
-            int opti, boolean dumpAll, boolean dumpClient, String dumpPackage);
+            int opti, boolean dumpAll, boolean dumpClient, String dumpPackage,
+            int displayIdFilter);
 
     /** Dump the current state for inclusion in process dump. */
     public abstract boolean dumpForProcesses(FileDescriptor fd, PrintWriter pw, boolean dumpAll,
@@ -479,8 +508,8 @@ public abstract class ActivityTaskManagerInternal {
 
     /** Dump the current activities state. */
     public abstract boolean dumpActivity(FileDescriptor fd, PrintWriter pw, String name,
-            String[] args, int opti, boolean dumpAll, boolean dumpVisibleStacksOnly,
-            boolean dumpFocusedStackOnly);
+            String[] args, int opti, boolean dumpAll, boolean dumpVisibleRootTasksOnly,
+            boolean dumpFocusedRootTaskOnly, int displayIdFilter, @UserIdInt int userId);
 
     /** Dump the current state for inclusion in oom dump. */
     public abstract void dumpForOom(PrintWriter pw);
@@ -490,9 +519,6 @@ public abstract class ActivityTaskManagerInternal {
 
     /** @return the process for the top-most resumed activity in the system. */
     public abstract WindowProcessController getTopApp();
-
-    /** Generate oom-score-adjustment rank for all tasks in the system based on z-order. */
-    public abstract void rankTaskLayersIfNeeded();
 
     /** Destroy all activities. */
     public abstract void scheduleDestroyAllActivities(String reason);
@@ -517,11 +543,7 @@ public abstract class ActivityTaskManagerInternal {
 
     public abstract void onUidActive(int uid, int procState);
     public abstract void onUidInactive(int uid);
-    public abstract void onActiveUidsCleared();
     public abstract void onUidProcStateChanged(int uid, int procState);
-
-    public abstract void onUidAddedToPendingTempAllowlist(int uid, String tag);
-    public abstract void onUidRemovedFromPendingTempAllowlist(int uid);
 
     /** Handle app crash event in {@link android.app.IActivityController} if there is one. */
     public abstract boolean handleAppCrashInActivityController(String processName, int pid,
@@ -536,9 +558,6 @@ public abstract class ActivityTaskManagerInternal {
     /** Flush recent tasks to disk. */
     public abstract void flushRecentTasks();
 
-    public abstract WindowProcessController getHomeProcess();
-    public abstract WindowProcessController getPreviousProcess();
-
     public abstract void clearLockedTasks(String reason);
     public abstract void updateUserConfiguration();
     public abstract boolean canShowErrorDialogs();
@@ -550,12 +569,20 @@ public abstract class ActivityTaskManagerInternal {
     public abstract ActivityMetricsLaunchObserverRegistry getLaunchObserverRegistry();
 
     /**
+     * Returns the URI permission owner associated with the given activity (see
+     * {@link ActivityRecord#getUriPermissionsLocked()}). If the passed-in activity token is
+     * invalid, returns null.
+     */
+    @Nullable
+    public abstract IBinder getUriPermissionOwnerForActivity(@NonNull IBinder activityToken);
+
+    /**
      * Gets bitmap snapshot of the provided task id.
      *
      * <p>Warning! this may restore the snapshot from disk so can block, don't call in a latency
      * sensitive environment.
      */
-    public abstract ActivityManager.TaskSnapshot getTaskSnapshotBlocking(int taskId,
+    public abstract TaskSnapshot getTaskSnapshotBlocking(int taskId,
             boolean isLowResolution);
 
     /** Returns true if uid is considered foreground for activity start purposes. */
@@ -566,12 +593,189 @@ public abstract class ActivityTaskManagerInternal {
      */
     public abstract void setDeviceOwnerUid(int uid);
 
-    /** Set all associated companion app that belongs to an userId. */
-    public abstract void setCompanionAppPackages(int userId, Set<String> companionAppPackages);
+    /**
+     * Called by DevicePolicyManagerService to set the uids of the profile owners.
+     */
+    public abstract void setProfileOwnerUids(Set<Integer> uids);
+
+    /**
+     * Set all associated companion app that belongs to a userId.
+     * @param userId
+     * @param companionAppUids ActivityTaskManager will take ownership of this Set, the caller
+     *                         shouldn't touch the Set after calling this interface.
+     */
+    public abstract void setCompanionAppUids(int userId, Set<Integer> companionAppUids);
 
     /**
      * @param packageName The package to check
      * @return Whether the package is the base of any locked task
      */
     public abstract boolean isBaseOfLockedTask(String packageName);
+
+    /**
+     * Creates an interface to update configuration for the calling application.
+     */
+    public abstract PackageConfigurationUpdater createPackageConfigurationUpdater();
+
+    /**
+     * Creates an interface to update configuration for an arbitrary application specified by it's
+     * packageName and userId.
+     */
+    public abstract PackageConfigurationUpdater createPackageConfigurationUpdater(
+            String packageName, int userId);
+
+    /**
+     * Retrieves and returns the app-specific configuration for an arbitrary application specified
+     * by its packageName and userId. Returns null if no app-specific configuration has been set.
+     */
+    @Nullable
+    public abstract PackageConfig getApplicationConfig(String packageName,
+            int userId);
+
+    /**
+     * Holds app-specific configurations.
+     */
+    public static class PackageConfig {
+        /**
+         * nightMode for the application, null if app-specific nightMode is not set.
+         */
+        @Nullable
+        public final Integer mNightMode;
+
+        /**
+         * {@link LocaleList} for the application, null if app-specific locales are not set.
+         */
+        @Nullable
+        public final LocaleList mLocales;
+
+        /**
+         * Gender for the application, null if app-specific grammatical gender is not set.
+         */
+        @Nullable
+        public final @Configuration.GrammaticalGender
+        Integer mGrammaticalGender;
+
+        @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+        public PackageConfig(Integer nightMode, LocaleList locales,
+                @Configuration.GrammaticalGender Integer grammaticalGender) {
+            mNightMode = nightMode;
+            mLocales = locales;
+            mGrammaticalGender = grammaticalGender;
+        }
+
+        /**
+         * Returns the string representation of the app-specific configuration.
+         */
+        @Override
+        public String toString() {
+            return "PackageConfig: nightMode " + mNightMode + " locales " + mLocales;
+        }
+    }
+
+    /**
+     * An interface to update configuration for an application, and will persist override
+     * configuration for this package.
+     */
+    public interface PackageConfigurationUpdater {
+        /**
+         * Sets the dark mode for the current application. This setting is persisted and will
+         * override the system configuration for this application.
+         */
+        PackageConfigurationUpdater setNightMode(int nightMode);
+
+        /**
+         * Sets the app-specific locales for the application referenced by this updater.
+         * This setting is persisted and will overlay on top of the system locales for
+         * the said application.
+         * @return the current {@link PackageConfigurationUpdater} updated with the provided locale.
+         *
+         * <p>NOTE: This method should not be called by clients directly to set app locales,
+         * instead use the {@link LocaleManagerService#setApplicationLocales}
+         */
+        PackageConfigurationUpdater setLocales(LocaleList locales);
+
+        /**
+         * Sets the gender for the current application. This setting is persisted and will
+         * override the system configuration for this application.
+         */
+        PackageConfigurationUpdater setGrammaticalGender(
+                @Configuration.GrammaticalGender int gender);
+
+        /**
+         * Commit changes.
+         * @return true if the configuration changes were persisted,
+         * false if there were no changes, or if erroneous inputs were provided, such as:
+         * <ui>
+         *     <li>Invalid packageName</li>
+         *     <li>Invalid userId</li>
+         *     <li>no WindowProcessController found for the package</li>
+         * </ui>
+         */
+        boolean commit();
+    }
+
+    /**
+     * A utility method to check AppOps and PackageManager for SYSTEM_ALERT_WINDOW permission.
+     */
+    public abstract boolean hasSystemAlertWindowPermission(int callingUid, int callingPid,
+            String callingPackage);
+
+    /**
+     * Registers a callback which can intercept activity starts.
+     * @throws IllegalArgumentException if duplicate ids are provided or the provided {@code
+     * callback} is null
+     * @see ActivityInterceptorCallbackRegistry
+     * #registerActivityInterceptorCallback(int, ActivityInterceptorCallback)
+     */
+    public abstract void registerActivityStartInterceptor(
+            @ActivityInterceptorCallback.OrderedId int id,
+            ActivityInterceptorCallback callback);
+
+    /**
+     * Unregisters an {@link ActivityInterceptorCallback}.
+     * @throws IllegalArgumentException if id is not registered
+     * @see ActivityInterceptorCallbackRegistry#unregisterActivityInterceptorCallback(int)
+     */
+    public abstract void unregisterActivityStartInterceptor(
+            @ActivityInterceptorCallback.OrderedId int id);
+
+    /** Get the most recent task excluding the first running task (the one on the front most). */
+    public abstract ActivityManager.RecentTaskInfo getMostRecentTaskFromBackground();
+
+    /** Get the app tasks for a package */
+    public abstract List<ActivityManager.AppTask> getAppTasks(String pkgName, int uid);
+
+    /**
+     * Determine if there exists a task which meets the criteria set by the PermissionPolicyService
+     * to show a system-owned permission dialog over, for a given package
+     * @see PermissionPolicyInternal.shouldShowNotificationDialogForTask
+     *
+     * @param pkgName The package whose activity must be top
+     * @param uid The uid that must have a top activity
+     * @return a task ID if a valid task ID is found. Otherwise, return INVALID_TASK_ID
+     */
+    public abstract int getTaskToShowPermissionDialogOn(String pkgName, int uid);
+
+    /**
+     * Attempts to restart the process associated with the top most Activity associated with the
+     * given {@code packageName} in the task associated with the given {@code taskId}.
+     *
+     * This will request the process of the activity to restart with its saved state (via
+     * {@link android.app.Activity#onSaveInstanceState(Bundle)}) if possible. If the activity is in
+     * background the process will be killed keeping its record.
+     */
+    public abstract void restartTaskActivityProcessIfVisible(
+            int taskId, @NonNull String packageName);
+
+    /** Sets the task stack listener that gets callbacks when a task stack changes. */
+    public abstract void registerTaskStackListener(ITaskStackListener listener);
+
+    /** Unregister a task stack listener so that it stops receiving callbacks. */;
+    public abstract void unregisterTaskStackListener(ITaskStackListener listener);
+
+    /**
+     * Gets the id of the display the activity was launched on.
+     * @param token The activity token.
+     */
+    public abstract int getDisplayId(IBinder token);
 }

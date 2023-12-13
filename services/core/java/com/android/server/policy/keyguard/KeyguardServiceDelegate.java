@@ -15,8 +15,10 @@ import android.content.res.Resources;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.UserHandle;
+import android.service.dreams.DreamManagerInternal;
 import android.util.Log;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
@@ -26,8 +28,10 @@ import com.android.internal.policy.IKeyguardDismissCallback;
 import com.android.internal.policy.IKeyguardDrawnCallback;
 import com.android.internal.policy.IKeyguardExitCallback;
 import com.android.internal.policy.IKeyguardService;
+import com.android.server.LocalServices;
 import com.android.server.UiThread;
 import com.android.server.policy.WindowManagerPolicy.OnKeyguardExitResult;
+import com.android.server.wm.EventLogTags;
 
 import java.io.PrintWriter;
 
@@ -58,14 +62,26 @@ public class KeyguardServiceDelegate {
 
     private DrawnListener mDrawnListenerWhenConnect;
 
+    private final DreamManagerInternal.DreamManagerStateListener mDreamManagerStateListener =
+            new DreamManagerInternal.DreamManagerStateListener() {
+                @Override
+                public void onDreamingStarted() {
+                    KeyguardServiceDelegate.this.onDreamingStarted();
+                }
+
+                @Override
+                public void onDreamingStopped() {
+                    KeyguardServiceDelegate.this.onDreamingStopped();
+                }
+            };
+
     private static final class KeyguardState {
         KeyguardState() {
             reset();
         }
         boolean showing;
-        boolean showingAndNotOccluded;
         boolean inputRestricted;
-        boolean occluded;
+        volatile boolean occluded;
         boolean secure;
         boolean dreaming;
         boolean systemIsReady;
@@ -82,7 +98,7 @@ public class KeyguardServiceDelegate {
             // the event something checks before the service is actually started.
             // KeyguardService itself should default to this state until the real state is known.
             showing = true;
-            showingAndNotOccluded = true;
+            occluded = false;
             secure = true;
             deviceHasKeyguard = true;
             enabled = true;
@@ -147,7 +163,6 @@ public class KeyguardServiceDelegate {
                 Context.BIND_AUTO_CREATE, mHandler, UserHandle.SYSTEM)) {
             Log.v(TAG, "*** Keyguard: can't bind to " + keyguardComponent);
             mKeyguardState.showing = false;
-            mKeyguardState.showingAndNotOccluded = false;
             mKeyguardState.secure = false;
             synchronized (mKeyguardState) {
                 // TODO: Fix synchronisation model in this class. The other state in this class
@@ -158,6 +173,11 @@ public class KeyguardServiceDelegate {
         } else {
             if (DEBUG) Log.v(TAG, "*** Keyguard started");
         }
+
+        final DreamManagerInternal dreamManager =
+                LocalServices.getService(DreamManagerInternal.class);
+
+        dreamManager.registerDreamManagerStateListener(mDreamManagerStateListener);
     }
 
     private final ServiceConnection mKeyguardConnection = new ServiceConnection() {
@@ -176,7 +196,8 @@ public class KeyguardServiceDelegate {
                 // This is used to hide the scrim once keyguard displays.
                 if (mKeyguardState.interactiveState == INTERACTIVE_STATE_AWAKE
                         || mKeyguardState.interactiveState == INTERACTIVE_STATE_WAKING) {
-                    mKeyguardService.onStartedWakingUp();
+                    mKeyguardService.onStartedWakingUp(PowerManager.WAKE_REASON_UNKNOWN,
+                            false /* cameraGestureTriggered */);
                 }
                 if (mKeyguardState.interactiveState == INTERACTIVE_STATE_AWAKE) {
                     mKeyguardService.onFinishedWakingUp();
@@ -199,6 +220,9 @@ public class KeyguardServiceDelegate {
             }
             if (!mKeyguardState.enabled) {
                 mKeyguardService.setKeyguardEnabled(mKeyguardState.enabled);
+            }
+            if (mKeyguardState.dreaming) {
+                mKeyguardService.onDreamingStarted();
             }
         }
 
@@ -232,13 +256,6 @@ public class KeyguardServiceDelegate {
         return false;
     }
 
-    public boolean hasLockscreenWallpaper() {
-        if (mKeyguardService != null) {
-            return mKeyguardService.hasLockscreenWallpaper();
-        }
-        return false;
-    }
-
     public boolean hasKeyguard() {
         return mKeyguardState.deviceHasKeyguard;
     }
@@ -256,12 +273,21 @@ public class KeyguardServiceDelegate {
         }
     }
 
-    public void setOccluded(boolean isOccluded, boolean animate) {
-        if (mKeyguardService != null) {
-            if (DEBUG) Log.v(TAG, "setOccluded(" + isOccluded + ") animate=" + animate);
-            mKeyguardService.setOccluded(isOccluded, animate);
+    public void setOccluded(boolean isOccluded, boolean notify) {
+        if (mKeyguardService != null && notify) {
+            if (DEBUG) Log.v(TAG, "setOccluded(" + isOccluded + ")");
+            EventLogTags.writeWmSetKeyguardOccluded(
+                    isOccluded ? 1 : 0,
+                    0 /* animate */,
+                    0 /* transit */,
+                    "setOccluded");
+            mKeyguardService.setOccluded(isOccluded, false /* animate */);
         }
         mKeyguardState.occluded = isOccluded;
+    }
+
+    public boolean isOccluded() {
+        return mKeyguardState.occluded;
     }
 
     public void dismiss(IKeyguardDismissCallback callback, CharSequence message) {
@@ -291,10 +317,11 @@ public class KeyguardServiceDelegate {
         mKeyguardState.dreaming = false;
     }
 
-    public void onStartedWakingUp() {
+    public void onStartedWakingUp(
+            @PowerManager.WakeReason int pmWakeReason, boolean cameraGestureTriggered) {
         if (mKeyguardService != null) {
             if (DEBUG) Log.v(TAG, "onStartedWakingUp()");
-            mKeyguardService.onStartedWakingUp();
+            mKeyguardService.onStartedWakingUp(pmWakeReason, cameraGestureTriggered);
         }
         mKeyguardState.interactiveState = INTERACTIVE_STATE_WAKING;
     }
@@ -345,17 +372,19 @@ public class KeyguardServiceDelegate {
         mKeyguardState.screenState = SCREEN_STATE_ON;
     }
 
-    public void onStartedGoingToSleep(int why) {
+    public void onStartedGoingToSleep(@PowerManager.GoToSleepReason int pmSleepReason) {
         if (mKeyguardService != null) {
-            mKeyguardService.onStartedGoingToSleep(why);
+            mKeyguardService.onStartedGoingToSleep(pmSleepReason);
         }
-        mKeyguardState.offReason = why;
+        mKeyguardState.offReason =
+                WindowManagerPolicyConstants.translateSleepReasonToOffReason(pmSleepReason);
         mKeyguardState.interactiveState = INTERACTIVE_STATE_GOING_TO_SLEEP;
     }
 
-    public void onFinishedGoingToSleep(int why, boolean cameraGestureTriggered) {
+    public void onFinishedGoingToSleep(
+            @PowerManager.GoToSleepReason int pmSleepReason, boolean cameraGestureTriggered) {
         if (mKeyguardService != null) {
-            mKeyguardService.onFinishedGoingToSleep(why, cameraGestureTriggered);
+            mKeyguardService.onFinishedGoingToSleep(pmSleepReason, cameraGestureTriggered);
         }
         mKeyguardState.interactiveState = INTERACTIVE_STATE_SLEEP;
     }
@@ -394,9 +423,9 @@ public class KeyguardServiceDelegate {
         }
     }
 
-    public void startKeyguardExitAnimation(long startTime, long fadeoutDuration) {
+    public void startKeyguardExitAnimation(long startTime) {
         if (mKeyguardService != null) {
-            mKeyguardService.startKeyguardExitAnimation(startTime, fadeoutDuration);
+            mKeyguardService.startKeyguardExitAnimation(startTime, 0);
         }
     }
 
@@ -410,6 +439,17 @@ public class KeyguardServiceDelegate {
     public void onShortPowerPressedGoHome() {
         if (mKeyguardService != null) {
             mKeyguardService.onShortPowerPressedGoHome();
+        }
+    }
+
+    public void dismissKeyguardToLaunch(Intent intentToLaunch) {
+        if (mKeyguardService != null) {
+            mKeyguardService.dismissKeyguardToLaunch(intentToLaunch);
+        }
+    }
+    public void onSystemKeyPressed(int keycode) {
+        if (mKeyguardService != null) {
+            mKeyguardService.onSystemKeyPressed(keycode);
         }
     }
 
@@ -427,7 +467,6 @@ public class KeyguardServiceDelegate {
         pw.println(prefix + TAG);
         prefix += "  ";
         pw.println(prefix + "showing=" + mKeyguardState.showing);
-        pw.println(prefix + "showingAndNotOccluded=" + mKeyguardState.showingAndNotOccluded);
         pw.println(prefix + "inputRestricted=" + mKeyguardState.inputRestricted);
         pw.println(prefix + "occluded=" + mKeyguardState.occluded);
         pw.println(prefix + "secure=" + mKeyguardState.secure);

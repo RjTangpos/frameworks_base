@@ -22,10 +22,7 @@ import android.annotation.Nullable;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
-import android.media.AudioPresentation;
-import android.media.MediaCodec;
-import android.media.MediaFormat;
-import android.media.MediaHTTPService;
+import android.media.metrics.LogSessionId;
 import android.net.Uri;
 import android.os.IBinder;
 import android.os.IHwBinder;
@@ -39,11 +36,11 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -77,7 +74,7 @@ import java.util.stream.Collectors;
  * <p>This class requires the {@link android.Manifest.permission#INTERNET} permission
  * when used with network-based content.
  */
-final public class MediaExtractor {
+public final class MediaExtractor {
     public MediaExtractor() {
         native_setup();
     }
@@ -252,15 +249,17 @@ final public class MediaExtractor {
             @NonNull FileDescriptor fd, long offset, long length) throws IOException;
 
     /**
-     * Sets the MediaCas instance to use. This should be called after a
-     * successful setDataSource() if at least one track reports mime type
-     * of {@link android.media.MediaFormat#MIMETYPE_AUDIO_SCRAMBLED}
-     * or {@link android.media.MediaFormat#MIMETYPE_VIDEO_SCRAMBLED}.
-     * Stream parsing will not proceed until a valid MediaCas object
-     * is provided.
+     * Sets the MediaCas instance to use. This should be called after a successful setDataSource()
+     * if at least one track reports mime type of
+     * {@link android.media.MediaFormat#MIMETYPE_AUDIO_SCRAMBLED} or
+     * {@link android.media.MediaFormat#MIMETYPE_VIDEO_SCRAMBLED}. Stream parsing will not proceed
+     * until a valid MediaCas object is provided.
      *
      * @param mediaCas the MediaCas object to use.
+     * @deprecated Use the {@code Descrambler} system API instead, or DRM public APIs like
+     *             {@link MediaDrm}.
      */
+    @Deprecated
     public final void setMediaCas(@NonNull MediaCas mediaCas) {
         mMediaCas = mediaCas;
         nativeSetMediaCas(mediaCas.getBinder());
@@ -325,14 +324,6 @@ final public class MediaExtractor {
         }
     }
 
-    private ArrayList<Byte> toByteArray(@NonNull byte[] data) {
-        ArrayList<Byte> byteArray = new ArrayList<Byte>(data.length);
-        for (int i = 0; i < data.length; i++) {
-            byteArray.add(i, Byte.valueOf(data[i]));
-        }
-        return byteArray;
-    }
-
     /**
      * Retrieves the information about the conditional access system used to scramble
      * a track.
@@ -357,7 +348,7 @@ final public class MediaExtractor {
                 buf.rewind();
                 final byte[] sessionId = new byte[buf.remaining()];
                 buf.get(sessionId);
-                session = mMediaCas.createFromSessionId(toByteArray(sessionId));
+                session = mMediaCas.createFromSessionId(sessionId);
             }
             return new CasInfo(systemId, session, privateData);
         }
@@ -772,6 +763,22 @@ final public class MediaExtractor {
     public native boolean hasCacheReachedEndOfStream();
 
     /**
+     * Sets the {@link LogSessionId} for MediaExtractor.
+     */
+    public void setLogSessionId(@NonNull LogSessionId logSessionId) {
+        mLogSessionId = Objects.requireNonNull(logSessionId);
+        native_setLogSessionId(logSessionId.getStringId());
+    }
+
+    /**
+     * Returns the {@link LogSessionId} for MediaExtractor.
+     */
+    @NonNull
+    public LogSessionId getLogSessionId() {
+        return mLogSessionId;
+    }
+
+    /**
      *  Return Metrics data about the current media container.
      *
      * @return a {@link PersistableBundle} containing the set of attributes and values
@@ -788,6 +795,7 @@ final public class MediaExtractor {
         return bundle;
     }
 
+    private native void native_setLogSessionId(String logSessionId);
     private native PersistableBundle native_getMetrics();
 
     private static native final void native_init();
@@ -800,6 +808,7 @@ final public class MediaExtractor {
     }
 
     private MediaCas mMediaCas;
+    @NonNull private LogSessionId mLogSessionId = LogSessionId.LOG_SESSION_ID_NONE;
 
     private long mNativeContext;
 

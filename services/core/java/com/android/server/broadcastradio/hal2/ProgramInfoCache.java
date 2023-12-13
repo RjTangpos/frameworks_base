@@ -33,7 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-class ProgramInfoCache {
+final class ProgramInfoCache {
     // Maximum number of RadioManager.ProgramInfo elements that will be put into a
     // ProgramList.Chunk.mModified array. Used to try to ensure a single ProgramList.Chunk stays
     // within the AIDL data size limit.
@@ -189,7 +189,8 @@ class ProgramInfoCache {
                 removed.add(id);
             }
         }
-        if (modified.isEmpty() && removed.isEmpty() && mComplete == chunk.isComplete()) {
+        if (modified.isEmpty() && removed.isEmpty() && mComplete == chunk.isComplete()
+                && !chunk.isPurge()) {
             return null;
         }
         mComplete = chunk.isComplete();
@@ -239,9 +240,10 @@ class ProgramInfoCache {
         }
 
         // Determine number of chunks we need to send.
-        int numChunks = 0;
+        int numChunks = purge ? 1 : 0;
         if (modified != null) {
-            numChunks = roundUpFraction(modified.size(), maxNumModifiedPerChunk);
+            numChunks = Math.max(numChunks,
+                    roundUpFraction(modified.size(), maxNumModifiedPerChunk));
         }
         if (removed != null) {
             numChunks = Math.max(numChunks, roundUpFraction(removed.size(), maxNumRemovedPerChunk));

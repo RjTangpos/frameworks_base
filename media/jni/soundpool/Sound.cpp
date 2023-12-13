@@ -140,7 +140,7 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                                 __func__);
                         break;
                     }
-                    const size_t dataSize = std::min((size_t)info.size, available);
+                    const size_t dataSize = std::min(available, (size_t)std::max(info.size, 0));
                     memcpy(writePos, buf + info.offset, dataSize);
                     writePos += dataSize;
                     written += dataSize;
@@ -181,8 +181,11 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                     format.get(), AMEDIAFORMAT_KEY_CHANNEL_COUNT, channelCount)) {
                 return UNKNOWN_ERROR;
             }
-            if (!AMediaFormat_getInt32(format.get(), AMEDIAFORMAT_KEY_CHANNEL_MASK,
-                    (int32_t*) channelMask)) {
+            int32_t mediaFormatChannelMask;
+            if (AMediaFormat_getInt32(format.get(), AMEDIAFORMAT_KEY_CHANNEL_MASK,
+                    &mediaFormatChannelMask)) {
+                *channelMask = audio_channel_mask_from_media_format_mask(mediaFormatChannelMask);
+            } else {
                 *channelMask = AUDIO_CHANNEL_NONE;
             }
             *sizeInBytes = written;
@@ -214,7 +217,7 @@ status_t Sound::doLoad()
         } else if (sampleRate > kMaxSampleRate) {
             ALOGE("%s: sample rate (%u) out of range", __func__, sampleRate);
             status = BAD_VALUE;
-        } else if (channelCount < 1 || channelCount > FCC_8) {
+        } else if (channelCount < 1 || channelCount > FCC_LIMIT) {
             ALOGE("%s: sample channel count (%d) out of range", __func__, channelCount);
             status = BAD_VALUE;
         } else {

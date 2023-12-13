@@ -16,18 +16,24 @@
 
 package android.telecom;
 
+import android.annotation.CallbackExecutor;
+import android.annotation.NonNull;
 import android.annotation.SystemApi;
 import android.bluetooth.BluetoothDevice;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.OutcomeReceiver;
 import android.util.ArrayMap;
+
+import com.android.internal.annotations.GuardedBy;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 
 /**
  * A unified virtual device providing a means of voice (and other) communication on a device.
@@ -115,6 +121,7 @@ public final class Phone {
     public static final int SDK_VERSION_R = 30;
 
     // A Map allows us to track each Call by its Telecom-specified call ID
+    @GuardedBy("mLock")
     private final Map<String, Call> mCallByTelecomCallId = new ArrayMap<>();
 
     // A List allows us to keep the Calls in a stable iteration order so that casually developed
@@ -139,6 +146,8 @@ public final class Phone {
      */
     private final int mTargetSdkVersion;
 
+    private final Object mLock = new Object();
+
     Phone(InCallAdapter adapter, String callingPackage, int targetSdkVersion) {
         mInCallAdapter = adapter;
         mCallingPackage = callingPackage;
@@ -152,12 +161,16 @@ public final class Phone {
             return;
         }
 
-        Call call = mCallByTelecomCallId.get(parcelableCall.getId());
+        Call call = getCallById(parcelableCall.getId());
         if (call == null) {
             call = new Call(this, parcelableCall.getId(), mInCallAdapter,
                     parcelableCall.getState(), mCallingPackage, mTargetSdkVersion);
-            mCallByTelecomCallId.put(parcelableCall.getId(), call);
-            mCalls.add(call);
+
+            synchronized (mLock) {
+                mCallByTelecomCallId.put(parcelableCall.getId(), call);
+                mCalls.add(call);
+            }
+
             checkCallTree(parcelableCall);
             call.internalUpdate(parcelableCall, mCallByTelecomCallId);
             fireCallAdded(call);
@@ -169,8 +182,10 @@ public final class Phone {
     }
 
     final void internalRemoveCall(Call call) {
-        mCallByTelecomCallId.remove(call.internalGetCallId());
-        mCalls.remove(call);
+        synchronized (mLock) {
+            mCallByTelecomCallId.remove(call.internalGetCallId());
+            mCalls.remove(call);
+        }
 
         InCallService.VideoCall videoCall = call.getVideoCall();
         if (videoCall != null) {
@@ -183,14 +198,14 @@ public final class Phone {
         if (mTargetSdkVersion < SDK_VERSION_R
                 && parcelableCall.getState() == Call.STATE_AUDIO_PROCESSING) {
             Log.i(this, "removing audio processing call during update for sdk compatibility");
-            Call call = mCallByTelecomCallId.get(parcelableCall.getId());
+            Call call = getCallById(parcelableCall.getId());
             if (call != null) {
                 internalRemoveCall(call);
             }
             return;
         }
 
-        Call call = mCallByTelecomCallId.get(parcelableCall.getId());
+        Call call = getCallById(parcelableCall.getId());
         if (call != null) {
             checkCallTree(parcelableCall);
             call.internalUpdate(parcelableCall, mCallByTelecomCallId);
@@ -207,8 +222,14 @@ public final class Phone {
         }
     }
 
+    Call getCallById(String callId) {
+        synchronized (mLock) {
+            return mCallByTelecomCallId.get(callId);
+        }
+    }
+
     final void internalSetPostDialWait(String telecomId, String remaining) {
-        Call call = mCallByTelecomCallId.get(telecomId);
+        Call call = getCallById(telecomId);
         if (call != null) {
             call.internalSetPostDialWait(remaining);
         }
@@ -222,7 +243,7 @@ public final class Phone {
     }
 
     final Call internalGetCallByTelecomId(String telecomId) {
-        return mCallByTelecomCallId.get(telecomId);
+        return getCallById(telecomId);
     }
 
     final void internalBringToForeground(boolean showDialpad) {
@@ -241,35 +262,35 @@ public final class Phone {
     }
 
     final void internalOnConnectionEvent(String telecomId, String event, Bundle extras) {
-        Call call = mCallByTelecomCallId.get(telecomId);
+        Call call = getCallById(telecomId);
         if (call != null) {
             call.internalOnConnectionEvent(event, extras);
         }
     }
 
     final void internalOnRttUpgradeRequest(String callId, int requestId) {
-        Call call = mCallByTelecomCallId.get(callId);
+        Call call = getCallById(callId);
         if (call != null) {
             call.internalOnRttUpgradeRequest(requestId);
         }
     }
 
     final void internalOnRttInitiationFailure(String callId, int reason) {
-        Call call = mCallByTelecomCallId.get(callId);
+        Call call = getCallById(callId);
         if (call != null) {
             call.internalOnRttInitiationFailure(reason);
         }
     }
 
     final void internalOnHandoverFailed(String callId, int error) {
-        Call call = mCallByTelecomCallId.get(callId);
+        Call call = getCallById(callId);
         if (call != null) {
             call.internalOnHandoverFailed(error);
         }
     }
 
     final void internalOnHandoverComplete(String callId) {
-        Call call = mCallByTelecomCallId.get(callId);
+        Call call = getCallById(callId);
         if (call != null) {
             call.internalOnHandoverComplete();
         }
@@ -358,6 +379,21 @@ public final class Phone {
      */
     public void requestBluetoothAudio(String bluetoothAddress) {
         mInCallAdapter.requestBluetoothAudio(bluetoothAddress);
+    }
+
+    /**
+     * Request audio routing to a specific CallEndpoint. When this request is honored, there will
+     * be change to the {@link #getCurrentCallEndpoint()}.
+     *
+     * @param endpoint The call endpoint to use.
+     * @param executor The executor of where the callback will execute.
+     * @param callback The callback to notify the result of the endpoint change.
+     * @hide
+     */
+    public void requestCallEndpointChange(@NonNull CallEndpoint endpoint,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OutcomeReceiver<Void, CallEndpointException> callback) {
+        mInCallAdapter.requestCallEndpointChange(endpoint, executor, callback);
     }
 
     /**

@@ -18,26 +18,22 @@
 package android.os;
 
 import android.os.BatterySaverPolicyConfig;
+import android.os.ParcelDuration;
 import android.os.PowerSaveState;
 import android.os.WorkSource;
+import android.os.IWakeLockCallback;
 
 /** @hide */
 
 interface IPowerManager
 {
-    // WARNING: When methods are inserted or deleted, the transaction IDs in
-    // frameworks/native/include/powermanager/IPowerManager.h must be updated to match the order in this file.
-    //
-    // When a method's argument list is changed, BnPowerManager's corresponding serialization code (if any) in
-    // frameworks/native/services/powermanager/IPowerManager.cpp must be updated.
     void acquireWakeLock(IBinder lock, int flags, String tag, String packageName, in WorkSource ws,
-            String historyTag);
+            String historyTag, int displayId, IWakeLockCallback callback);
     void acquireWakeLockWithUid(IBinder lock, int flags, String tag, String packageName,
-            int uidtoblame);
+            int uidtoblame, int displayId, IWakeLockCallback callback);
     @UnsupportedAppUsage
     void releaseWakeLock(IBinder lock, int flags);
     void updateWakeLockUids(IBinder lock, in int[] uids);
-    oneway void powerHint(int hintId, int data);
     oneway void setPowerBoost(int boost, int durationMs);
     oneway void setPowerMode(int mode, boolean enabled);
 
@@ -45,27 +41,72 @@ interface IPowerManager
     boolean setPowerModeChecked(int mode, boolean enabled);
 
     void updateWakeLockWorkSource(IBinder lock, in WorkSource ws, String historyTag);
+    void updateWakeLockCallback(IBinder lock, IWakeLockCallback callback);
     boolean isWakeLockLevelSupported(int level);
 
-    @UnsupportedAppUsage
-    void userActivity(long time, int event, int flags);
+    void userActivity(int displayId, long time, int event, int flags);
     void wakeUp(long time, int reason, String details, String opPackageName);
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void goToSleep(long time, int reason, int flags);
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
+    void goToSleepWithDisplayId(int displayId, long time, int reason, int flags);
     @UnsupportedAppUsage(maxTargetSdk = 28)
     void nap(long time);
     float getBrightnessConstraint(int constraint);
     @UnsupportedAppUsage
     boolean isInteractive();
+    boolean isDisplayInteractive(int displayId);
+    boolean areAutoPowerSaveModesEnabled();
     boolean isPowerSaveMode();
     PowerSaveState getPowerSaveState(int serviceType);
     boolean setPowerSaveModeEnabled(boolean mode);
+    BatterySaverPolicyConfig getFullPowerSavePolicy();
+    boolean setFullPowerSavePolicy(in BatterySaverPolicyConfig config);
     boolean setDynamicPowerSaveHint(boolean powerSaveHint, int disableThreshold);
     boolean setAdaptivePowerSavePolicy(in BatterySaverPolicyConfig config);
     boolean setAdaptivePowerSaveEnabled(boolean enabled);
     int getPowerSaveModeTrigger();
+    void setBatteryDischargePrediction(in ParcelDuration timeRemaining, boolean isCustomized);
+    ParcelDuration getBatteryDischargePrediction();
+    boolean isBatteryDischargePredictionPersonalized();
     boolean isDeviceIdleMode();
     boolean isLightDeviceIdleMode();
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    boolean isLowPowerStandbySupported();
+    boolean isLowPowerStandbyEnabled();
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void setLowPowerStandbyEnabled(boolean enabled);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void setLowPowerStandbyActiveDuringMaintenance(boolean activeDuringMaintenance);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void forceLowPowerStandbyActive(boolean active);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void setLowPowerStandbyPolicy(in @nullable LowPowerStandbyPolicy policy);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    LowPowerStandbyPolicy getLowPowerStandbyPolicy();
+    boolean isExemptFromLowPowerStandby();
+    boolean isReasonAllowedInLowPowerStandby(int reason);
+    boolean isFeatureAllowedInLowPowerStandby(String feature);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.SET_LOW_POWER_STANDBY_PORTS)")
+    void acquireLowPowerStandbyPorts(in IBinder token, in List<LowPowerStandbyPortDescription> ports);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.SET_LOW_POWER_STANDBY_PORTS)")
+    void releaseLowPowerStandbyPorts(in IBinder token);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    List<LowPowerStandbyPortDescription> getActiveLowPowerStandbyPorts();
+
+    parcelable LowPowerStandbyPolicy {
+        String identifier;
+        List<String> exemptPackages;
+        int allowedReasons;
+        List<String> allowedFeatures;
+    }
+
+    parcelable LowPowerStandbyPortDescription {
+        int protocol;
+        int portMatcher;
+        int portNumber;
+        @nullable byte[] localAddress;
+    }
 
     @UnsupportedAppUsage
     void reboot(boolean confirm, String reason, boolean wait);
@@ -77,6 +118,12 @@ interface IPowerManager
 
     void setStayOnSetting(int val);
     void boostScreenBrightness(long time);
+
+    // Do not use, will be deprecated soon.  b/151831987
+    oneway void acquireWakeLockAsync(IBinder lock, int flags, String tag, String packageName,
+            in WorkSource ws, String historyTag);
+    oneway void releaseWakeLockAsync(IBinder lock, int flags);
+    oneway void updateWakeLockUidsAsync(IBinder lock, in int[] uids);
 
     // --- deprecated ---
     boolean isScreenBrightnessBoosted();
@@ -99,4 +146,27 @@ interface IPowerManager
 
     // Forces the system to suspend even if there are held wakelocks.
     boolean forceSuspend();
+
+    const int LOCATION_MODE_NO_CHANGE = 0;
+    const int LOCATION_MODE_GPS_DISABLED_WHEN_SCREEN_OFF = 1;
+    const int LOCATION_MODE_ALL_DISABLED_WHEN_SCREEN_OFF = 2;
+    const int LOCATION_MODE_FOREGROUND_ONLY = 3;
+    const int LOCATION_MODE_THROTTLE_REQUESTS_WHEN_SCREEN_OFF = 4;
+    const int MIN_LOCATION_MODE = 0;
+    const int MAX_LOCATION_MODE = 4;
+
+    const int GO_TO_SLEEP_REASON_MIN = 0;
+    const int GO_TO_SLEEP_REASON_APPLICATION = 0;
+    const int GO_TO_SLEEP_REASON_TIMEOUT = 2;
+    const int GO_TO_SLEEP_REASON_LID_SWITCH = 3;
+    const int GO_TO_SLEEP_REASON_POWER_BUTTON = 4;
+    const int GO_TO_SLEEP_REASON_HDMI = 5;
+    const int GO_TO_SLEEP_REASON_SLEEP_BUTTON = 6;
+    const int GO_TO_SLEEP_REASON_ACCESSIBILITY = 7;
+    const int GO_TO_SLEEP_REASON_FORCE_SUSPEND = 8;
+    const int GO_TO_SLEEP_REASON_INATTENTIVE = 9;
+    const int GO_TO_SLEEP_REASON_QUIESCENT = 10;
+    const int GO_TO_SLEEP_REASON_MAX = 10;
+    const int GO_TO_SLEEP_FLAG_NO_DOZE = 1 << 0;
+
 }

@@ -30,8 +30,8 @@
 
 #include <binder/Parcel.h>
 
-#include <ui/GraphicBuffer.h>
 #include <private/gui/ComposerService.h>
+#include <ui/PixelFormat.h>
 
 #include <hardware/gralloc1.h>
 #include <grallocusage/GrallocUsageConversion.h>
@@ -85,7 +85,7 @@ static jlong android_hardware_HardwareBuffer_create(JNIEnv* env, jobject clazz,
     sp<GraphicBuffer> buffer = new GraphicBuffer(width, height, pixelFormat, layers,
             grallocUsage, std::string("HardwareBuffer pid [") + std::to_string(getpid()) +"]");
     status_t error = buffer->initCheck();
-    if (error < 0) {
+    if (error != OK) {
         if (kDebugGraphicBuffer) {
             ALOGW("createGraphicBuffer() failed in HardwareBuffer.create()");
         }
@@ -163,7 +163,26 @@ static jint android_hardware_HardwareBuffer_getLayers(JNIEnv* env,
 static jlong android_hardware_HardwareBuffer_getUsage(JNIEnv* env,
     jobject clazz, jlong nativeObject) {
     GraphicBuffer* buffer = GraphicBufferWrapper_to_GraphicBuffer(nativeObject);
-    return AHardwareBuffer_convertFromGrallocUsageBits(buffer->getUsage());
+    return static_cast<jlong>(AHardwareBuffer_convertFromGrallocUsageBits(buffer->getUsage()));
+}
+
+static jlong android_hardware_HardwareBuffer_estimateSize(jlong nativeObject) {
+    GraphicBuffer* buffer = GraphicBufferWrapper_to_GraphicBuffer(nativeObject);
+
+    uint32_t bpp = bytesPerPixel(buffer->getPixelFormat());
+    if (bpp == 0) {
+        // If the pixel format is not recognized, use 1 as default.
+        bpp = 1;
+    }
+
+    const uint32_t bufferStride =
+            buffer->getStride() > 0 ? buffer->getStride() : buffer->getWidth();
+    return static_cast<jlong>(static_cast<uint64_t>(buffer->getHeight() * bufferStride * bpp));
+}
+
+static jlong android_hardware_HardwareBuffer_getId(jlong nativeObject) {
+    GraphicBuffer* buffer = GraphicBufferWrapper_to_GraphicBuffer(nativeObject);
+    return static_cast<jlong>(buffer->getId());
 }
 
 // ----------------------------------------------------------------------------
@@ -247,6 +266,7 @@ uint64_t android_hardware_HardwareBuffer_convertToGrallocUsageBits(uint64_t usag
 
 const char* const kClassPathName = "android/hardware/HardwareBuffer";
 
+// clang-format off
 static const JNINativeMethod gMethods[] = {
     { "nCreateHardwareBuffer",  "(IIIIJ)J",
             (void*) android_hardware_HardwareBuffer_create },
@@ -267,7 +287,12 @@ static const JNINativeMethod gMethods[] = {
     { "nGetFormat", "(J)I",     (void*) android_hardware_HardwareBuffer_getFormat },
     { "nGetLayers", "(J)I",     (void*) android_hardware_HardwareBuffer_getLayers },
     { "nGetUsage", "(J)J",      (void*) android_hardware_HardwareBuffer_getUsage },
+
+    // --------------- @CriticalNative ----------------------
+    { "nEstimateSize", "(J)J",  (void*) android_hardware_HardwareBuffer_estimateSize },
+    { "nGetId", "(J)J",  (void*) android_hardware_HardwareBuffer_getId },
 };
+// clang-format on
 
 int register_android_hardware_HardwareBuffer(JNIEnv* env) {
     int err = RegisterMethodsOrDie(env, kClassPathName, gMethods,

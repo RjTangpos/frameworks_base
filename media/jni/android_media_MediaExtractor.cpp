@@ -196,6 +196,15 @@ status_t JMediaExtractor::readSampleData(
         dstSize = (size_t) env->GetDirectBufferCapacity(byteBuf);
     }
 
+    // unlikely, but GetByteArrayElements() can fail
+    if (dst == nullptr) {
+        ALOGE("no buffer into which to read the data");
+        if (byteArray != NULL) {
+            env->ReleaseByteArrayElements(byteArray, (jbyte *)dst, 0);
+        }
+        return -ENOMEM;
+    }
+
     if (dstSize < offset) {
         if (byteArray != NULL) {
             env->ReleaseByteArrayElements(byteArray, (jbyte *)dst, 0);
@@ -204,8 +213,10 @@ status_t JMediaExtractor::readSampleData(
         return -ERANGE;
     }
 
+    // passes in the backing memory to use, so it doesn't fail
     sp<ABuffer> buffer = new ABuffer((char *)dst + offset, dstSize - offset);
 
+    buffer->setRange(0, 0);  // mark it empty
     status_t err = mImpl->readSampleData(buffer);
 
     if (byteArray != NULL) {
@@ -282,7 +293,6 @@ status_t JMediaExtractor::getMetrics(Parcel *reply) const {
     return status;
 }
 
-
 status_t JMediaExtractor::getSampleMeta(sp<MetaData> *sampleMeta) {
     return mImpl->getSampleMeta(sampleMeta);
 }
@@ -294,6 +304,10 @@ bool JMediaExtractor::getCachedDuration(int64_t *durationUs, bool *eos) const {
 status_t JMediaExtractor::getAudioPresentations(size_t trackIdx,
         AudioPresentationCollection *presentations) const {
     return mImpl->getAudioPresentations(trackIdx, presentations);
+}
+
+status_t JMediaExtractor::setLogSessionId(const String8 &LogSessionId) {
+    return mImpl->setLogSessionId(LogSessionId);
 }
 }  // namespace android
 
@@ -920,6 +934,23 @@ android_media_MediaExtractor_native_getMetrics(JNIEnv * env, jobject thiz)
     return mybundle;
 }
 
+static void
+android_media_MediaExtractor_native_setLogSessionId(
+        JNIEnv * env, jobject thiz, jstring logSessionIdJString)
+{
+    ALOGV("android_media_MediaExtractor_native_setLogSessionId");
+
+    sp<JMediaExtractor> extractor = getMediaExtractor(env, thiz);
+    if (extractor == nullptr) {
+        jniThrowException(env, "java/lang/IllegalStateException", nullptr);
+    }
+
+    const char* logSessionId = env->GetStringUTFChars(logSessionIdJString, nullptr);
+    if (extractor->setLogSessionId(String8(logSessionId)) != OK) {
+        ALOGE("setLogSessionId failed");
+    }
+    env->ReleaseStringUTFChars(logSessionIdJString, logSessionId);
+}
 
 static const JNINativeMethod gMethods[] = {
     { "release", "()V", (void *)android_media_MediaExtractor_release },
@@ -989,6 +1020,9 @@ static const JNINativeMethod gMethods[] = {
 
     {"native_getMetrics",          "()Landroid/os/PersistableBundle;",
       (void *)android_media_MediaExtractor_native_getMetrics},
+
+    { "native_setLogSessionId", "(Ljava/lang/String;)V",
+      (void *)android_media_MediaExtractor_native_setLogSessionId},
 
     { "native_getAudioPresentations", "(I)Ljava/util/List;",
       (void *)android_media_MediaExtractor_getAudioPresentations },

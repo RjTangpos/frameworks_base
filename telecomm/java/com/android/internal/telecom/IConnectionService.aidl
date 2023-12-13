@@ -20,6 +20,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.telecom.CallAudioState;
+import android.telecom.CallEndpoint;
+import android.telecom.Connection;
 import android.telecom.ConnectionRequest;
 import android.telecom.Logging.Session;
 import android.telecom.PhoneAccountHandle;
@@ -97,6 +99,14 @@ oneway interface IConnectionService {
     void onCallAudioStateChanged(String activeCallId, in CallAudioState callAudioState,
     in Session.Info sessionInfo);
 
+    void onCallEndpointChanged(String activeCallId, in CallEndpoint callEndpoint,
+    in Session.Info sessionInfo);
+
+    void onAvailableCallEndpointsChanged(String activeCallId,
+    in List<CallEndpoint> availableCallEndpoints, in Session.Info sessionInfo);
+
+    void onMuteStateChanged(String activeCallId, boolean isMuted, in Session.Info sessionInfo);
+
     void playDtmfTone(String callId, char digit, in Session.Info sessionInfo);
 
     void stopDtmfTone(String callId, in Session.Info sessionInfo);
@@ -117,6 +127,10 @@ oneway interface IConnectionService {
     void pullExternalCall(String callId, in Session.Info sessionInfo);
 
     void sendCallEvent(String callId, String event, in Bundle extras, in Session.Info sessionInfo);
+
+    void onCallFilteringCompleted(String callId,
+            in Connection.CallFilteringCompletionInfo completionInfo,
+            in Session.Info sessionInfo);
 
     void onExtrasChanged(String callId, in Bundle extras, in Session.Info sessionInfo);
 

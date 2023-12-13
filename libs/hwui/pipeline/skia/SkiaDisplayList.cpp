@@ -23,6 +23,7 @@
 #else
 #include "DamageAccumulator.h"
 #endif
+#include "TreeInfo.h"
 #include "VectorDrawable.h"
 #ifdef __ANDROID__
 #include "renderthread/CanvasContext.h"
@@ -47,7 +48,13 @@ void SkiaDisplayList::syncContents(const WebViewSyncData& data) {
     }
 }
 
-bool SkiaDisplayList::reuseDisplayList(RenderNode* node, renderthread::CanvasContext* context) {
+void SkiaDisplayList::onRemovedFromTree() {
+    for (auto& functor : mChildFunctors) {
+        functor->onRemovedFromTree();
+    }
+}
+
+bool SkiaDisplayList::reuseDisplayList(RenderNode* node) {
     reset();
     node->attachAvailableList(this);
     return true;
@@ -96,6 +103,12 @@ bool SkiaDisplayList::prepareListAndChildren(
         info.prepareTextures = false;
         info.canvasContext.unpinImages();
     }
+
+    auto grContext = info.canvasContext.getGrContext();
+    for (auto mesh : mMeshes) {
+        mesh->updateSkMesh(grContext);
+    }
+
 #endif
 
     bool hasBackwardProjectedNodesHere = false;
@@ -162,6 +175,7 @@ void SkiaDisplayList::reset() {
 
     mDisplayList.reset();
 
+    mMeshes.clear();
     mMutableImages.clear();
     mVectorDrawables.clear();
     mAnimatedImages.clear();
@@ -172,7 +186,7 @@ void SkiaDisplayList::reset() {
     new (&allocator) LinearAllocator();
 }
 
-void SkiaDisplayList::output(std::ostream& output, uint32_t level) {
+void SkiaDisplayList::output(std::ostream& output, uint32_t level) const {
     DumpOpsCanvas canvas(output, level, *this);
     mDisplayList.draw(&canvas);
 }

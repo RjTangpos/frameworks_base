@@ -19,10 +19,12 @@ package android.app.compat;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
+import android.content.pm.PackageInfo;
 import android.os.Parcel;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Objects;
 
 /**
  * An app compat override applied to a given package and change id pairing.
@@ -101,12 +103,20 @@ public final class PackageOverride {
         return VALUE_UNDEFINED;
     }
 
-    /** Returns the minimum version code the override applies to. */
+    /**
+     * Returns the minimum APK version code the override applies to.
+     *
+     * @see PackageInfo#getLongVersionCode()
+     */
     public long getMinVersionCode() {
         return mMinVersionCode;
     }
 
-    /** Returns the minimum version code the override applies from. */
+    /**
+     * Returns the maximum APK version code the override applies from.
+     *
+     * @see PackageInfo#getLongVersionCode()
+     */
     public long getMaxVersionCode() {
         return mMaxVersionCode;
     }
@@ -130,6 +140,22 @@ public final class PackageOverride {
 
     /** @hide */
     @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        PackageOverride that = (PackageOverride) o;
+        return mMinVersionCode == that.mMinVersionCode && mMaxVersionCode == that.mMaxVersionCode
+                && mEnabled == that.mEnabled;
+    }
+
+    /** @hide */
+    @Override
+    public int hashCode() {
+        return Objects.hash(mMinVersionCode, mMaxVersionCode, mEnabled);
+    }
+
+    /** @hide */
+    @Override
     public String toString() {
         if (mMinVersionCode == Long.MIN_VALUE && mMaxVersionCode == Long.MAX_VALUE) {
             return Boolean.toString(mEnabled);
@@ -146,9 +172,11 @@ public final class PackageOverride {
         private boolean mEnabled;
 
         /**
-         * Sets the minimum version code the override should apply from.
+         * Sets the minimum APK version code the override should apply from.
          *
          * default value: {@code Long.MIN_VALUE}.
+         *
+         * @see PackageInfo#getLongVersionCode()
          */
         @NonNull
         public Builder setMinVersionCode(long minVersionCode) {
@@ -157,9 +185,11 @@ public final class PackageOverride {
         }
 
         /**
-         * Sets the maximum version code the override should apply to.
+         * Sets the maximum APK version code the override should apply to.
          *
          * default value: {@code Long.MAX_VALUE}.
+         *
+         * @see PackageInfo#getLongVersionCode()
          */
         @NonNull
         public Builder setMaxVersionCode(long maxVersionCode) {

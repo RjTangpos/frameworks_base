@@ -16,6 +16,7 @@
 
 package com.android.systemui.controls.ui
 
+import android.content.Context
 import android.service.controls.Control
 
 /**
@@ -23,6 +24,9 @@ import android.service.controls.Control
  * actions, haptic support, and all detail panels
  */
 interface ControlActionCoordinator {
+
+    // If launched from an Activity, continue within this stack
+    var activityContext: Context
 
     /**
      * Close any dialogs which may have been open
@@ -50,9 +54,10 @@ interface ControlActionCoordinator {
     /**
      * When a ToggleRange control is interacting with, a drag event is sent.
      *
+     * @param cvh [ControlViewHolder] for the control
      * @param isEdge did the drag event reach a control edge
      */
-    fun drag(isEdge: Boolean)
+    fun drag(cvh: ControlViewHolder, isEdge: Boolean)
 
     /**
      * Send a request to update the value of a device using the [FloatAction].

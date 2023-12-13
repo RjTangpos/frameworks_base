@@ -16,9 +16,12 @@
 
 package com.android.server.wm;
 
-import static android.view.InsetsState.ITYPE_IME;
+import static android.view.InsetsSource.ID_IME;
+import static android.view.WindowInsets.Type.ime;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
+import static android.view.WindowManager.LayoutParams.TYPE_INPUT_METHOD;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import android.graphics.PixelFormat;
@@ -36,7 +39,7 @@ import org.junit.runner.RunWith;
 @RunWith(WindowTestRunner.class)
 public class ImeInsetsSourceProviderTest extends WindowTestsBase {
 
-    private InsetsSource mImeSource = new InsetsSource(ITYPE_IME);
+    private InsetsSource mImeSource = new InsetsSource(ID_IME, ime());
     private ImeInsetsSourceProvider mImeProvider;
 
     @Before
@@ -50,18 +53,59 @@ public class ImeInsetsSourceProviderTest extends WindowTestsBase {
     public void testTransparentControlTargetWindowCanShowIme() {
         final WindowState appWin = createWindow(null, TYPE_APPLICATION, "app");
         final WindowState popup = createWindow(appWin, TYPE_APPLICATION, "popup");
-        mDisplayContent.mInputMethodControlTarget = popup;
-        mDisplayContent.mInputMethodTarget = appWin;
+        mDisplayContent.setImeControlTarget(popup);
+        mDisplayContent.setImeLayeringTarget(appWin);
         popup.mAttrs.format = PixelFormat.TRANSPARENT;
-        mImeProvider.scheduleShowImePostLayout(appWin);
-        assertTrue(mImeProvider.isImeTargetFromDisplayContentAndImeSame());
+        mImeProvider.scheduleShowImePostLayout(appWin, null /* statsToken */);
+        assertTrue(mImeProvider.isReadyToShowIme());
     }
 
     @Test
     public void testInputMethodInputTargetCanShowIme() {
         WindowState target = createWindow(null, TYPE_APPLICATION, "app");
-        mDisplayContent.mInputMethodTarget = target;
-        mImeProvider.scheduleShowImePostLayout(target);
-        assertTrue(mImeProvider.isImeTargetFromDisplayContentAndImeSame());
+        mDisplayContent.setImeLayeringTarget(target);
+        mDisplayContent.updateImeInputAndControlTarget(target);
+        mImeProvider.scheduleShowImePostLayout(target, null /* statsToken */);
+        assertTrue(mImeProvider.isReadyToShowIme());
+    }
+
+    @Test
+    public void testIsImeShowing() {
+        WindowState ime = createWindow(null, TYPE_INPUT_METHOD, "ime");
+        makeWindowVisibleAndDrawn(ime);
+        mImeProvider.setWindowContainer(ime, null, null);
+
+        WindowState target = createWindow(null, TYPE_APPLICATION, "app");
+        mDisplayContent.setImeLayeringTarget(target);
+        mDisplayContent.setImeControlTarget(target);
+
+        mImeProvider.scheduleShowImePostLayout(target, null /* statsToken */);
+        assertFalse(mImeProvider.isImeShowing());
+        mImeProvider.checkShowImePostLayout();
+        assertTrue(mImeProvider.isImeShowing());
+        mImeProvider.setImeShowing(false);
+        assertFalse(mImeProvider.isImeShowing());
+    }
+
+    @Test
+    public void testSetFrozen() {
+        WindowState ime = createWindow(null, TYPE_INPUT_METHOD, "ime");
+        makeWindowVisibleAndDrawn(ime);
+        mImeProvider.setWindowContainer(ime, null, null);
+        mImeProvider.setServerVisible(true);
+        mImeProvider.setClientVisible(true);
+        mImeProvider.updateVisibility();
+        assertTrue(mImeProvider.getSource().isVisible());
+
+        // Freezing IME states and set the server visible as false.
+        mImeProvider.setFrozen(true);
+        mImeProvider.setServerVisible(false);
+        // Expect the IME insets visible won't be changed.
+        assertTrue(mImeProvider.getSource().isVisible());
+
+        // Unfreeze IME states and expect the IME insets became invisible due to pending IME
+        // visible state updated.
+        mImeProvider.setFrozen(false);
+        assertFalse(mImeProvider.getSource().isVisible());
     }
 }

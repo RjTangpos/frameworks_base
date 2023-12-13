@@ -16,13 +16,15 @@
 
 package com.android.server.job.controllers;
 
+import static com.android.server.job.JobSchedulerService.sElapsedRealtimeClock;
+
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.UserHandle;
 import android.util.ArraySet;
+import android.util.IndentingPrintWriter;
 import android.util.proto.ProtoOutputStream;
 
-import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.job.JobSchedulerService;
 import com.android.server.job.StateControllerProto;
 import com.android.server.job.controllers.idle.CarIdlenessTracker;
@@ -46,10 +48,13 @@ public final class IdleController extends RestrictingController implements Idlen
     // screen off or dreaming or wireless charging dock idle for at least this long
     final ArraySet<JobStatus> mTrackedTasks = new ArraySet<>();
     IdlenessTracker mIdleTracker;
+    private final FlexibilityController mFlexibilityController;
 
-    public IdleController(JobSchedulerService service) {
+    public IdleController(JobSchedulerService service,
+            FlexibilityController flexibilityController) {
         super(service);
         initIdleStateTracking(mContext);
+        mFlexibilityController = flexibilityController;
     }
 
     /**
@@ -58,9 +63,10 @@ public final class IdleController extends RestrictingController implements Idlen
     @Override
     public void maybeStartTrackingJobLocked(JobStatus taskStatus, JobStatus lastJob) {
         if (taskStatus.hasIdleConstraint()) {
+            final long nowElapsed = sElapsedRealtimeClock.millis();
             mTrackedTasks.add(taskStatus);
             taskStatus.setTrackingController(JobStatus.TRACKING_IDLE);
-            taskStatus.setIdleConstraintSatisfied(mIdleTracker.isIdle());
+            taskStatus.setIdleConstraintSatisfied(nowElapsed, mIdleTracker.isIdle());
         }
     }
 
@@ -70,8 +76,7 @@ public final class IdleController extends RestrictingController implements Idlen
     }
 
     @Override
-    public void maybeStopTrackingJobLocked(JobStatus taskStatus, JobStatus incomingJob,
-            boolean forUpdate) {
+    public void maybeStopTrackingJobLocked(JobStatus taskStatus, JobStatus incomingJob) {
         if (taskStatus.clearTrackingController(JobStatus.TRACKING_IDLE)) {
             mTrackedTasks.remove(taskStatus);
         }
@@ -80,7 +85,7 @@ public final class IdleController extends RestrictingController implements Idlen
     @Override
     public void stopTrackingRestrictedJobLocked(JobStatus jobStatus) {
         if (!jobStatus.hasIdleConstraint()) {
-            maybeStopTrackingJobLocked(jobStatus, null, false);
+            maybeStopTrackingJobLocked(jobStatus, null);
         }
     }
 
@@ -90,11 +95,16 @@ public final class IdleController extends RestrictingController implements Idlen
     @Override
     public void reportNewIdleState(boolean isIdle) {
         synchronized (mLock) {
+            logDeviceWideConstraintStateToStatsd(JobStatus.CONSTRAINT_IDLE, isIdle);
+
+            final long nowElapsed = sElapsedRealtimeClock.millis();
+            mFlexibilityController.setConstraintSatisfied(
+                    JobStatus.CONSTRAINT_IDLE, isIdle, nowElapsed);
             for (int i = mTrackedTasks.size()-1; i >= 0; i--) {
-                mTrackedTasks.valueAt(i).setIdleConstraintSatisfied(isIdle);
+                mTrackedTasks.valueAt(i).setIdleConstraintSatisfied(nowElapsed, isIdle);
             }
         }
-        mStateChangedListener.onControllerStateChanged();
+        mStateChangedListener.onControllerStateChanged(mTrackedTasks);
     }
 
     /**

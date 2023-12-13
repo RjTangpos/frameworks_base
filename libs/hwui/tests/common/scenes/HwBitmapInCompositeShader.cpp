@@ -17,6 +17,8 @@
 #include "TestSceneBase.h"
 #include "utils/Color.h"
 
+#include <SkBlendMode.h>
+#include <SkColorSpace.h>
 #include <SkGradientShader.h>
 #include <SkImagePriv.h>
 #include <ui/PixelFormat.h>
@@ -74,6 +76,6 @@ public:
 
     sk_sp<SkShader> createBitmapShader(Bitmap& bitmap) {
         sk_sp<SkImage> image = bitmap.makeImage();
-        return image->makeShader();
+        return image->makeShader(SkSamplingOptions());
     }
 };

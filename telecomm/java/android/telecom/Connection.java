@@ -18,6 +18,8 @@ package android.telecom;
 
 import static android.Manifest.permission.MODIFY_PHONE_STATE;
 
+import android.Manifest;
+import android.annotation.CallbackExecutor;
 import android.annotation.ElapsedRealtimeLong;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
@@ -28,8 +30,10 @@ import android.annotation.SystemApi;
 import android.app.Notification;
 import android.bluetooth.BluetoothDevice;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.hardware.camera2.CameraManager;
+import android.location.Location;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
@@ -37,9 +41,14 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.OutcomeReceiver;
+import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
+import android.os.Parcelable;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.telephony.CallQuality;
+import android.telephony.CellIdentity;
 import android.telephony.ims.ImsStreamMediaProfile;
 import android.util.ArraySet;
 import android.view.Surface;
@@ -60,8 +69,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 
 /**
  * Represents a phone call or connection to a remote endpoint that carries voice and/or video
@@ -76,7 +87,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * must call {@link #destroy()} to signal to the framework that the {@code Connection} is no
  * longer used and associated resources may be recovered.
  * <p>
- * Subclasses of {@code Connection} override the {@code on*} methods to provide the the
+ * Subclasses of {@code Connection} override the {@code on*} methods to provide the
  * {@link ConnectionService}'s implementation of calling functionality.  The {@code on*} methods are
  * called by Telecom to inform an instance of a {@code Connection} of actions specific to that
  * {@code Connection} instance.
@@ -417,8 +428,14 @@ public abstract class Connection extends Conferenceable {
      */
     public static final int CAPABILITY_TRANSFER_CONSULTATIVE = 0x10000000;
 
+    /**
+     * Indicates whether the remote party supports RTT or not to the UI.
+     */
+
+    public static final int CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT = 0x20000000;
+
     //**********************************************************************************************
-    // Next CAPABILITY value: 0x20000000
+    // Next CAPABILITY value: 0x40000000
     //**********************************************************************************************
 
     /**
@@ -541,9 +558,17 @@ public abstract class Connection extends Conferenceable {
      */
     public static final int PROPERTY_IS_ADHOC_CONFERENCE = 1 << 12;
 
+    /**
+     * Connection is using cross sim technology.
+     * <p>
+     * Indicates that the {@link Connection} is using a cross sim technology which would
+     * register IMS over internet APN of default data subscription.
+     * <p>
+     */
+    public static final int PROPERTY_CROSS_SIM = 1 << 13;
 
     //**********************************************************************************************
-    // Next PROPERTY value: 1<<13
+    // Next PROPERTY value: 1<<14
     //**********************************************************************************************
 
     /**
@@ -658,6 +683,14 @@ public abstract class Connection extends Conferenceable {
     public @interface AudioCodec {}
 
     /**
+     * Contains the same value as {@link #getCallerNumberVerificationStatus()}, except will be
+     * present in the {@link #getExtras()} using this key.
+     * @hide
+     */
+    public static final String EXTRA_CALLER_NUMBER_VERIFICATION_STATUS =
+            "android.telecom.extra.CALLER_NUMBER_VERIFICATION_STATUS";
+
+    /**
      * Connection extra key used to store the last forwarded number associated with the current
      * connection.  Used to communicate to the user interface that the connection was forwarded via
      * the specified number.
@@ -754,6 +787,21 @@ public abstract class Connection extends Conferenceable {
             "android.telecom.extra.REMOTE_PHONE_ACCOUNT_HANDLE";
 
     /**
+     * The Telecom call ID of the conference an existing connection should be added to.  This is
+     * required when {@link com.android.services.telephony.TelephonyConnectionService} adds a
+     * {@link Conference} to Telecom using the
+     * {@link ConnectionService#addExistingConnection(PhoneAccountHandle, Connection, Conference)}
+     * API.  That API specifies a parent conference associated with the new existing connection
+     * being added, and there is no equivalent as part of the {@link RemoteConnectionService} API.
+     * This extra key is used to stack the ID of the conference to which the existing connection
+     * will be added so that Telecom can link it up correctly when the {@link RemoteConference}
+     * is added to Telecom by the connection manager.
+     * @hide
+     */
+    public static final String EXTRA_ADD_TO_CONFERENCE_ID =
+            "android.telecom.extra.ADD_TO_CONFERENCE_ID";
+
+    /**
      * Extra key set from a {@link ConnectionService} when using the remote connection APIs
      * (e.g. {@link RemoteConnectionService#createRemoteConnection(PhoneAccountHandle,
      * ConnectionRequest, boolean)}) to create a remote connection.  Provides the receiving
@@ -793,6 +841,26 @@ public abstract class Connection extends Conferenceable {
      */
     public static final String EXTRA_AUDIO_CODEC_BANDWIDTH_KHZ =
             "android.telecom.extra.AUDIO_CODEC_BANDWIDTH_KHZ";
+
+    /**
+     * Last known cell identity key {@link CellIdentity} to be used to fill geo location header
+     * in case of an emergency  call. This entry will not be filled if call is not identified as
+     * an emergency call. Only provided to the {@link ConnectionService}  for the purpose of
+     * placing an emergency call; will not be present in the  {@link InCallService} layer.
+     * The {@link ConnectionService}'s implementation will be logged for fine location access
+     * when an outgoing call is placed in this case.
+     */
+    public static final String EXTRA_LAST_KNOWN_CELL_IDENTITY =
+            "android.telecom.extra.LAST_KNOWN_CELL_IDENTITY";
+
+    /**
+     * Boolean connection extra key used to indicate whether device to device communication is
+     * available for the current call.
+     * @hide
+     */
+    public static final String EXTRA_IS_DEVICE_TO_DEVICE_COMMUNICATION_AVAILABLE =
+            "android.telecom.extra.IS_DEVICE_TO_DEVICE_COMMUNICATION_AVAILABLE";
+
     /**
      * Connection event used to inform Telecom that it should play the on hold tone.  This is used
      * to play a tone when the peer puts the current call on hold.  Sent to Telecom via
@@ -935,7 +1003,7 @@ public abstract class Connection extends Conferenceable {
      * {@link CallDiagnosticService} implementation which is active.
      * <p>
      * Likewise, if a {@link CallDiagnosticService} sends a message using
-     * {@link DiagnosticCall#sendDeviceToDeviceMessage(int, int)}, it will be routed to telephony
+     * {@link CallDiagnostics#sendDeviceToDeviceMessage(int, int)}, it will be routed to telephony
      * via {@link Connection#onCallEvent(String, Bundle)}.  The telephony stack will relay the
      * message to the other device.
      * @hide
@@ -948,7 +1016,7 @@ public abstract class Connection extends Conferenceable {
      * Sent along with {@link #EVENT_DEVICE_TO_DEVICE_MESSAGE} to indicate the device to device
      * message type.
      *
-     * See {@link DiagnosticCall} for more information.
+     * See {@link CallDiagnostics} for more information.
      * @hide
      */
     @SystemApi
@@ -959,12 +1027,36 @@ public abstract class Connection extends Conferenceable {
      * Sent along with {@link #EVENT_DEVICE_TO_DEVICE_MESSAGE} to indicate the device to device
      * message value.
      * <p>
-     * See {@link DiagnosticCall} for more information.
+     * See {@link CallDiagnostics} for more information.
      * @hide
      */
     @SystemApi
     public static final String EXTRA_DEVICE_TO_DEVICE_MESSAGE_VALUE =
             "android.telecom.extra.DEVICE_TO_DEVICE_MESSAGE_VALUE";
+
+    /**
+     * Connection event used to communicate a {@link android.telephony.CallQuality} report from
+     * telephony to Telecom for relaying to
+     * {@link DiagnosticCall#onCallQualityReceived(CallQuality)}.
+     * @hide
+     */
+    public static final String EVENT_CALL_QUALITY_REPORT =
+            "android.telecom.event.CALL_QUALITY_REPORT";
+
+    /**
+     * Extra sent with {@link #EVENT_CALL_QUALITY_REPORT} containing the
+     * {@link android.telephony.CallQuality} data.
+     * @hide
+     */
+    public static final String EXTRA_CALL_QUALITY_REPORT =
+            "android.telecom.extra.CALL_QUALITY_REPORT";
+
+    /**
+     * Key to obtain location as a result of ({@code queryLocationForEmergency} from Bundle
+     * @hide
+     */
+    public static final String EXTRA_KEY_QUERY_LOCATION =
+            "android.telecom.extra.KEY_QUERY_LOCATION";
 
     // Flag controlling whether PII is emitted into the logs
     private static final boolean PII_DEBUG = Log.isLoggable(android.util.Log.DEBUG);
@@ -1075,6 +1167,10 @@ public abstract class Connection extends Conferenceable {
         if ((capabilities & CAPABILITY_TRANSFER_CONSULTATIVE)
                 == CAPABILITY_TRANSFER_CONSULTATIVE) {
             builder.append(isLong ? " CAPABILITY_TRANSFER_CONSULTATIVE" : " sup_cTrans");
+        }
+        if ((capabilities & CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT)
+                == CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT) {
+            builder.append(isLong ? " CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT" : " sup_rtt");
         }
         builder.append("]");
         return builder.toString();
@@ -1195,6 +1291,11 @@ public abstract class Connection extends Conferenceable {
         /** @hide */
         public void onPhoneAccountChanged(Connection c, PhoneAccountHandle pHandle) {}
         public void onConnectionTimeReset(Connection c) {}
+        public void onEndpointChanged(Connection c, CallEndpoint endpoint, Executor executor,
+                OutcomeReceiver<Void, CallEndpointException> callback) {}
+        public void onQueryLocation(Connection c, long timeoutMillis, @NonNull String provider,
+                @NonNull @CallbackExecutor Executor executor,
+                @NonNull OutcomeReceiver<Location, QueryLocationException> callback) {}
     }
 
     /**
@@ -1316,6 +1417,18 @@ public abstract class Connection extends Conferenceable {
          * Session modify request rejected by remote user.
          */
         public static final int SESSION_MODIFY_REQUEST_REJECTED_BY_REMOTE = 5;
+
+
+        /**@hide*/
+        @Retention(RetentionPolicy.SOURCE)
+        @IntDef(prefix = "SESSION_MODIFY_REQUEST_", value = {
+                SESSION_MODIFY_REQUEST_SUCCESS,
+                SESSION_MODIFY_REQUEST_FAIL,
+                SESSION_MODIFY_REQUEST_INVALID,
+                SESSION_MODIFY_REQUEST_TIMED_OUT,
+                SESSION_MODIFY_REQUEST_REJECTED_BY_REMOTE
+        })
+        public @interface RttSessionModifyStatus {}
     }
 
     /**
@@ -1718,11 +1831,13 @@ public abstract class Connection extends Conferenceable {
         public abstract void onSetDeviceOrientation(int rotation);
 
         /**
-         * Sets camera zoom ratio.
+         * Sets the camera zoom ratio.
          * <p>
          * Sent from the {@link InCallService} via {@link InCallService.VideoCall#setZoom(float)}.
          *
-         * @param value The camera zoom ratio.
+         * @param value The camera zoom ratio; for the current camera, should be a value in the
+         * range defined by
+         * {@link android.hardware.camera2.CameraCharacteristics#CONTROL_ZOOM_RATIO_RANGE}.
          */
         public abstract void onSetZoom(float value);
 
@@ -2063,6 +2178,7 @@ public abstract class Connection extends Conferenceable {
     private PhoneAccountHandle mPhoneAccountHandle;
     private int mState = STATE_NEW;
     private CallAudioState mCallAudioState;
+    private CallEndpoint mCallEndpoint;
     private Uri mAddress;
     private int mAddressPresentation;
     private String mCallerDisplayName;
@@ -2191,7 +2307,11 @@ public abstract class Connection extends Conferenceable {
      * @return The audio state of the connection, describing how its audio is currently
      *         being routed by the system. This is {@code null} if this Connection
      *         does not directly know about its audio state.
+     * @deprecated Use {@link #getCurrentCallEndpoint()},
+     * {@link #onAvailableCallEndpointsChanged(List)} and
+     * {@link #onMuteStateChanged(boolean)} instead.
      */
+    @Deprecated
     public final CallAudioState getCallAudioState() {
         return mCallAudioState;
     }
@@ -2358,6 +2478,43 @@ public abstract class Connection extends Conferenceable {
     }
 
     /**
+     * Inform this Connection that the audio endpoint has been changed.
+     *
+     * @param endpoint The new call endpoint.
+     * @hide
+     */
+    final void setCallEndpoint(CallEndpoint endpoint) {
+        checkImmutable();
+        Log.d(this, "setCallEndpoint %s", endpoint);
+        mCallEndpoint = endpoint;
+        onCallEndpointChanged(endpoint);
+    }
+
+    /**
+     * Inform this Connection that the available call endpoints have been changed.
+     *
+     * @param availableEndpoints The available call endpoints.
+     * @hide
+     */
+    final void setAvailableCallEndpoints(List<CallEndpoint> availableEndpoints) {
+        checkImmutable();
+        Log.d(this, "setAvailableCallEndpoints");
+        onAvailableCallEndpointsChanged(availableEndpoints);
+    }
+
+    /**
+     * Inform this Connection that its audio mute state has been changed.
+     *
+     * @param isMuted The new mute state.
+     * @hide
+     */
+    final void setMuteState(boolean isMuted) {
+        checkImmutable();
+        Log.d(this, "setMuteState %s", isMuted);
+        onMuteStateChanged(isMuted);
+    }
+
+    /**
      * @param state An integer value of a {@code STATE_*} constant.
      * @return A string representation of the value.
      */
@@ -2433,11 +2590,21 @@ public abstract class Connection extends Conferenceable {
      */
     public final void setCallerDisplayName(String callerDisplayName, int presentation) {
         checkImmutable();
-        Log.d(this, "setCallerDisplayName %s", callerDisplayName);
-        mCallerDisplayName = callerDisplayName;
-        mCallerDisplayNamePresentation = presentation;
-        for (Listener l : mListeners) {
-            l.onCallerDisplayNameChanged(this, callerDisplayName, presentation);
+        boolean nameChanged = !Objects.equals(mCallerDisplayName, callerDisplayName);
+        boolean presentationChanged = mCallerDisplayNamePresentation != presentation;
+        if (nameChanged) {
+            // Ensure the new name is not clobbering the old one with a null value due to the caller
+            // wanting to only set the presentation and not knowing the display name.
+            mCallerDisplayName = callerDisplayName;
+        }
+        if (presentationChanged) {
+            mCallerDisplayNamePresentation = presentation;
+        }
+        if (nameChanged || presentationChanged) {
+            for (Listener l : mListeners) {
+                l.onCallerDisplayNameChanged(this, mCallerDisplayName,
+                        mCallerDisplayNamePresentation);
+            }
         }
     }
 
@@ -2665,6 +2832,12 @@ public abstract class Connection extends Conferenceable {
      * @param isVoip True if the audio mode is VOIP.
      */
     public final void setAudioModeIsVoip(boolean isVoip) {
+        if (!isVoip && (mConnectionProperties & PROPERTY_SELF_MANAGED) == PROPERTY_SELF_MANAGED) {
+            Log.i(this,
+                    "setAudioModeIsVoip: Ignored request to set a self-managed connection's"
+                            + " audioModeIsVoip to false. Doing so can cause unwanted behavior.");
+            return;
+        }
         checkImmutable();
         mAudioModeIsVoip = isVoip;
         for (Listener l : mListeners) {
@@ -2966,7 +3139,10 @@ public abstract class Connection extends Conferenceable {
      * @param route The audio route to use (one of {@link CallAudioState#ROUTE_BLUETOOTH},
      *              {@link CallAudioState#ROUTE_EARPIECE}, {@link CallAudioState#ROUTE_SPEAKER}, or
      *              {@link CallAudioState#ROUTE_WIRED_HEADSET}).
+     * @deprecated Use {@link #requestCallEndpointChange(CallEndpoint, Executor, OutcomeReceiver)}
+     * instead.
      */
+    @Deprecated
     public final void setAudioRoute(int route) {
         for (Listener l : mListeners) {
             l.onAudioRouteChanged(this, route, null);
@@ -2986,12 +3162,49 @@ public abstract class Connection extends Conferenceable {
      * <p>
      * See also {@link InCallService#requestBluetoothAudio(BluetoothDevice)}
      * @param bluetoothDevice The bluetooth device to connect to.
+     * @deprecated Use {@link #requestCallEndpointChange(CallEndpoint, Executor, OutcomeReceiver)}
+     * instead.
      */
+    @Deprecated
     public void requestBluetoothAudio(@NonNull BluetoothDevice bluetoothDevice) {
         for (Listener l : mListeners) {
             l.onAudioRouteChanged(this, CallAudioState.ROUTE_BLUETOOTH,
                     bluetoothDevice.getAddress());
         }
+    }
+
+    /**
+     * Request audio routing to a specific CallEndpoint. Clients should not define their own
+     * CallEndpoint when requesting a change. Instead, the new endpoint should be one of the valid
+     * endpoints provided by {@link #onAvailableCallEndpointsChanged(List)}.
+     * When this request is honored, there will be change to the {@link #getCurrentCallEndpoint()}.
+     * <p>
+     * Used by self-managed {@link ConnectionService}s which wish to change the CallEndpoint for a
+     * self-managed {@link Connection} (see {@link PhoneAccount#CAPABILITY_SELF_MANAGED}.)
+     * <p>
+     * See also
+     * {@link InCallService#requestCallEndpointChange(CallEndpoint, Executor, OutcomeReceiver)}.
+     *
+     * @param endpoint The call endpoint to use.
+     * @param executor The executor of where the callback will execute.
+     * @param callback The callback to notify the result of the endpoint change.
+     */
+    public final void requestCallEndpointChange(@NonNull CallEndpoint endpoint,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OutcomeReceiver<Void, CallEndpointException> callback) {
+        for (Listener l : mListeners) {
+            l.onEndpointChanged(this, endpoint, executor, callback);
+        }
+    }
+
+    /**
+     * Obtains the current CallEndpoint.
+     *
+     * @return An object encapsulating the CallEndpoint.
+     */
+    @NonNull
+    public final CallEndpoint getCurrentCallEndpoint() {
+        return mCallEndpoint;
     }
 
     /**
@@ -3031,6 +3244,36 @@ public abstract class Connection extends Conferenceable {
     }
 
     /**
+     * Query the device's location in order to place an Emergency Call.
+     * Only SIM call managers can call this method for Connections representing Emergency calls.
+     * If a previous location query request is not completed, the new location query request will
+     * be rejected and return a QueryLocationException with
+     * {@code QueryLocationException#ERROR_PREVIOUS_REQUEST_EXISTS}
+     *
+     * @param timeoutMillis long: Timeout in millis waiting for query response (MAX:5000, MIN:100).
+     * @param provider String: the location provider name, This value cannot be null.
+     *                 It is the caller's responsibility to select an enabled provider. The caller
+     *                 can use {@link android.location.LocationManager#getProviders(boolean)}
+     *                 to choose one of the enabled providers and pass it in.
+     * @param executor The executor of where the callback will execute.
+     * @param callback The callback to notify the result of queryLocation.
+     */
+    public final void queryLocationForEmergency(
+            @IntRange(from = 100, to = 5000) long timeoutMillis,
+            @NonNull String provider,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OutcomeReceiver<Location, QueryLocationException> callback) {
+        if (provider == null || executor == null || callback == null) {
+            throw new IllegalArgumentException("There are arguments that must not be null");
+        }
+        if (timeoutMillis < 100 || timeoutMillis > 5000) {
+            throw new IllegalArgumentException("The timeoutMillis should be min 100, max 5000");
+        }
+        mListeners.forEach((l) ->
+                l.onQueryLocation(this, timeoutMillis, provider, executor, callback));
+    }
+
+    /**
      * Notifies this Connection that the {@link #getAudioState()} property has a new value.
      *
      * @param state The new connection audio state.
@@ -3045,8 +3288,33 @@ public abstract class Connection extends Conferenceable {
      * Notifies this Connection that the {@link #getCallAudioState()} property has a new value.
      *
      * @param state The new connection audio state.
+     * @deprecated Use {@link #onCallEndpointChanged(CallEndpoint)},
+     * {@link #onAvailableCallEndpointsChanged(List)} and
+     * {@link #onMuteStateChanged(boolean)} instead.
      */
+    @Deprecated
     public void onCallAudioStateChanged(CallAudioState state) {}
+
+    /**
+     * Notifies this Connection that the audio endpoint has been changed.
+     *
+     * @param callEndpoint The current CallEndpoint.
+     */
+    public void onCallEndpointChanged(@NonNull CallEndpoint callEndpoint) {}
+
+    /**
+     * Notifies this Connection that the available call endpoints have been changed.
+     *
+     * @param availableEndpoints The set of available CallEndpoint.
+     */
+    public void onAvailableCallEndpointsChanged(@NonNull List<CallEndpoint> availableEndpoints) {}
+
+    /**
+     * Notifies this Connection that its audio mute state has been changed.
+     *
+     * @param isMuted The current mute state.
+     */
+    public void onMuteStateChanged(boolean isMuted) {}
 
     /**
      * Inform this Connection when it will or will not be tracked by an {@link InCallService} which
@@ -3355,7 +3623,7 @@ public abstract class Connection extends Conferenceable {
      *     Intent intent = new Intent(Intent.ACTION_MAIN, null);
      *     intent.setFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION | Intent.FLAG_ACTIVITY_NEW_TASK);
      *     intent.setClass(context, YourIncomingCallActivity.class);
-     *     PendingIntent pendingIntent = PendingIntent.getActivity(context, 1, intent, 0);
+     *     PendingIntent pendingIntent = PendingIntent.getActivity(context, 1, intent, PendingIntent.FLAG_MUTABLE_UNAUDITED);
      *
      *     // Build the notification as an ongoing high priority item; this ensures it will show as
      *     // a heads up notification which slides down over top of the current content.
@@ -3412,6 +3680,137 @@ public abstract class Connection extends Conferenceable {
      *                      the in-call app.
      */
     public void handleRttUpgradeResponse(@Nullable RttTextStream rttTextStream) {}
+
+    /**
+     * Information provided to a {@link Connection} upon completion of call filtering in Telecom.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final class CallFilteringCompletionInfo implements Parcelable {
+        private final boolean mIsBlocked;
+        private final boolean mIsInContacts;
+        private final CallScreeningService.CallResponse mCallResponse;
+        private final ComponentName mCallScreeningComponent;
+
+        /**
+         * Constructor for {@link CallFilteringCompletionInfo}
+         *
+         * @param isBlocked Whether any part of the call filtering process indicated that this call
+         *                  should be blocked.
+         * @param isInContacts Whether the caller is in the user's contacts.
+         * @param callResponse The instance of {@link CallScreeningService.CallResponse} provided
+         *                     by the {@link CallScreeningService} that processed this call, or
+         *                     {@code null} if no call screening service ran.
+         * @param callScreeningComponent The component of the {@link CallScreeningService}
+         *                                 that processed this call, or {@link null} if no
+         *                                 call screening service ran.
+         */
+        public CallFilteringCompletionInfo(boolean isBlocked, boolean isInContacts,
+                @Nullable CallScreeningService.CallResponse callResponse,
+                @Nullable ComponentName callScreeningComponent) {
+            mIsBlocked = isBlocked;
+            mIsInContacts = isInContacts;
+            mCallResponse = callResponse;
+            mCallScreeningComponent = callScreeningComponent;
+        }
+
+        /** @hide */
+        protected CallFilteringCompletionInfo(Parcel in) {
+            mIsBlocked = in.readByte() != 0;
+            mIsInContacts = in.readByte() != 0;
+            CallScreeningService.ParcelableCallResponse response
+                    = in.readParcelable(CallScreeningService.class.getClassLoader(), android.telecom.CallScreeningService.ParcelableCallResponse.class);
+            mCallResponse = response == null ? null : response.toCallResponse();
+            mCallScreeningComponent = in.readParcelable(ComponentName.class.getClassLoader(), android.content.ComponentName.class);
+        }
+
+        @NonNull
+        public static final Creator<CallFilteringCompletionInfo> CREATOR =
+                new Creator<CallFilteringCompletionInfo>() {
+                    @Override
+                    public CallFilteringCompletionInfo createFromParcel(Parcel in) {
+                        return new CallFilteringCompletionInfo(in);
+                    }
+
+                    @Override
+                    public CallFilteringCompletionInfo[] newArray(int size) {
+                        return new CallFilteringCompletionInfo[size];
+                    }
+                };
+
+        /**
+         * @return Whether any part of the call filtering process indicated that this call should be
+         *         blocked.
+         */
+        public boolean isBlocked() {
+            return mIsBlocked;
+        }
+
+        /**
+         * @return Whether the caller is in the user's contacts.
+         */
+        public boolean isInContacts() {
+            return mIsInContacts;
+        }
+
+        /**
+         * @return The instance of {@link CallScreeningService.CallResponse} provided
+         *         by the {@link CallScreeningService} that processed this
+         *         call, or {@code null} if no call screening service ran.
+         */
+        public @Nullable CallScreeningService.CallResponse getCallResponse() {
+            return mCallResponse;
+        }
+
+        /**
+         * @return The component of the {@link CallScreeningService}
+         *         that processed this call, or {@code null} if no call screening service ran.
+         */
+        public @Nullable ComponentName getCallScreeningComponent() {
+            return mCallScreeningComponent;
+        }
+
+        @Override
+        public int describeContents() {
+            return 0;
+        }
+
+        @Override
+        public String toString() {
+            return "CallFilteringCompletionInfo{" +
+                    "mIsBlocked=" + mIsBlocked +
+                    ", mIsInContacts=" + mIsInContacts +
+                    ", mCallResponse=" + mCallResponse +
+                    ", mCallScreeningPackageName='" + mCallScreeningComponent + '\'' +
+                    '}';
+        }
+
+        /** @hide */
+        @Override
+        public void writeToParcel(Parcel dest, int flags) {
+            dest.writeByte((byte) (mIsBlocked ? 1 : 0));
+            dest.writeByte((byte) (mIsInContacts ? 1 : 0));
+            dest.writeParcelable(mCallResponse == null ? null : mCallResponse.toParcelable(), 0);
+            dest.writeParcelable(mCallScreeningComponent, 0);
+        }
+    }
+
+    /**
+     * Indicates that call filtering in Telecom is complete
+     *
+     * This method is called for a connection created via
+     * {@link ConnectionService#onCreateIncomingConnection} when call filtering completes in
+     * Telecom, including checking the blocked number db, per-contact settings, and custom call
+     * filtering apps.
+     *
+     * @param callFilteringCompletionInfo Info provided by Telecom on the results of call filtering.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.READ_CONTACTS)
+    public void onCallFilteringCompleted(
+            @NonNull CallFilteringCompletionInfo callFilteringCompletionInfo) { }
 
     static String toLogSafePhoneNumber(String number) {
         // For unknown number, log empty string.

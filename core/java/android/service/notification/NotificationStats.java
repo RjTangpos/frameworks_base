@@ -42,7 +42,8 @@ public final class NotificationStats implements Parcelable {
 
     /** @hide */
     @IntDef(prefix = { "DISMISSAL_SURFACE_" }, value = {
-            DISMISSAL_NOT_DISMISSED, DISMISSAL_OTHER, DISMISSAL_PEEK, DISMISSAL_AOD, DISMISSAL_SHADE
+            DISMISSAL_NOT_DISMISSED, DISMISSAL_OTHER, DISMISSAL_PEEK, DISMISSAL_AOD,
+            DISMISSAL_SHADE, DISMISSAL_BUBBLE, DISMISSAL_LOCKSCREEN
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface DismissalSurface {}
@@ -71,6 +72,16 @@ public final class NotificationStats implements Parcelable {
      * Notification has been dismissed from the notification shade.
      */
     public static final int DISMISSAL_SHADE = 3;
+    /**
+     * Notification has been dismissed as a bubble.
+     * @hide
+     */
+    public static final int DISMISSAL_BUBBLE = 4;
+    /**
+     * Notification has been dismissed from the lock screen.
+     * @hide
+     */
+    public static final int DISMISSAL_LOCKSCREEN = 5;
 
     /** @hide */
     @IntDef(prefix = { "DISMISS_SENTIMENT_" }, value = {

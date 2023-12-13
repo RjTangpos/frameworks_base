@@ -16,46 +16,51 @@
 
 package com.android.systemui.qs;
 
-import com.android.systemui.R;
-import com.android.systemui.qs.carrier.QSCarrierGroupController;
+import com.android.systemui.qs.dagger.QSScope;
+import com.android.systemui.util.ViewController;
 
 import javax.inject.Inject;
 
-public class QuickStatusBarHeaderController {
-    private final QuickStatusBarHeader mView;
-    private final QSCarrierGroupController mQSCarrierGroupController;
+/**
+ * Controller for {@link QuickStatusBarHeader}.
+ */
+@QSScope
+class QuickStatusBarHeaderController extends ViewController<QuickStatusBarHeader> {
 
-    private QuickStatusBarHeaderController(QuickStatusBarHeader view,
-            QSCarrierGroupController.Builder qsCarrierGroupControllerBuilder) {
-        mView = view;
-        mQSCarrierGroupController = qsCarrierGroupControllerBuilder
-                .setQSCarrierGroup(mView.findViewById(R.id.carrier_group))
-                .build();
+    private final QuickQSPanelController mQuickQSPanelController;
+    private boolean mListening;
+
+    @Inject
+    QuickStatusBarHeaderController(QuickStatusBarHeader view,
+            QuickQSPanelController quickQSPanelController
+    ) {
+        super(view);
+        mQuickQSPanelController = quickQSPanelController;
+    }
+
+    @Override
+    protected void onViewAttached() {
+    }
+
+    @Override
+    protected void onViewDetached() {
+        setListening(false);
     }
 
     public void setListening(boolean listening) {
-        mQSCarrierGroupController.setListening(listening);
-        // TODO: move mView.setListening logic into here.
-        mView.setListening(listening);
+        if (listening == mListening) {
+            return;
+        }
+        mListening = listening;
+
+        mQuickQSPanelController.setListening(listening);
+
+        if (mQuickQSPanelController.switchTileLayout(false)) {
+            mView.updateResources();
+        }
     }
 
-
-    public static class Builder {
-        private final QSCarrierGroupController.Builder mQSCarrierGroupControllerBuilder;
-        private QuickStatusBarHeader mView;
-
-        @Inject
-        public Builder(QSCarrierGroupController.Builder qsCarrierGroupControllerBuilder) {
-            mQSCarrierGroupControllerBuilder = qsCarrierGroupControllerBuilder;
-        }
-
-        public Builder setQuickStatusBarHeader(QuickStatusBarHeader view) {
-            mView = view;
-            return this;
-        }
-
-        public QuickStatusBarHeaderController build() {
-            return new QuickStatusBarHeaderController(mView, mQSCarrierGroupControllerBuilder);
-        }
+    public void setContentMargins(int marginStart, int marginEnd) {
+        mQuickQSPanelController.setContentMargins(marginStart, marginEnd);
     }
 }

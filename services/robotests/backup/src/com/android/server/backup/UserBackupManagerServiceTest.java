@@ -61,12 +61,13 @@ import com.android.server.backup.testing.BackupManagerServiceTestUtils;
 import com.android.server.backup.testing.TransportData;
 import com.android.server.backup.testing.TransportTestUtils.TransportMock;
 import com.android.server.backup.transport.TransportNotRegisteredException;
-import com.android.server.testing.shadows.ShadowAppBackupUtils;
 import com.android.server.testing.shadows.ShadowApplicationPackageManager;
+import com.android.server.testing.shadows.ShadowBackupEligibilityRules;
 import com.android.server.testing.shadows.ShadowBinder;
 import com.android.server.testing.shadows.ShadowKeyValueBackupJob;
 import com.android.server.testing.shadows.ShadowKeyValueBackupTask;
 import com.android.server.testing.shadows.ShadowSystemServiceRegistry;
+import com.android.server.testing.shadows.ShadowUserManager;
 
 import org.junit.After;
 import org.junit.Before;
@@ -99,9 +100,10 @@ import java.util.List;
 @RunWith(RobolectricTestRunner.class)
 @Config(
         shadows = {
-            ShadowAppBackupUtils.class,
+            ShadowBackupEligibilityRules.class,
             ShadowApplicationPackageManager.class,
-            ShadowSystemServiceRegistry.class
+            ShadowSystemServiceRegistry.class,
+            ShadowUserManager.class
         })
 @Presubmit
 public class UserBackupManagerServiceTest {
@@ -159,7 +161,7 @@ public class UserBackupManagerServiceTest {
     @After
     public void tearDown() throws Exception {
         mBackupThread.quit();
-        ShadowAppBackupUtils.reset();
+        ShadowBackupEligibilityRules.reset();
         ShadowApplicationPackageManager.reset();
     }
 
@@ -236,14 +238,14 @@ public class UserBackupManagerServiceTest {
         mShadowContext.grantPermissions(android.Manifest.permission.BACKUP);
         TransportMock transportMock = setUpCurrentTransport(mTransportManager, backupTransport());
         registerPackages(PACKAGE_1);
-        ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
         UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
 
         boolean result = backupManagerService.isAppEligibleForBackup(PACKAGE_1);
 
         assertThat(result).isTrue();
         verify(mTransportManager)
-                .disposeOfTransportClient(eq(transportMock.transportClient), any());
+                .disposeOfTransportClient(eq(transportMock.mTransportConnection), any());
     }
 
     /**
@@ -255,7 +257,7 @@ public class UserBackupManagerServiceTest {
         mShadowContext.denyPermissions(android.Manifest.permission.BACKUP);
         setUpCurrentTransport(mTransportManager, mTransport);
         registerPackages(PACKAGE_1);
-        ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
         UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
 
         expectThrows(
@@ -273,7 +275,7 @@ public class UserBackupManagerServiceTest {
         mShadowContext.grantPermissions(android.Manifest.permission.BACKUP);
         TransportMock transportMock = setUpCurrentTransport(mTransportManager, mTransport);
         registerPackages(PACKAGE_1, PACKAGE_2);
-        ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
         UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
 
         String[] filtered =
@@ -282,7 +284,7 @@ public class UserBackupManagerServiceTest {
 
         assertThat(filtered).asList().containsExactly(PACKAGE_1);
         verify(mTransportManager)
-                .disposeOfTransportClient(eq(transportMock.transportClient), any());
+                .disposeOfTransportClient(eq(transportMock.mTransportConnection), any());
     }
 
     /**
@@ -357,7 +359,27 @@ public class UserBackupManagerServiceTest {
         assertThat(getSettingsTransport()).isEqualTo(mNewTransport.transportName);
         assertThat(oldTransport).isEqualTo(mOldTransport.transportName);
         verify(mTransportManager)
-                .disposeOfTransportClient(eq(mNewTransportMock.transportClient), any());
+                .disposeOfTransportClient(eq(mNewTransportMock.mTransportConnection), any());
+    }
+
+    /**
+     * Test verifying that {@link UserBackupManagerService#selectBackupTransport(String)} does not
+     * switch the current transport to the inputted transport, when the inputted transport is not
+     * registered.
+     */
+    @Test
+    public void testSelectBackupTransport_nonRegisteredTransport() throws Exception {
+        setUpForSelectTransport();
+        mShadowContext.grantPermissions(android.Manifest.permission.BACKUP);
+        when(mTransportManager.isTransportRegistered(eq(mNewTransport.transportName)))
+                .thenReturn(false);
+        UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
+
+        String oldTransport = backupManagerService.selectBackupTransport(
+                mNewTransport.transportName);
+
+        assertThat(getSettingsTransport()).isNotEqualTo(mNewTransport.transportName);
+        assertThat(oldTransport).isEqualTo(null);
     }
 
     /**
@@ -395,7 +417,7 @@ public class UserBackupManagerServiceTest {
         assertThat(getSettingsTransport()).isEqualTo(mNewTransport.transportName);
         verify(callback).onSuccess(eq(mNewTransport.transportName));
         verify(mTransportManager)
-                .disposeOfTransportClient(eq(mNewTransportMock.transportClient), any());
+                .disposeOfTransportClient(eq(mNewTransportMock.mTransportConnection), any());
     }
 
     /**
@@ -801,7 +823,7 @@ public class UserBackupManagerServiceTest {
         mShadowContext.grantPermissions(android.Manifest.permission.BACKUP);
         for (String packageName : packages) {
             registerPackages(packageName);
-            ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(packageName);
+            ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(packageName);
         }
         setUpCurrentTransport(mTransportManager, mTransport);
     }
@@ -962,7 +984,7 @@ public class UserBackupManagerServiceTest {
     @Config(shadows = ShadowKeyValueBackupTask.class)
     public void testRequestBackup_whenPackageIsFullBackup() throws Exception {
         setUpForRequestBackup(PACKAGE_1);
-        ShadowAppBackupUtils.setAppGetsFullBackup(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppGetsFullBackup(PACKAGE_1);
         UserBackupManagerService backupManagerService =
                 createBackupManagerServiceForRequestBackup();
 
@@ -1359,8 +1381,8 @@ public class UserBackupManagerServiceTest {
          * BackupManagerConstants)} that throws an {@link IllegalArgumentException}.
          */
         public static void schedule(int userId, Context ctx, long delay,
-                BackupManagerConstants constants) {
-            ShadowKeyValueBackupJob.schedule(userId, ctx, delay, constants);
+                UserBackupManagerService userBackupManagerService) {
+            ShadowKeyValueBackupJob.schedule(userId, ctx, delay, userBackupManagerService);
             throw new IllegalArgumentException();
         }
     }

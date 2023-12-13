@@ -16,11 +16,13 @@
 
 package com.android.server.wm;
 
+import static android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS;
+
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.Binder;
 import android.os.IBinder;
-import android.os.Process;
+import android.os.InputConfig;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.view.InputApplicationHandle;
@@ -33,7 +35,7 @@ import java.io.PrintWriter;
 
 class InputConsumerImpl implements IBinder.DeathRecipient {
     final WindowManagerService mService;
-    final InputChannel mServerChannel, mClientChannel;
+    final InputChannel mClientChannel;
     final InputApplicationHandle mApplicationHandle;
     final InputWindowHandle mWindowHandle;
 
@@ -56,38 +58,26 @@ class InputConsumerImpl implements IBinder.DeathRecipient {
         mClientPid = clientPid;
         mClientUser = clientUser;
 
-        InputChannel[] channels = InputChannel.openInputChannelPair(name);
-        mServerChannel = channels[0];
+        mClientChannel = mService.mInputManager.createInputChannel(name);
         if (inputChannel != null) {
-            channels[1].transferTo(inputChannel);
-            channels[1].dispose();
-            mClientChannel = inputChannel;
-        } else {
-            mClientChannel = channels[1];
+            mClientChannel.copyTo(inputChannel);
         }
-        mService.mInputManager.registerInputChannel(mServerChannel);
 
         mApplicationHandle = new InputApplicationHandle(new Binder(), name,
-                WindowManagerService.DEFAULT_INPUT_DISPATCHING_TIMEOUT_NANOS);
+                DEFAULT_DISPATCHING_TIMEOUT_MILLIS);
 
         mWindowHandle = new InputWindowHandle(mApplicationHandle, displayId);
         mWindowHandle.name = name;
-        mWindowHandle.token = mServerChannel.getToken();
+        mWindowHandle.token = mClientChannel.getToken();
         mWindowHandle.layoutParamsType = WindowManager.LayoutParams.TYPE_INPUT_CONSUMER;
-        mWindowHandle.layoutParamsFlags = 0;
-        mWindowHandle.dispatchingTimeoutNanos =
-                WindowManagerService.DEFAULT_INPUT_DISPATCHING_TIMEOUT_NANOS;
-        mWindowHandle.visible = true;
-        mWindowHandle.canReceiveKeys = false;
-        mWindowHandle.hasFocus = false;
-        mWindowHandle.hasWallpaper = false;
-        mWindowHandle.paused = false;
-        mWindowHandle.ownerPid = Process.myPid();
-        mWindowHandle.ownerUid = Process.myUid();
-        mWindowHandle.inputFeatures = 0;
+        mWindowHandle.dispatchingTimeoutMillis = DEFAULT_DISPATCHING_TIMEOUT_MILLIS;
+        mWindowHandle.ownerPid = WindowManagerService.MY_PID;
+        mWindowHandle.ownerUid = WindowManagerService.MY_UID;
         mWindowHandle.scaleFactor = 1.0f;
+        mWindowHandle.inputConfig = InputConfig.NOT_FOCUSABLE | InputConfig.TRUSTED_OVERLAY;
 
-        mInputSurface = mService.makeSurfaceBuilder(mService.mRoot.getDisplayContent(displayId).getSession())
+        mInputSurface = mService.makeSurfaceBuilder(
+                        mService.mRoot.getDisplayContent(displayId).getSession())
                 .setContainerLayer()
                 .setName("Input Consumer " + name)
                 .setCallsite("InputConsumerImpl")
@@ -137,7 +127,7 @@ class InputConsumerImpl implements IBinder.DeathRecipient {
         t.hide(mInputSurface);
     }
 
-    void show(SurfaceControl.Transaction t, WindowState w) {
+    void show(SurfaceControl.Transaction t, WindowContainer w) {
         t.show(mInputSurface);
         t.setInputWindowInfo(mInputSurface, mWindowHandle);
         t.setRelativeLayer(mInputSurface, w.getSurfaceControl(), 1);
@@ -154,9 +144,8 @@ class InputConsumerImpl implements IBinder.DeathRecipient {
     }
 
     void disposeChannelsLw(SurfaceControl.Transaction t) {
-        mService.mInputManager.unregisterInputChannel(mServerChannel);
+        mService.mInputManager.removeInputChannel(mClientChannel.getToken());
         mClientChannel.dispose();
-        mServerChannel.dispose();
         t.remove(mInputSurface);
         unlinkFromDeathRecipient();
     }
@@ -165,9 +154,11 @@ class InputConsumerImpl implements IBinder.DeathRecipient {
     public void binderDied() {
         synchronized (mService.getWindowManagerLock()) {
             // Clean up the input consumer
-            final InputMonitor inputMonitor =
-                    mService.mRoot.getDisplayContent(mWindowHandle.displayId).getInputMonitor();
-            inputMonitor.destroyInputConsumer(mName);
+            final DisplayContent dc = mService.mRoot.getDisplayContent(mWindowHandle.displayId);
+            if (dc == null) {
+                return;
+            }
+            dc.getInputMonitor().destroyInputConsumer(mName);
             unlinkFromDeathRecipient();
         }
     }

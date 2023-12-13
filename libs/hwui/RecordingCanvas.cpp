@@ -16,25 +16,44 @@
 
 #include "RecordingCanvas.h"
 
-#include "pipeline/skia/FunctorDrawable.h"
-#include "VectorDrawable.h"
+#include <GrRecordingContext.h>
+#include <SkMesh.h>
+#include <hwui/Paint.h>
+#include <log/log.h>
 
+#include <experimental/type_traits>
+#include <utility>
+
+#include "Mesh.h"
 #include "SkAndroidFrameworkUtils.h"
+#include "SkBlendMode.h"
 #include "SkCanvas.h"
 #include "SkCanvasPriv.h"
+#include "SkColor.h"
 #include "SkData.h"
 #include "SkDrawShadowInfo.h"
 #include "SkImage.h"
 #include "SkImageFilter.h"
+#include "SkImageInfo.h"
 #include "SkLatticeIter.h"
-#include "SkMath.h"
+#include "SkPaint.h"
 #include "SkPicture.h"
+#include "SkRRect.h"
 #include "SkRSXform.h"
+#include "SkRect.h"
 #include "SkRegion.h"
 #include "SkTextBlob.h"
 #include "SkVertices.h"
-
-#include <experimental/type_traits>
+#include "Tonemapper.h"
+#include "VectorDrawable.h"
+#include "effects/GainmapRenderer.h"
+#include "include/gpu/GpuTypes.h"  // from Skia
+#include "include/gpu/GrDirectContext.h"
+#include "pipeline/skia/AnimatedDrawables.h"
+#include "pipeline/skia/FunctorDrawable.h"
+#ifdef __ANDROID__
+#include "renderthread/CanvasContext.h"
+#endif
 
 namespace android {
 namespace uirenderer {
@@ -54,16 +73,24 @@ static void copy_v(void* dst) {}
 
 template <typename S, typename... Rest>
 static void copy_v(void* dst, const S* src, int n, Rest&&... rest) {
-    SkASSERTF(((uintptr_t)dst & (alignof(S) - 1)) == 0,
-              "Expected %p to be aligned for at least %zu bytes.", dst, alignof(S));
-    sk_careful_memcpy(dst, src, n * sizeof(S));
-    copy_v(SkTAddOffset<void>(dst, n * sizeof(S)), std::forward<Rest>(rest)...);
+    LOG_FATAL_IF(((uintptr_t)dst & (alignof(S) - 1)) != 0,
+                 "Expected %p to be aligned for at least %zu bytes.",
+                 dst, alignof(S));
+    // If n is 0, there is nothing to copy into dst from src.
+    if (n > 0) {
+        memcpy(dst, src, n * sizeof(S));
+        dst = reinterpret_cast<void*>(
+                reinterpret_cast<uint8_t*>(dst) + n * sizeof(S));
+    }
+    // Repeat for the next items, if any
+    copy_v(dst, std::forward<Rest>(rest)...);
 }
 
 // Helper for getting back at arrays which have been copy_v'd together after an Op.
 template <typename D, typename T>
 static const D* pod(const T* op, size_t offset = 0) {
-    return SkTAddOffset<const D>(op + 1, offset);
+    return reinterpret_cast<const D*>(
+                reinterpret_cast<const uint8_t*>(op + 1) + offset);
 }
 
 namespace {
@@ -96,7 +123,7 @@ struct Restore final : Op {
 struct SaveLayer final : Op {
     static const auto kType = Type::SaveLayer;
     SaveLayer(const SkRect* bounds, const SkPaint* paint, const SkImageFilter* backdrop,
-              const SkImage* clipMask, const SkMatrix* clipMatrix, SkCanvas::SaveLayerFlags flags) {
+              SkCanvas::SaveLayerFlags flags) {
         if (bounds) {
             this->bounds = *bounds;
         }
@@ -104,19 +131,14 @@ struct SaveLayer final : Op {
             this->paint = *paint;
         }
         this->backdrop = sk_ref_sp(backdrop);
-        this->clipMask = sk_ref_sp(clipMask);
-        this->clipMatrix = clipMatrix ? *clipMatrix : SkMatrix::I();
         this->flags = flags;
     }
     SkRect bounds = kUnset;
     SkPaint paint;
     sk_sp<const SkImageFilter> backdrop;
-    sk_sp<const SkImage> clipMask;
-    SkMatrix clipMatrix;
     SkCanvas::SaveLayerFlags flags;
     void draw(SkCanvas* c, const SkMatrix&) const {
-        c->saveLayer({maybe_unset(bounds), &paint, backdrop.get(), clipMask.get(),
-                      clipMatrix.isIdentity() ? nullptr : &clipMatrix, flags});
+        c->saveLayer({maybe_unset(bounds), &paint, backdrop.get(), flags});
     }
 };
 struct SaveBehind final : Op {
@@ -130,24 +152,18 @@ struct SaveBehind final : Op {
     }
 };
 
-struct Concat44 final : Op {
-    static const auto kType = Type::Concat44;
-    Concat44(const SkScalar m[16]) { memcpy(colMajor, m, sizeof(colMajor)); }
-    SkScalar colMajor[16];
-    void draw(SkCanvas* c, const SkMatrix&) const { c->experimental_concat44(colMajor); }
-};
 struct Concat final : Op {
     static const auto kType = Type::Concat;
-    Concat(const SkMatrix& matrix) : matrix(matrix) {}
-    SkMatrix matrix;
+    Concat(const SkM44& matrix) : matrix(matrix) {}
+    SkM44 matrix;
     void draw(SkCanvas* c, const SkMatrix&) const { c->concat(matrix); }
 };
 struct SetMatrix final : Op {
     static const auto kType = Type::SetMatrix;
-    SetMatrix(const SkMatrix& matrix) : matrix(matrix) {}
-    SkMatrix matrix;
+    SetMatrix(const SkM44& matrix) : matrix(matrix) {}
+    SkM44 matrix;
     void draw(SkCanvas* c, const SkMatrix& original) const {
-        c->setMatrix(SkMatrix::Concat(original, matrix));
+        c->setMatrix(SkM44(original) * matrix);
     }
 };
 struct Scale final : Op {
@@ -193,6 +209,11 @@ struct ClipRegion final : Op {
     SkRegion region;
     SkClipOp op;
     void draw(SkCanvas* c, const SkMatrix&) const { c->clipRegion(region, op); }
+};
+struct ResetClip final : Op {
+    static const auto kType = Type::ResetClip;
+    ResetClip() {}
+    void draw(SkCanvas* c, const SkMatrix&) const { SkAndroidFrameworkUtils::ResetClip(c); }
 };
 
 struct DrawPaint final : Op {
@@ -268,7 +289,6 @@ struct DrawDRRect final : Op {
     SkPaint paint;
     void draw(SkCanvas* c, const SkMatrix&) const { c->drawDRRect(outer, inner, paint); }
 };
-
 struct DrawAnnotation final : Op {
     static const auto kType = Type::DrawAnnotation;
     DrawAnnotation(const SkRect& rect, SkData* value) : rect(rect), value(sk_ref_sp(value)) {}
@@ -317,42 +337,52 @@ struct DrawPicture final : Op {
 
 struct DrawImage final : Op {
     static const auto kType = Type::DrawImage;
-    DrawImage(sk_sp<const SkImage>&& image, SkScalar x, SkScalar y, const SkPaint* paint,
-              BitmapPalette palette)
-            : image(std::move(image)), x(x), y(y), palette(palette) {
+    DrawImage(DrawImagePayload&& payload, SkScalar x, SkScalar y, const SkSamplingOptions& sampling,
+              const SkPaint* paint)
+            : image(std::move(payload.image))
+            , x(x)
+            , y(y)
+            , sampling(sampling)
+            , palette(payload.palette)
+            , gainmap(std::move(payload.gainmapImage))
+            , gainmapInfo(payload.gainmapInfo) {
         if (paint) {
             this->paint = *paint;
         }
     }
     sk_sp<const SkImage> image;
     SkScalar x, y;
+    SkSamplingOptions sampling;
     SkPaint paint;
     BitmapPalette palette;
-    void draw(SkCanvas* c, const SkMatrix&) const { c->drawImage(image.get(), x, y, &paint); }
-};
-struct DrawImageNine final : Op {
-    static const auto kType = Type::DrawImageNine;
-    DrawImageNine(sk_sp<const SkImage>&& image, const SkIRect& center, const SkRect& dst,
-                  const SkPaint* paint)
-            : image(std::move(image)), center(center), dst(dst) {
-        if (paint) {
-            this->paint = *paint;
-        }
-    }
-    sk_sp<const SkImage> image;
-    SkIRect center;
-    SkRect dst;
-    SkPaint paint;
+    sk_sp<const SkImage> gainmap;
+    SkGainmapInfo gainmapInfo;
+
     void draw(SkCanvas* c, const SkMatrix&) const {
-        c->drawImageNine(image.get(), center, dst, &paint);
+        if (gainmap) {
+            SkRect src = SkRect::MakeWH(image->width(), image->height());
+            SkRect dst = SkRect::MakeXYWH(x, y, src.width(), src.height());
+            DrawGainmapBitmap(c, image, src, dst, sampling, &paint,
+                              SkCanvas::kFast_SrcRectConstraint, gainmap, gainmapInfo);
+        } else {
+            SkPaint newPaint = paint;
+            tonemapPaint(image->imageInfo(), c->imageInfo(), -1, newPaint);
+            c->drawImage(image.get(), x, y, sampling, &newPaint);
+        }
     }
 };
 struct DrawImageRect final : Op {
     static const auto kType = Type::DrawImageRect;
-    DrawImageRect(sk_sp<const SkImage>&& image, const SkRect* src, const SkRect& dst,
-                  const SkPaint* paint, SkCanvas::SrcRectConstraint constraint,
-                  BitmapPalette palette)
-            : image(std::move(image)), dst(dst), constraint(constraint), palette(palette) {
+    DrawImageRect(DrawImagePayload&& payload, const SkRect* src, const SkRect& dst,
+                  const SkSamplingOptions& sampling, const SkPaint* paint,
+                  SkCanvas::SrcRectConstraint constraint)
+            : image(std::move(payload.image))
+            , dst(dst)
+            , sampling(sampling)
+            , constraint(constraint)
+            , palette(payload.palette)
+            , gainmap(std::move(payload.gainmapImage))
+            , gainmapInfo(payload.gainmapInfo) {
         this->src = src ? *src : SkRect::MakeIWH(this->image->width(), this->image->height());
         if (paint) {
             this->paint = *paint;
@@ -360,24 +390,36 @@ struct DrawImageRect final : Op {
     }
     sk_sp<const SkImage> image;
     SkRect src, dst;
+    SkSamplingOptions sampling;
     SkPaint paint;
     SkCanvas::SrcRectConstraint constraint;
     BitmapPalette palette;
+    sk_sp<const SkImage> gainmap;
+    SkGainmapInfo gainmapInfo;
+
     void draw(SkCanvas* c, const SkMatrix&) const {
-        c->drawImageRect(image.get(), src, dst, &paint, constraint);
+        if (gainmap) {
+            DrawGainmapBitmap(c, image, src, dst, sampling, &paint, constraint, gainmap,
+                              gainmapInfo);
+        } else {
+            SkPaint newPaint = paint;
+            tonemapPaint(image->imageInfo(), c->imageInfo(), -1, newPaint);
+            c->drawImageRect(image.get(), src, dst, sampling, &newPaint, constraint);
+        }
     }
 };
 struct DrawImageLattice final : Op {
     static const auto kType = Type::DrawImageLattice;
-    DrawImageLattice(sk_sp<const SkImage>&& image, int xs, int ys, int fs, const SkIRect& src,
-                     const SkRect& dst, const SkPaint* paint, BitmapPalette palette)
-            : image(std::move(image))
+    DrawImageLattice(DrawImagePayload&& payload, int xs, int ys, int fs, const SkIRect& src,
+                     const SkRect& dst, SkFilterMode filter, const SkPaint* paint)
+            : image(std::move(payload.image))
             , xs(xs)
             , ys(ys)
             , fs(fs)
             , src(src)
             , dst(dst)
-            , palette(palette) {
+            , filter(filter)
+            , palette(payload.palette) {
         if (paint) {
             this->paint = *paint;
         }
@@ -386,15 +428,21 @@ struct DrawImageLattice final : Op {
     int xs, ys, fs;
     SkIRect src;
     SkRect dst;
+    SkFilterMode filter;
     SkPaint paint;
     BitmapPalette palette;
     void draw(SkCanvas* c, const SkMatrix&) const {
+        // TODO: Support drawing a gainmap 9-patch?
+
         auto xdivs = pod<int>(this, 0), ydivs = pod<int>(this, xs * sizeof(int));
         auto colors = (0 == fs) ? nullptr : pod<SkColor>(this, (xs + ys) * sizeof(int));
         auto flags =
                 (0 == fs) ? nullptr : pod<SkCanvas::Lattice::RectType>(
                                               this, (xs + ys) * sizeof(int) + fs * sizeof(SkColor));
-        c->drawImageLattice(image.get(), {xdivs, ydivs, flags, xs, ys, &src, colors}, dst, &paint);
+        SkPaint newPaint = paint;
+        tonemapPaint(image->imageInfo(), c->imageInfo(), -1, newPaint);
+        c->drawImageLattice(image.get(), {xdivs, ydivs, flags, xs, ys, &src, colors}, dst, filter,
+                            &newPaint);
     }
 };
 
@@ -444,26 +492,92 @@ struct DrawPoints final : Op {
     size_t count;
     SkPaint paint;
     void draw(SkCanvas* c, const SkMatrix&) const {
-        c->drawPoints(mode, count, pod<SkPoint>(this), paint);
+        if (paint.isAntiAlias()) {
+            c->drawPoints(mode, count, pod<SkPoint>(this), paint);
+        } else {
+            c->save();
+#ifdef __ANDROID__
+            auto pixelSnap = renderthread::CanvasContext::getActiveContext()->getPixelSnapMatrix();
+            auto transform = c->getLocalToDevice();
+            transform.postConcat(pixelSnap);
+            c->setMatrix(transform);
+#endif
+            c->drawPoints(mode, count, pod<SkPoint>(this), paint);
+            c->restore();
+        }
     }
 };
 struct DrawVertices final : Op {
     static const auto kType = Type::DrawVertices;
-    DrawVertices(const SkVertices* v, int bc, SkBlendMode m, const SkPaint& p)
-            : vertices(sk_ref_sp(const_cast<SkVertices*>(v))), boneCount(bc), mode(m), paint(p) {}
+    DrawVertices(const SkVertices* v, SkBlendMode m, const SkPaint& p)
+            : vertices(sk_ref_sp(const_cast<SkVertices*>(v))), mode(m), paint(p) {}
     sk_sp<SkVertices> vertices;
-    int boneCount;
     SkBlendMode mode;
     SkPaint paint;
     void draw(SkCanvas* c, const SkMatrix&) const {
-        c->drawVertices(vertices, pod<SkVertices::Bone>(this), boneCount, mode, paint);
+        c->drawVertices(vertices, mode, paint);
     }
+};
+struct DrawSkMesh final : Op {
+    static const auto kType = Type::DrawSkMesh;
+    DrawSkMesh(const SkMesh& mesh, sk_sp<SkBlender> blender, const SkPaint& paint)
+            : cpuMesh(mesh), blender(std::move(blender)), paint(paint) {
+        isGpuBased = false;
+    }
+
+    const SkMesh& cpuMesh;
+    mutable SkMesh gpuMesh;
+    sk_sp<SkBlender> blender;
+    SkPaint paint;
+    mutable bool isGpuBased;
+    mutable GrDirectContext::DirectContextID contextId;
+    void draw(SkCanvas* c, const SkMatrix&) const {
+        GrDirectContext* directContext = c->recordingContext()->asDirectContext();
+
+        GrDirectContext::DirectContextID id = directContext->directContextID();
+        if (!isGpuBased || contextId != id) {
+            sk_sp<SkMesh::VertexBuffer> vb =
+                    SkMesh::CopyVertexBuffer(directContext, cpuMesh.refVertexBuffer());
+            if (!cpuMesh.indexBuffer()) {
+                gpuMesh = SkMesh::Make(cpuMesh.refSpec(), cpuMesh.mode(), vb, cpuMesh.vertexCount(),
+                                       cpuMesh.vertexOffset(), cpuMesh.refUniforms(),
+                                       cpuMesh.bounds())
+                                  .mesh;
+            } else {
+                sk_sp<SkMesh::IndexBuffer> ib =
+                        SkMesh::CopyIndexBuffer(directContext, cpuMesh.refIndexBuffer());
+                gpuMesh = SkMesh::MakeIndexed(cpuMesh.refSpec(), cpuMesh.mode(), vb,
+                                              cpuMesh.vertexCount(), cpuMesh.vertexOffset(), ib,
+                                              cpuMesh.indexCount(), cpuMesh.indexOffset(),
+                                              cpuMesh.refUniforms(), cpuMesh.bounds())
+                                  .mesh;
+            }
+
+            isGpuBased = true;
+            contextId = id;
+        }
+
+        c->drawMesh(gpuMesh, blender, paint);
+    }
+};
+
+struct DrawMesh final : Op {
+    static const auto kType = Type::DrawMesh;
+    DrawMesh(const Mesh& mesh, sk_sp<SkBlender> blender, const SkPaint& paint)
+            : mesh(mesh), blender(std::move(blender)), paint(paint) {}
+
+    const Mesh& mesh;
+    sk_sp<SkBlender> blender;
+    SkPaint paint;
+
+    void draw(SkCanvas* c, const SkMatrix&) const { c->drawMesh(mesh.getSkMesh(), blender, paint); }
 };
 struct DrawAtlas final : Op {
     static const auto kType = Type::DrawAtlas;
-    DrawAtlas(const SkImage* atlas, int count, SkBlendMode xfermode, const SkRect* cull,
-              const SkPaint* paint, bool has_colors)
-            : atlas(sk_ref_sp(atlas)), count(count), xfermode(xfermode), has_colors(has_colors) {
+    DrawAtlas(const SkImage* atlas, int count, SkBlendMode mode, const SkSamplingOptions& sampling,
+              const SkRect* cull, const SkPaint* paint, bool has_colors)
+            : atlas(sk_ref_sp(atlas)), count(count), mode(mode), sampling(sampling)
+            , has_colors(has_colors) {
         if (cull) {
             this->cull = *cull;
         }
@@ -473,7 +587,8 @@ struct DrawAtlas final : Op {
     }
     sk_sp<const SkImage> atlas;
     int count;
-    SkBlendMode xfermode;
+    SkBlendMode mode;
+    SkSamplingOptions sampling;
     SkRect cull = kUnset;
     SkPaint paint;
     bool has_colors;
@@ -482,7 +597,8 @@ struct DrawAtlas final : Op {
         auto texs = pod<SkRect>(this, count * sizeof(SkRSXform));
         auto colors = has_colors ? pod<SkColor>(this, count * (sizeof(SkRSXform) + sizeof(SkRect)))
                                  : nullptr;
-        c->drawAtlas(atlas.get(), xforms, texs, colors, count, xfermode, maybe_unset(cull), &paint);
+        c->drawAtlas(atlas.get(), xforms, texs, colors, count, mode, sampling, maybe_unset(cull),
+                     &paint);
     }
 };
 struct DrawShadowRec final : Op {
@@ -503,13 +619,27 @@ struct DrawVectorDrawable final : Op {
         tree->getPaintFor(&paint, tree->stagingProperties());
     }
 
-    void draw(SkCanvas* canvas, const SkMatrix&) const { mRoot->draw(canvas, mBounds, paint); }
+    void draw(SkCanvas* canvas, const SkMatrix&) const {
+        mRoot->draw(canvas, mBounds, paint);
+    }
 
     sp<VectorDrawableRoot> mRoot;
     SkRect mBounds;
-    SkPaint paint;
+    Paint paint;
     BitmapPalette palette;
 };
+
+struct DrawRippleDrawable final : Op {
+    static const auto kType = Type::DrawRippleDrawable;
+    DrawRippleDrawable(const skiapipeline::RippleDrawableParams& params) : mParams(params) {}
+
+    void draw(SkCanvas* canvas, const SkMatrix&) const {
+        skiapipeline::AnimatedRippleDrawable::draw(canvas, mParams);
+    }
+
+    skiapipeline::RippleDrawableParams mParams;
+};
+
 struct DrawWebView final : Op {
     static const auto kType = Type::DrawWebView;
     DrawWebView(skiapipeline::FunctorDrawable* drawable) : drawable(sk_ref_sp(drawable)) {}
@@ -518,21 +648,88 @@ struct DrawWebView final : Op {
     // SkDrawable::onSnapGpuDrawHandler callback instead of SkDrawable::onDraw.
     // SkCanvas::drawDrawable/SkGpuDevice::drawDrawable has the logic to invoke
     // onSnapGpuDrawHandler.
-    void draw(SkCanvas* c, const SkMatrix&) const { c->drawDrawable(drawable.get()); }
+private:
+    // Unfortunately WebView does not have complex clip information serialized, and we only perform
+    // best-effort stencil fill for GLES. So for Vulkan we create an intermediate layer if the
+    // canvas clip is complex.
+    static bool needsCompositedLayer(SkCanvas* c) {
+        if (Properties::getRenderPipelineType() != RenderPipelineType::SkiaVulkan) {
+            return false;
+        }
+        SkRegion clipRegion;
+        // WebView's rasterizer has access to simple clips, so for Vulkan we only need to check if
+        // the clip is more complex than a rectangle.
+        c->temporary_internal_getRgnClip(&clipRegion);
+        return clipRegion.isComplex();
+    }
+
+    mutable SkImageInfo mLayerImageInfo;
+    mutable sk_sp<SkSurface> mLayerSurface = nullptr;
+
+public:
+    void draw(SkCanvas* c, const SkMatrix&) const {
+        if (needsCompositedLayer(c)) {
+            // What we do now is create an offscreen surface, sized by the clip bounds.
+            // We won't apply a clip while drawing - clipping will be performed when compositing the
+            // surface back onto the original canvas. Note also that we're not using saveLayer
+            // because the webview functor still doesn't respect the canvas clip stack.
+            const SkIRect deviceBounds = c->getDeviceClipBounds();
+            if (mLayerSurface == nullptr || c->imageInfo() != mLayerImageInfo) {
+                GrRecordingContext* directContext = c->recordingContext();
+                mLayerImageInfo =
+                        c->imageInfo().makeWH(deviceBounds.width(), deviceBounds.height());
+                mLayerSurface = SkSurface::MakeRenderTarget(directContext, skgpu::Budgeted::kYes,
+                                                            mLayerImageInfo, 0,
+                                                            kTopLeft_GrSurfaceOrigin, nullptr);
+            }
+
+            SkCanvas* layerCanvas = mLayerSurface->getCanvas();
+
+            SkAutoCanvasRestore(layerCanvas, true);
+            layerCanvas->clear(SK_ColorTRANSPARENT);
+
+            // Preserve the transform from the original canvas, but now the clip rectangle is
+            // anchored at the origin so we need to transform the clipped content to the origin.
+            SkM44 mat4(c->getLocalToDevice());
+            mat4.postTranslate(-deviceBounds.fLeft, -deviceBounds.fTop);
+            layerCanvas->concat(mat4);
+            layerCanvas->drawDrawable(drawable.get());
+
+            SkAutoCanvasRestore acr(c, true);
+
+            // Temporarily use an identity transform, because this is just blitting to the parent
+            // canvas with an offset.
+            SkMatrix invertedMatrix;
+            if (!c->getTotalMatrix().invert(&invertedMatrix)) {
+                ALOGW("Unable to extract invert canvas matrix; aborting VkFunctor draw");
+                return;
+            }
+            c->concat(invertedMatrix);
+            mLayerSurface->draw(c, deviceBounds.fLeft, deviceBounds.fTop);
+        } else {
+            c->drawDrawable(drawable.get());
+        }
+    }
 };
+}
+
+static constexpr inline bool is_power_of_two(int value) {
+    return (value & (value - 1)) == 0;
 }
 
 template <typename T, typename... Args>
 void* DisplayListData::push(size_t pod, Args&&... args) {
     size_t skip = SkAlignPtr(sizeof(T) + pod);
-    SkASSERT(skip < (1 << 24));
+    LOG_FATAL_IF(skip >= (1 << 24));
     if (fUsed + skip > fReserved) {
-        static_assert(SkIsPow2(SKLITEDL_PAGE), "This math needs updating for non-pow2.");
+        static_assert(is_power_of_two(SKLITEDL_PAGE),
+                      "This math needs updating for non-pow2.");
         // Next greater multiple of SKLITEDL_PAGE.
         fReserved = (fUsed + skip + SKLITEDL_PAGE) & ~(SKLITEDL_PAGE - 1);
         fBytes.realloc(fReserved);
+        LOG_ALWAYS_FATAL_IF(fBytes.get() == nullptr, "realloc(%zd) failed", fReserved);
     }
-    SkASSERT(fUsed + skip <= fReserved);
+    LOG_FATAL_IF((fUsed + skip) > fReserved);
     auto op = (T*)(fBytes.get() + fUsed);
     fUsed += skip;
     new (op) T{std::forward<Args>(args)...};
@@ -566,22 +763,18 @@ void DisplayListData::restore() {
     this->push<Restore>(0);
 }
 void DisplayListData::saveLayer(const SkRect* bounds, const SkPaint* paint,
-                                const SkImageFilter* backdrop, const SkImage* clipMask,
-                                const SkMatrix* clipMatrix, SkCanvas::SaveLayerFlags flags) {
-    this->push<SaveLayer>(0, bounds, paint, backdrop, clipMask, clipMatrix, flags);
+                                const SkImageFilter* backdrop, SkCanvas::SaveLayerFlags flags) {
+    this->push<SaveLayer>(0, bounds, paint, backdrop, flags);
 }
 
 void DisplayListData::saveBehind(const SkRect* subset) {
     this->push<SaveBehind>(0, subset);
 }
 
-void DisplayListData::concat44(const SkScalar colMajor[16]) {
-    this->push<Concat44>(0, colMajor);
+void DisplayListData::concat(const SkM44& m) {
+    this->push<Concat>(0, m);
 }
-void DisplayListData::concat(const SkMatrix& matrix) {
-    this->push<Concat>(0, matrix);
-}
-void DisplayListData::setMatrix(const SkMatrix& matrix) {
+void DisplayListData::setMatrix(const SkM44& matrix) {
     this->push<SetMatrix>(0, matrix);
 }
 void DisplayListData::scale(SkScalar sx, SkScalar sy) {
@@ -602,6 +795,9 @@ void DisplayListData::clipRRect(const SkRRect& rrect, SkClipOp op, bool aa) {
 }
 void DisplayListData::clipRegion(const SkRegion& region, SkClipOp op) {
     this->push<ClipRegion>(0, region, op);
+}
+void DisplayListData::resetClip() {
+    this->push<ResetClip>(0);
 }
 
 void DisplayListData::drawPaint(const SkPaint& paint) {
@@ -645,29 +841,25 @@ void DisplayListData::drawPicture(const SkPicture* picture, const SkMatrix* matr
                                   const SkPaint* paint) {
     this->push<DrawPicture>(0, picture, matrix, paint);
 }
-void DisplayListData::drawImage(sk_sp<const SkImage> image, SkScalar x, SkScalar y,
-                                const SkPaint* paint, BitmapPalette palette) {
-    this->push<DrawImage>(0, std::move(image), x, y, paint, palette);
+void DisplayListData::drawImage(DrawImagePayload&& payload, SkScalar x, SkScalar y,
+                                const SkSamplingOptions& sampling, const SkPaint* paint) {
+    this->push<DrawImage>(0, std::move(payload), x, y, sampling, paint);
 }
-void DisplayListData::drawImageNine(sk_sp<const SkImage> image, const SkIRect& center,
-                                    const SkRect& dst, const SkPaint* paint) {
-    this->push<DrawImageNine>(0, std::move(image), center, dst, paint);
+void DisplayListData::drawImageRect(DrawImagePayload&& payload, const SkRect* src,
+                                    const SkRect& dst, const SkSamplingOptions& sampling,
+                                    const SkPaint* paint, SkCanvas::SrcRectConstraint constraint) {
+    this->push<DrawImageRect>(0, std::move(payload), src, dst, sampling, paint, constraint);
 }
-void DisplayListData::drawImageRect(sk_sp<const SkImage> image, const SkRect* src,
-                                    const SkRect& dst, const SkPaint* paint,
-                                    SkCanvas::SrcRectConstraint constraint, BitmapPalette palette) {
-    this->push<DrawImageRect>(0, std::move(image), src, dst, paint, constraint, palette);
-}
-void DisplayListData::drawImageLattice(sk_sp<const SkImage> image, const SkCanvas::Lattice& lattice,
-                                       const SkRect& dst, const SkPaint* paint,
-                                       BitmapPalette palette) {
+void DisplayListData::drawImageLattice(DrawImagePayload&& payload, const SkCanvas::Lattice& lattice,
+                                       const SkRect& dst, SkFilterMode filter,
+                                       const SkPaint* paint) {
     int xs = lattice.fXCount, ys = lattice.fYCount;
     int fs = lattice.fRectTypes ? (xs + 1) * (ys + 1) : 0;
     size_t bytes = (xs + ys) * sizeof(int) + fs * sizeof(SkCanvas::Lattice::RectType) +
                    fs * sizeof(SkColor);
-    SkASSERT(lattice.fBounds);
-    void* pod = this->push<DrawImageLattice>(bytes, std::move(image), xs, ys, fs, *lattice.fBounds,
-                                             dst, paint, palette);
+    LOG_FATAL_IF(!lattice.fBounds);
+    void* pod = this->push<DrawImageLattice>(bytes, std::move(payload), xs, ys, fs,
+                                             *lattice.fBounds, dst, filter, paint);
     copy_v(pod, lattice.fXDivs, xs, lattice.fYDivs, ys, lattice.fColors, fs, lattice.fRectTypes,
            fs);
 }
@@ -676,6 +868,10 @@ void DisplayListData::drawTextBlob(const SkTextBlob* blob, SkScalar x, SkScalar 
                                    const SkPaint& paint) {
     this->push<DrawTextBlob>(0, blob, x, y, paint);
     mHasText = true;
+}
+
+void DisplayListData::drawRippleDrawable(const skiapipeline::RippleDrawableParams& params) {
+    this->push<DrawRippleDrawable>(0, params);
 }
 
 void DisplayListData::drawPatch(const SkPoint points[12], const SkColor colors[4],
@@ -687,21 +883,27 @@ void DisplayListData::drawPoints(SkCanvas::PointMode mode, size_t count, const S
     void* pod = this->push<DrawPoints>(count * sizeof(SkPoint), mode, count, paint);
     copy_v(pod, points, count);
 }
-void DisplayListData::drawVertices(const SkVertices* vertices, const SkVertices::Bone bones[],
-                                   int boneCount, SkBlendMode mode, const SkPaint& paint) {
-    void* pod = this->push<DrawVertices>(boneCount * sizeof(SkVertices::Bone), vertices, boneCount,
-                                         mode, paint);
-    copy_v(pod, bones, boneCount);
+void DisplayListData::drawVertices(const SkVertices* vert, SkBlendMode mode, const SkPaint& paint) {
+    this->push<DrawVertices>(0, vert, mode, paint);
+}
+void DisplayListData::drawMesh(const SkMesh& mesh, const sk_sp<SkBlender>& blender,
+                               const SkPaint& paint) {
+    this->push<DrawSkMesh>(0, mesh, blender, paint);
+}
+void DisplayListData::drawMesh(const Mesh& mesh, const sk_sp<SkBlender>& blender,
+                               const SkPaint& paint) {
+    this->push<DrawMesh>(0, mesh, blender, paint);
 }
 void DisplayListData::drawAtlas(const SkImage* atlas, const SkRSXform xforms[], const SkRect texs[],
                                 const SkColor colors[], int count, SkBlendMode xfermode,
-                                const SkRect* cull, const SkPaint* paint) {
+                                const SkSamplingOptions& sampling, const SkRect* cull,
+                                const SkPaint* paint) {
     size_t bytes = count * (sizeof(SkRSXform) + sizeof(SkRect));
     if (colors) {
         bytes += count * sizeof(SkColor);
     }
-    void* pod =
-            this->push<DrawAtlas>(bytes, atlas, count, xfermode, cull, paint, colors != nullptr);
+    void* pod = this->push<DrawAtlas>(bytes, atlas, count, xfermode, sampling, cull, paint,
+                                      colors != nullptr);
     copy_v(pod, xforms, count, texs, count, colors, colors ? count : 0);
 }
 void DisplayListData::drawShadowRec(const SkPath& path, const SkDrawShadowRec& rec) {
@@ -775,7 +977,8 @@ constexpr color_transform_fn colorTransformForOp() {
                 // TODO: We should be const. Or not. Or just use a different map
                 // Unclear, but this is the quick fix
                 const T* op = reinterpret_cast<const T*>(opRaw);
-                transformPaint(transform, const_cast<SkPaint*>(&(op->paint)), op->palette);
+                const SkPaint* paint = &op->paint;
+                transformPaint(transform, const_cast<SkPaint*>(paint), op->palette);
             };
         }
     else if
@@ -784,7 +987,8 @@ constexpr color_transform_fn colorTransformForOp() {
                 // TODO: We should be const. Or not. Or just use a different map
                 // Unclear, but this is the quick fix
                 const T* op = reinterpret_cast<const T*>(opRaw);
-                transformPaint(transform, const_cast<SkPaint*>(&(op->paint)));
+                const SkPaint* paint = &op->paint;
+                transformPaint(transform, const_cast<SkPaint*>(paint));
             };
         }
     else {
@@ -807,6 +1011,16 @@ constexpr color_transform_fn colorTransformForOp<DrawTextBlob>() {
             transformPaint(transform, const_cast<SkPaint*>(&(op->paint)));
             break;
         }
+    };
+}
+
+template <>
+constexpr color_transform_fn colorTransformForOp<DrawRippleDrawable>() {
+    return [](const void* opRaw, ColorTransform transform) {
+        const DrawRippleDrawable* op = reinterpret_cast<const DrawRippleDrawable*>(opRaw);
+        // Ripple drawable needs to contrast against the background, so we need the inverse color.
+        SkColor color = transformColorInverse(transform, op->mParams.color);
+        const_cast<DrawRippleDrawable*>(op)->mParams.color = color;
     };
 }
 
@@ -842,8 +1056,7 @@ void RecordingCanvas::willSave() {
     fDL->save();
 }
 SkCanvas::SaveLayerStrategy RecordingCanvas::getSaveLayerStrategy(const SaveLayerRec& rec) {
-    fDL->saveLayer(rec.fBounds, rec.fPaint, rec.fBackdrop, rec.fClipMask, rec.fClipMatrix,
-                   rec.fSaveLayerFlags);
+    fDL->saveLayer(rec.fBounds, rec.fPaint, rec.fBackdrop, rec.fSaveLayerFlags);
     return SkCanvas::kNoLayer_SaveLayerStrategy;
 }
 void RecordingCanvas::willRestore() {
@@ -860,13 +1073,10 @@ bool RecordingCanvas::onDoSaveBehind(const SkRect* subset) {
     return false;
 }
 
-void RecordingCanvas::didConcat44(const SkScalar colMajor[16]) {
-    fDL->concat44(colMajor);
+void RecordingCanvas::didConcat44(const SkM44& m) {
+    fDL->concat(m);
 }
-void RecordingCanvas::didConcat(const SkMatrix& matrix) {
-    fDL->concat(matrix);
-}
-void RecordingCanvas::didSetMatrix(const SkMatrix& matrix) {
+void RecordingCanvas::didSetM44(const SkM44& matrix) {
     fDL->setMatrix(matrix);
 }
 void RecordingCanvas::didScale(SkScalar sx, SkScalar sy) {
@@ -901,6 +1111,14 @@ void RecordingCanvas::onClipRegion(const SkRegion& region, SkClipOp op) {
     }
     fDL->clipRegion(region, op);
     this->INHERITED::onClipRegion(region, op);
+}
+void RecordingCanvas::onResetClip() {
+    // This is part of "replace op" emulation, but rely on the following intersection
+    // clip to potentially mark the clip as complex. If we are already complex, we do
+    // not reset the complexity so that we don't break the contract that no higher
+    // save point has a complex clip when "not complex".
+    fDL->resetClip();
+    this->INHERITED::onResetClip();
 }
 
 void RecordingCanvas::onDrawPaint(const SkPaint& paint) {
@@ -948,72 +1166,59 @@ void RecordingCanvas::onDrawTextBlob(const SkTextBlob* blob, SkScalar x, SkScala
     fDL->drawTextBlob(blob, x, y, paint);
 }
 
-void RecordingCanvas::onDrawBitmap(const SkBitmap& bm, SkScalar x, SkScalar y,
-                                   const SkPaint* paint) {
-    fDL->drawImage(SkImage::MakeFromBitmap(bm), x, y, paint, BitmapPalette::Unknown);
+void RecordingCanvas::drawRippleDrawable(const skiapipeline::RippleDrawableParams& params) {
+    fDL->drawRippleDrawable(params);
 }
-void RecordingCanvas::onDrawBitmapNine(const SkBitmap& bm, const SkIRect& center, const SkRect& dst,
+
+void RecordingCanvas::drawImage(DrawImagePayload&& payload, SkScalar x, SkScalar y,
+                                const SkSamplingOptions& sampling, const SkPaint* paint) {
+    fDL->drawImage(std::move(payload), x, y, sampling, paint);
+}
+
+void RecordingCanvas::drawImageRect(DrawImagePayload&& payload, const SkRect& src,
+                                    const SkRect& dst, const SkSamplingOptions& sampling,
+                                    const SkPaint* paint, SrcRectConstraint constraint) {
+    fDL->drawImageRect(std::move(payload), &src, dst, sampling, paint, constraint);
+}
+
+void RecordingCanvas::drawImageLattice(DrawImagePayload&& payload, const Lattice& lattice,
+                                       const SkRect& dst, SkFilterMode filter,
                                        const SkPaint* paint) {
-    fDL->drawImageNine(SkImage::MakeFromBitmap(bm), center, dst, paint);
-}
-void RecordingCanvas::onDrawBitmapRect(const SkBitmap& bm, const SkRect* src, const SkRect& dst,
-                                       const SkPaint* paint, SrcRectConstraint constraint) {
-    fDL->drawImageRect(SkImage::MakeFromBitmap(bm), src, dst, paint, constraint,
-                       BitmapPalette::Unknown);
-}
-void RecordingCanvas::onDrawBitmapLattice(const SkBitmap& bm, const SkCanvas::Lattice& lattice,
-                                          const SkRect& dst, const SkPaint* paint) {
-    fDL->drawImageLattice(SkImage::MakeFromBitmap(bm), lattice, dst, paint, BitmapPalette::Unknown);
-}
-
-void RecordingCanvas::drawImage(const sk_sp<SkImage>& image, SkScalar x, SkScalar y,
-                                const SkPaint* paint, BitmapPalette palette) {
-    fDL->drawImage(image, x, y, paint, palette);
-}
-
-void RecordingCanvas::drawImageRect(const sk_sp<SkImage>& image, const SkRect& src,
-                                    const SkRect& dst, const SkPaint* paint,
-                                    SrcRectConstraint constraint, BitmapPalette palette) {
-    fDL->drawImageRect(image, &src, dst, paint, constraint, palette);
-}
-
-void RecordingCanvas::drawImageLattice(const sk_sp<SkImage>& image, const Lattice& lattice,
-                                       const SkRect& dst, const SkPaint* paint,
-                                       BitmapPalette palette) {
-    if (!image || dst.isEmpty()) {
+    if (!payload.image || dst.isEmpty()) {
         return;
     }
 
     SkIRect bounds;
     Lattice latticePlusBounds = lattice;
     if (!latticePlusBounds.fBounds) {
-        bounds = SkIRect::MakeWH(image->width(), image->height());
+        bounds = SkIRect::MakeWH(payload.image->width(), payload.image->height());
         latticePlusBounds.fBounds = &bounds;
     }
 
-    if (SkLatticeIter::Valid(image->width(), image->height(), latticePlusBounds)) {
-        fDL->drawImageLattice(image, latticePlusBounds, dst, paint, palette);
+    if (SkLatticeIter::Valid(payload.image->width(), payload.image->height(), latticePlusBounds)) {
+        fDL->drawImageLattice(std::move(payload), latticePlusBounds, dst, filter, paint);
     } else {
-        fDL->drawImageRect(image, nullptr, dst, paint, SrcRectConstraint::kFast_SrcRectConstraint,
-                           palette);
+        SkSamplingOptions sampling(filter, SkMipmapMode::kNone);
+        fDL->drawImageRect(std::move(payload), nullptr, dst, sampling, paint,
+                           kFast_SrcRectConstraint);
     }
 }
 
-void RecordingCanvas::onDrawImage(const SkImage* img, SkScalar x, SkScalar y,
-                                  const SkPaint* paint) {
-    fDL->drawImage(sk_ref_sp(img), x, y, paint, BitmapPalette::Unknown);
+void RecordingCanvas::onDrawImage2(const SkImage* img, SkScalar x, SkScalar y,
+                                   const SkSamplingOptions& sampling, const SkPaint* paint) {
+    fDL->drawImage(DrawImagePayload(img), x, y, sampling, paint);
 }
-void RecordingCanvas::onDrawImageNine(const SkImage* img, const SkIRect& center, const SkRect& dst,
-                                      const SkPaint* paint) {
-    fDL->drawImageNine(sk_ref_sp(img), center, dst, paint);
+
+void RecordingCanvas::onDrawImageRect2(const SkImage* img, const SkRect& src, const SkRect& dst,
+                                       const SkSamplingOptions& sampling, const SkPaint* paint,
+                                       SrcRectConstraint constraint) {
+    fDL->drawImageRect(DrawImagePayload(img), &src, dst, sampling, paint, constraint);
 }
-void RecordingCanvas::onDrawImageRect(const SkImage* img, const SkRect* src, const SkRect& dst,
-                                      const SkPaint* paint, SrcRectConstraint constraint) {
-    fDL->drawImageRect(sk_ref_sp(img), src, dst, paint, constraint, BitmapPalette::Unknown);
-}
-void RecordingCanvas::onDrawImageLattice(const SkImage* img, const SkCanvas::Lattice& lattice,
-                                         const SkRect& dst, const SkPaint* paint) {
-    fDL->drawImageLattice(sk_ref_sp(img), lattice, dst, paint, BitmapPalette::Unknown);
+
+void RecordingCanvas::onDrawImageLattice2(const SkImage* img, const SkCanvas::Lattice& lattice,
+                                          const SkRect& dst, SkFilterMode filter,
+                                          const SkPaint* paint) {
+    fDL->drawImageLattice(DrawImagePayload(img), lattice, dst, filter, paint);
 }
 
 void RecordingCanvas::onDrawPatch(const SkPoint cubics[12], const SkColor colors[4],
@@ -1026,14 +1231,21 @@ void RecordingCanvas::onDrawPoints(SkCanvas::PointMode mode, size_t count, const
     fDL->drawPoints(mode, count, pts, paint);
 }
 void RecordingCanvas::onDrawVerticesObject(const SkVertices* vertices,
-                                           const SkVertices::Bone bones[], int boneCount,
                                            SkBlendMode mode, const SkPaint& paint) {
-    fDL->drawVertices(vertices, bones, boneCount, mode, paint);
+    fDL->drawVertices(vertices, mode, paint);
 }
-void RecordingCanvas::onDrawAtlas(const SkImage* atlas, const SkRSXform xforms[],
-                                  const SkRect texs[], const SkColor colors[], int count,
-                                  SkBlendMode bmode, const SkRect* cull, const SkPaint* paint) {
-    fDL->drawAtlas(atlas, xforms, texs, colors, count, bmode, cull, paint);
+void RecordingCanvas::onDrawMesh(const SkMesh& mesh, sk_sp<SkBlender> blender,
+                                 const SkPaint& paint) {
+    fDL->drawMesh(mesh, blender, paint);
+}
+void RecordingCanvas::drawMesh(const Mesh& mesh, sk_sp<SkBlender> blender, const SkPaint& paint) {
+    fDL->drawMesh(mesh, blender, paint);
+}
+void RecordingCanvas::onDrawAtlas2(const SkImage* atlas, const SkRSXform xforms[],
+                                   const SkRect texs[], const SkColor colors[], int count,
+                                   SkBlendMode bmode, const SkSamplingOptions& sampling,
+                                   const SkRect* cull, const SkPaint* paint) {
+    fDL->drawAtlas(atlas, xforms, texs, colors, count, bmode, sampling, cull, paint);
 }
 void RecordingCanvas::onDrawShadowRec(const SkPath& path, const SkDrawShadowRec& rec) {
     fDL->drawShadowRec(path, rec);
@@ -1045,6 +1257,15 @@ void RecordingCanvas::drawVectorDrawable(VectorDrawableRoot* tree) {
 
 void RecordingCanvas::drawWebView(skiapipeline::FunctorDrawable* drawable) {
     fDL->drawWebView(drawable);
+}
+
+[[nodiscard]] const SkMesh& DrawMeshPayload::getSkMesh() const {
+    LOG_FATAL_IF(!meshWrapper && !mesh, "One of Mesh or Mesh must be non-null");
+    if (meshWrapper) {
+        return meshWrapper->getSkMesh();
+    } else {
+        return *mesh;
+    }
 }
 
 }  // namespace uirenderer

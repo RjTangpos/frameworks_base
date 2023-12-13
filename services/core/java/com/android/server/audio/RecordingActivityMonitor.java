@@ -30,6 +30,8 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
 
+import com.android.server.utils.EventLogger;
+
 import java.io.PrintWriter;
 import java.text.DateFormat;
 import java.util.ArrayList;
@@ -162,7 +164,7 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
         }
         if (MediaRecorder.isSystemOnlyAudioSource(source)) {
             // still want to log event, it just won't appear in recording configurations;
-            sEventLogger.log(new RecordingEvent(event, riid, config).printLog(TAG));
+            sEventLogger.enqueue(new RecordingEvent(event, riid, config).printLog(TAG));
             return;
         }
         dispatchCallbacks(updateSnapshot(event, riid, config));
@@ -202,7 +204,7 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
                 ? AudioManager.RECORD_CONFIG_EVENT_STOP : AudioManager.RECORD_CONFIG_EVENT_NONE;
         if (riid == AudioManager.RECORD_RIID_INVALID
                 || configEvent == AudioManager.RECORD_CONFIG_EVENT_NONE) {
-            sEventLogger.log(new RecordingEvent(event, riid, null).printLog(TAG));
+            sEventLogger.enqueue(new RecordingEvent(event, riid, null).printLog(TAG));
             return;
         }
         dispatchCallbacks(updateSnapshot(configEvent, riid, null));
@@ -225,8 +227,8 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
         synchronized (mRecordStates) {
             for (RecordingState state : mRecordStates) {
                 // Note: isActiveConfiguration() == true => state.getConfig() != null
-                if (state.isActiveConfiguration()
-                        && state.getConfig().getClientUid() == uid) {
+                if (state.isActiveConfiguration() && state.getConfig().getClientUid() == uid
+                        && !state.getConfig().isClientSilenced()) {
                     return true;
                 }
             }
@@ -299,7 +301,7 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
                 if (!state.hasDeathHandler()) {
                     if (state.isActiveConfiguration()) {
                         configChanged = true;
-                        sEventLogger.log(new RecordingEvent(
+                        sEventLogger.enqueue(new RecordingEvent(
                                         AudioManager.RECORD_CONFIG_EVENT_RELEASE,
                                         state.getRiid(), state.getConfig()));
                     }
@@ -337,7 +339,7 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
             boolean hasPublicClients = false;
             while (clientIterator.hasNext()) {
                 RecMonitorClient rmc = clientIterator.next();
-                if (rcdb.equals(rmc.mDispatcherCb)) {
+                if (rcdb.asBinder().equals(rmc.mDispatcherCb.asBinder())) {
                     rmc.release();
                     clientIterator.remove();
                 } else {
@@ -484,7 +486,7 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
                     configChanged = false;
             }
             if (configChanged) {
-                sEventLogger.log(new RecordingEvent(event, riid, state.getConfig()));
+                sEventLogger.enqueue(new RecordingEvent(event, riid, state.getConfig()));
                 configs = getActiveRecordingConfigurations(true /*isPrivileged*/);
             }
         }
@@ -587,13 +589,14 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
     /**
      * Inner class for recording event logging
      */
-    private static final class RecordingEvent extends AudioEventLogger.Event {
+    private static final class RecordingEvent extends EventLogger.Event {
         private final int mRecEvent;
         private final int mRIId;
         private final int mClientUid;
         private final int mSession;
         private final int mSource;
         private final String mPackName;
+        private final boolean mSilenced;
 
         RecordingEvent(int event, int riid, AudioRecordingConfiguration config) {
             mRecEvent = event;
@@ -603,11 +606,13 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
                 mSession = config.getClientAudioSessionId();
                 mSource = config.getClientAudioSource();
                 mPackName = config.getClientPackageName();
+                mSilenced = config.isClientSilenced();
             } else {
                 mClientUid = -1;
                 mSession = -1;
                 mSource = -1;
                 mPackName = null;
+                mSilenced = false;
             }
         }
 
@@ -633,10 +638,12 @@ public final class RecordingActivityMonitor implements AudioSystem.AudioRecordin
                     .append(" uid:").append(mClientUid)
                     .append(" session:").append(mSession)
                     .append(" src:").append(MediaRecorder.toLogFriendlyAudioSource(mSource))
+                    .append(mSilenced ? " silenced" : " not silenced")
                     .append(mPackName == null ? "" : " pack:" + mPackName).toString();
         }
     }
 
-    private static final AudioEventLogger sEventLogger = new AudioEventLogger(50,
+    private static final EventLogger
+            sEventLogger = new EventLogger(50,
             "recording activity received by AudioService");
 }

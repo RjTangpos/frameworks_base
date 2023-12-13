@@ -16,17 +16,22 @@
 
 package com.android.server.pm;
 
+import static android.Manifest.permission.GET_APP_METADATA;
 import static android.content.pm.PackageInstaller.LOCATION_DATA_APP;
-import static android.content.pm.PackageManager.INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ALWAYS;
-import static android.content.pm.PackageManager.INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ALWAYS_ASK;
-import static android.content.pm.PackageManager.INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ASK;
-import static android.content.pm.PackageManager.INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_NEVER;
-import static android.content.pm.PackageManager.INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_UNDEFINED;
+import static android.content.pm.PackageManager.FLAG_PERMISSION_REVIEW_REQUIRED;
+import static android.content.pm.PackageManager.FLAG_PERMISSION_REVOKED_COMPAT;
+import static android.content.pm.PackageManager.FLAG_PERMISSION_REVOKE_WHEN_REQUESTED;
+import static android.content.pm.PackageManager.FLAG_PERMISSION_USER_FIXED;
+import static android.content.pm.PackageManager.FLAG_PERMISSION_USER_SET;
+
+import static com.android.server.LocalManagerRegistry.ManagerNotFoundException;
+import static com.android.server.pm.PackageManagerService.PLATFORM_PACKAGE_NAME;
 
 import android.accounts.IAccountManager;
+import android.annotation.NonNull;
+import android.annotation.UserIdInt;
 import android.app.ActivityManager;
 import android.app.ActivityManagerInternal;
-import android.app.role.IRoleManager;
 import android.app.role.RoleManager;
 import android.content.ComponentName;
 import android.content.Context;
@@ -49,24 +54,24 @@ import android.content.pm.PackageItemInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.PackageManagerInternal;
-import android.content.pm.PackageParser.ApkLite;
-import android.content.pm.PackageParser.PackageLite;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.PermissionGroupInfo;
 import android.content.pm.PermissionInfo;
 import android.content.pm.ResolveInfo;
+import android.content.pm.SharedLibraryInfo;
 import android.content.pm.SuspendDialogInfo;
 import android.content.pm.UserInfo;
 import android.content.pm.VersionedPackage;
 import android.content.pm.dex.ArtManager;
 import android.content.pm.dex.DexMetadataHelper;
 import android.content.pm.dex.ISnapshotRuntimeProfileCallback;
+import android.content.pm.parsing.ApkLite;
 import android.content.pm.parsing.ApkLiteParseUtils;
+import android.content.pm.parsing.PackageLite;
 import android.content.pm.parsing.result.ParseResult;
 import android.content.pm.parsing.result.ParseTypeImpl;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
-import android.content.rollback.IRollbackManager;
 import android.content.rollback.PackageRollbackInfo;
 import android.content.rollback.RollbackInfo;
 import android.content.rollback.RollbackManager;
@@ -80,55 +85,68 @@ import android.os.ParcelFileDescriptor;
 import android.os.ParcelFileDescriptor.AutoCloseInputStream;
 import android.os.PersistableBundle;
 import android.os.Process;
-import android.os.RemoteCallback;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.ServiceSpecificException;
 import android.os.ShellCommand;
 import android.os.SystemClock;
-import android.os.SystemProperties;
+import android.os.Trace;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.incremental.V4Signature;
 import android.os.storage.StorageManager;
-import android.permission.IPermissionManager;
+import android.permission.PermissionManager;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
-import android.util.ArraySet;
+import android.util.ArrayMap;
+import android.util.IntArray;
 import android.util.PrintWriterPrinter;
 import android.util.Slog;
 import android.util.SparseArray;
 
-import com.android.internal.content.PackageHelper;
+import com.android.internal.content.InstallLocationUtils;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.Preconditions;
+import com.android.server.FgThread;
+import com.android.server.LocalManagerRegistry;
 import com.android.server.LocalServices;
 import com.android.server.SystemConfig;
+import com.android.server.art.ArtManagerLocal;
+import com.android.server.pm.Installer.LegacyDexoptDisabledException;
 import com.android.server.pm.PackageManagerShellCommandDataLoader.Metadata;
+import com.android.server.pm.permission.LegacyPermissionManagerInternal;
+import com.android.server.pm.permission.PermissionAllowlist;
+import com.android.server.pm.verify.domain.DomainVerificationShell;
 
 import dalvik.system.DexFile;
 
 import libcore.io.IoUtils;
 import libcore.io.Streams;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.URISyntaxException;
+import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -142,9 +160,34 @@ class PackageManagerShellCommand extends ShellCommand {
     private final static String ART_PROFILE_SNAPSHOT_DEBUG_LOCATION = "/data/misc/profman/";
     private static final int DEFAULT_STAGED_READY_TIMEOUT_MS = 60 * 1000;
     private static final String TAG = "PackageManagerShellCommand";
+    private static final Set<String> UNSUPPORTED_INSTALL_CMD_OPTS = Set.of(
+            "--multi-package"
+    );
+    private static final Set<String> UNSUPPORTED_SESSION_CREATE_OPTS = Collections.emptySet();
+    private static final Map<String, Integer> SUPPORTED_PERMISSION_FLAGS = new ArrayMap<>();
+    private static final List<String> SUPPORTED_PERMISSION_FLAGS_LIST;
+    static {
+        SUPPORTED_PERMISSION_FLAGS_LIST = List.of("review-required", "revoked-compat",
+                "revoke-when-requested", "user-fixed", "user-set");
+        SUPPORTED_PERMISSION_FLAGS.put("user-set", FLAG_PERMISSION_USER_SET);
+        SUPPORTED_PERMISSION_FLAGS.put("user-fixed", FLAG_PERMISSION_USER_FIXED);
+        SUPPORTED_PERMISSION_FLAGS.put("revoked-compat", FLAG_PERMISSION_REVOKED_COMPAT);
+        SUPPORTED_PERMISSION_FLAGS.put("review-required", FLAG_PERMISSION_REVIEW_REQUIRED);
+        SUPPORTED_PERMISSION_FLAGS.put("revoke-when-requested",
+                FLAG_PERMISSION_REVOKE_WHEN_REQUESTED);
+    }
+    // For backward compatibility. DO NOT add new commands here. New ART Service commands should be
+    // added under the "art" namespace.
+    private static final Set<String> ART_SERVICE_COMMANDS = Set.of("compile",
+            "reconcile-secondary-dex-files", "force-dex-opt", "bg-dexopt-job",
+            "cancel-bg-dexopt-job", "delete-dexopt", "dump-profiles", "snapshot-profile", "art");
 
     final IPackageManager mInterface;
-    final IPermissionManager mPermissionManager;
+    private final PackageManagerInternal mPm;
+    final LegacyPermissionManagerInternal mLegacyPermissionManager;
+    final PermissionManager mPermissionManager;
+    final Context mContext;
+    final DomainVerificationShell mDomainVerificationShell;
     final private WeakHashMap<String, Resources> mResourceCache =
             new WeakHashMap<String, Resources>();
     int mTargetUser;
@@ -152,10 +195,16 @@ class PackageManagerShellCommand extends ShellCommand {
     boolean mComponents;
     int mQueryFlags;
 
-    PackageManagerShellCommand(
-            PackageManagerService service, IPermissionManager permissionManager) {
-        mInterface = service;
-        mPermissionManager = permissionManager;
+    private static final SecureRandom RANDOM = new SecureRandom();
+
+    PackageManagerShellCommand(@NonNull IPackageManager packageManager,
+            @NonNull Context context, @NonNull DomainVerificationShell domainVerificationShell) {
+        mInterface = packageManager;
+        mPm = LocalServices.getService(PackageManagerInternal.class);
+        mLegacyPermissionManager = LocalServices.getService(LegacyPermissionManagerInternal.class);
+        mPermissionManager = context.getSystemService(PermissionManager.class);
+        mContext = context;
+        mDomainVerificationShell = domainVerificationShell;
     }
 
     @Override
@@ -173,6 +222,8 @@ class PackageManagerShellCommand extends ShellCommand {
                     return runDump();
                 case "list":
                     return runList();
+                case "gc":
+                    return runGc();
                 case "resolve-activity":
                     return runResolveActivity();
                 case "query-activities":
@@ -210,18 +261,6 @@ class PackageManagerShellCommand extends ShellCommand {
                     return runMovePackage();
                 case "move-primary-storage":
                     return runMovePrimaryStorage();
-                case "compile":
-                    return runCompile();
-                case "reconcile-secondary-dex-files":
-                    return runreconcileSecondaryDexFiles();
-                case "force-dex-opt":
-                    return runForceDexOpt();
-                case "bg-dexopt-job":
-                    return runDexoptJob();
-                case "dump-profiles":
-                    return runDumpProfiles();
-                case "snapshot-profile":
-                    return runSnapshotProfile();
                 case "uninstall":
                     return runUninstall();
                 case "clear":
@@ -246,12 +285,18 @@ class PackageManagerShellCommand extends ShellCommand {
                     return runSuspend(true);
                 case "unsuspend":
                     return runSuspend(false);
+                case "set-distracting-restriction":
+                    return runSetDistractingRestriction();
                 case "grant":
                     return runGrantRevokePermission(true);
                 case "revoke":
                     return runGrantRevokePermission(false);
                 case "reset-permissions":
                     return runResetPermissions();
+                case "set-permission-flags":
+                    return setOrClearPermissionFlags(true);
+                case "clear-permission-flags":
+                    return setOrClearPermissionFlags(false);
                 case "set-permission-enforced":
                     return runSetPermissionEnforced();
                 case "get-privapp-permissions":
@@ -260,18 +305,18 @@ class PackageManagerShellCommand extends ShellCommand {
                     return runGetPrivappDenyPermissions();
                 case "get-oem-permissions":
                     return runGetOemPermissions();
-                case "set-app-link":
-                    return runSetAppLink();
-                case "get-app-link":
-                    return runGetAppLink();
                 case "trim-caches":
                     return runTrimCaches();
                 case "create-user":
                     return runCreateUser();
                 case "remove-user":
                     return runRemoveUser();
+                case "rename-user":
+                    return runRenameUser();
                 case "set-user-restriction":
                     return runSetUserRestriction();
+                case "supports-multiple-users":
+                    return runSupportsMultipleUsers();
                 case "get-max-users":
                     return runGetMaxUsers();
                 case "get-max-running-users":
@@ -301,7 +346,37 @@ class PackageManagerShellCommand extends ShellCommand {
                     return runLogVisibility();
                 case "bypass-staged-installer-check":
                     return runBypassStagedInstallerCheck();
+                case "bypass-allowed-apex-update-check":
+                    return runBypassAllowedApexUpdateCheck();
+                case "disable-verification-for-uid":
+                    return runDisableVerificationForUid();
+                case "set-silent-updates-policy":
+                    return runSetSilentUpdatesPolicy();
+                case "get-app-metadata":
+                    return runGetAppMetadata();
+                case "wait-for-handler":
+                    return runWaitForHandler(/* forBackgroundHandler= */ false);
+                case "wait-for-background-handler":
+                    return runWaitForHandler(/* forBackgroundHandler= */ true);
                 default: {
+                    if (ART_SERVICE_COMMANDS.contains(cmd)) {
+                        if (DexOptHelper.useArtService()) {
+                            return runArtServiceCommand();
+                        } else {
+                            try {
+                                return runLegacyDexoptCommand(cmd);
+                            } catch (LegacyDexoptDisabledException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+                    }
+
+                    Boolean domainVerificationResult =
+                            mDomainVerificationShell.runCommand(this, cmd);
+                    if (domainVerificationResult != null) {
+                        return domainVerificationResult ? 0 : 1;
+                    }
+
                     String nextArg = getNextArg();
                     if (nextArg == null) {
                         if (cmd.equalsIgnoreCase("-l")) {
@@ -321,6 +396,40 @@ class PackageManagerShellCommand extends ShellCommand {
             pw.println("Remote exception: " + e);
         }
         return -1;
+    }
+
+    private int runLegacyDexoptCommand(@NonNull String cmd)
+            throws RemoteException, LegacyDexoptDisabledException {
+        Installer.checkLegacyDexoptDisabled();
+
+        if (!PackageManagerServiceUtils.isRootOrShell(Binder.getCallingUid())) {
+            throw new SecurityException("Dexopt shell commands need root or shell access");
+        }
+
+        switch (cmd) {
+            case "compile":
+                return runCompile();
+            case "reconcile-secondary-dex-files":
+                return runreconcileSecondaryDexFiles();
+            case "force-dex-opt":
+                return runForceDexOpt();
+            case "bg-dexopt-job":
+                return runBgDexOpt();
+            case "cancel-bg-dexopt-job":
+                return cancelBgDexOptJob();
+            case "delete-dexopt":
+                return runDeleteDexOpt();
+            case "dump-profiles":
+                return runDumpProfiles();
+            case "snapshot-profile":
+                return runSnapshotProfile();
+            case "art":
+                getOutPrintWriter().println("ART Service not enabled");
+                return -1;
+            default:
+                // Can't happen.
+                throw new IllegalArgumentException();
+        }
     }
 
     /**
@@ -410,6 +519,43 @@ class PackageManagerShellCommand extends ShellCommand {
         }
     }
 
+    private int runBypassAllowedApexUpdateCheck() {
+        final PrintWriter pw = getOutPrintWriter();
+        try {
+            mInterface.getPackageInstaller()
+                    .bypassNextAllowedApexUpdateCheck(Boolean.parseBoolean(getNextArg()));
+            return 0;
+        } catch (RemoteException e) {
+            pw.println("Failure ["
+                    + e.getClass().getName() + " - "
+                    + e.getMessage() + "]");
+            return -1;
+        }
+    }
+
+    private int runDisableVerificationForUid() {
+        final PrintWriter pw = getOutPrintWriter();
+        try {
+            int uid = Integer.parseInt(getNextArgRequired());
+            var amInternal = LocalServices.getService(ActivityManagerInternal.class);
+            boolean isInstrumented =
+                    amInternal.getInstrumentationSourceUid(uid) != Process.INVALID_UID;
+            if (isInstrumented) {
+                mInterface.getPackageInstaller().disableVerificationForUid(uid);
+                return 0;
+            } else {
+                // Only available for testing
+                pw.println("Error: must specify an instrumented uid");
+                return -1;
+            }
+        } catch (RemoteException e) {
+            pw.println("Failure ["
+                    + e.getClass().getName() + " - "
+                    + e.getMessage() + "]");
+            return -1;
+        }
+    }
+
     private int uninstallSystemUpdates(String packageName) {
         final PrintWriter pw = getOutPrintWriter();
         boolean failedUninstalls = false;
@@ -418,13 +564,15 @@ class PackageManagerShellCommand extends ShellCommand {
             final List<ApplicationInfo> list;
             if (packageName == null) {
                 final ParceledListSlice<ApplicationInfo> packages =
-                        mInterface.getInstalledApplications(
-                                PackageManager.MATCH_SYSTEM_ONLY, UserHandle.USER_SYSTEM);
+                        mInterface.getInstalledApplications(PackageManager.MATCH_SYSTEM_ONLY
+                                        | PackageManager.MATCH_UNINSTALLED_PACKAGES,
+                                UserHandle.USER_SYSTEM);
                 list = packages.getList();
             } else {
                 list = new ArrayList<>(1);
-                list.add(mInterface.getApplicationInfo(packageName,
-                        PackageManager.MATCH_SYSTEM_ONLY, UserHandle.USER_SYSTEM));
+                list.add(mInterface.getApplicationInfo(packageName, PackageManager.MATCH_SYSTEM_ONLY
+                                | PackageManager.MATCH_UNINSTALLED_PACKAGES,
+                        UserHandle.USER_SYSTEM));
             }
             for (ApplicationInfo info : list) {
                 if (info.isUpdatedSystemApp()) {
@@ -476,31 +624,34 @@ class PackageManagerShellCommand extends ShellCommand {
             return 1;
         }
 
-        final LocalIntentReceiver receiver = new LocalIntentReceiver();
-        RollbackInfo rollback = null;
+        final Context shellPackageContext;
         try {
-            IRollbackManager rm = IRollbackManager.Stub.asInterface(
-                    ServiceManager.getService(Context.ROLLBACK_SERVICE));
-            for (RollbackInfo r : (List<RollbackInfo>) rm.getAvailableRollbacks().getList()) {
-                for (PackageRollbackInfo info : r.getPackages()) {
-                    if (packageName.equals(info.getPackageName())) {
-                        rollback = r;
-                        break;
-                    }
+            shellPackageContext = mContext.createPackageContextAsUser(
+                    "com.android.shell", 0, Binder.getCallingUserHandle());
+        } catch (NameNotFoundException e) {
+            // should not happen
+            throw new RuntimeException(e);
+        }
+
+        final LocalIntentReceiver receiver = new LocalIntentReceiver();
+        RollbackManager rm = shellPackageContext.getSystemService(RollbackManager.class);
+        RollbackInfo rollback = null;
+        for (RollbackInfo r : rm.getAvailableRollbacks()) {
+            for (PackageRollbackInfo info : r.getPackages()) {
+                if (packageName.equals(info.getPackageName())) {
+                    rollback = r;
+                    break;
                 }
             }
-
-            if (rollback == null) {
-                pw.println("No available rollbacks for: " + packageName);
-                return 1;
-            }
-
-            rm.commitRollback(rollback.getRollbackId(),
-                    ParceledListSlice.<VersionedPackage>emptyList(),
-                    "com.android.shell", receiver.getIntentSender());
-        } catch (RemoteException re) {
-            // Cannot happen.
         }
+
+        if (rollback == null) {
+            pw.println("No available rollbacks for: " + packageName);
+            return 1;
+        }
+
+        rm.commitRollback(rollback.getRollbackId(),
+                Collections.emptyList(), receiver.getIntentSender());
 
         final Intent result = receiver.getResult();
         final int status = result.getIntExtra(RollbackManager.EXTRA_STATUS,
@@ -545,9 +696,14 @@ class PackageManagerShellCommand extends ShellCommand {
                                     + apkLiteResult.getErrorMessage(),
                             apkLiteResult.getException());
                 }
-                PackageLite pkgLite = new PackageLite(null, apkLiteResult.getResult(), null, null,
-                        null, null, null, null);
-                sessionSize += PackageHelper.calculateInstalledSize(pkgLite,
+                final ApkLite apkLite = apkLiteResult.getResult();
+                final PackageLite pkgLite = new PackageLite(null, apkLite.getPath(), apkLite,
+                        null /* splitNames */, null /* isFeatureSplits */,
+                        null /* usesSplitNames */, null /* configForSplit */,
+                        null /* splitApkPaths */, null /* splitRevisionCodes */,
+                        apkLite.getTargetSdkVersion(), null /* requiredSplitTypes */,
+                        null /* splitTypes */);
+                sessionSize += InstallLocationUtils.calculateInstalledSize(pkgLite,
                         params.sessionParams.abiOverride, fd.getFileDescriptor());
             } catch (IOException e) {
                 getErrPrintWriter().println("Error: Failed to parse APK file: " + inPath);
@@ -624,14 +780,40 @@ class PackageManagerShellCommand extends ShellCommand {
                 return runListPermissions();
             case "staged-sessions":
                 return runListStagedSessions();
+            case "sdks":
+                return runListSdks();
             case "users":
                 ServiceManager.getService("user").shellCommand(
                         getInFileDescriptor(), getOutFileDescriptor(), getErrFileDescriptor(),
                         new String[] { "list" }, getShellCallback(), adoptResultReceiver());
                 return 0;
+            case "initial-non-stopped-system-packages":
+                return runListInitialNonStoppedSystemPackages();
         }
         pw.println("Error: unknown list type '" + type + "'");
         return -1;
+    }
+
+    private int runGc() throws RemoteException {
+        Runtime.getRuntime().gc();
+        final PrintWriter pw = getOutPrintWriter();
+        pw.println("Ok");
+        return 0;
+    }
+
+    private int runListInitialNonStoppedSystemPackages() throws RemoteException {
+        final PrintWriter pw = getOutPrintWriter();
+        final List<String> list = mInterface.getInitialNonStoppedSystemPackages();
+
+        Collections.sort(list);
+
+        for (String pkgName : list) {
+            pw.print("package:");
+            pw.print(pkgName);
+            pw.println();
+        }
+
+        return 0;
     }
 
     private int runListFeatures() throws RemoteException {
@@ -695,7 +877,9 @@ class PackageManagerShellCommand extends ShellCommand {
         }
 
         final List<InstrumentationInfo> list =
-                mInterface.queryInstrumentation(targetPackage, 0 /*flags*/).getList();
+                mInterface.queryInstrumentationAsUser(
+                        targetPackage, PackageManager.MATCH_KNOWN_PACKAGES, UserHandle.USER_SYSTEM)
+                        .getList();
 
         // sort by target package
         Collections.sort(list, new Comparator<InstrumentationInfo>() {
@@ -749,6 +933,15 @@ class PackageManagerShellCommand extends ShellCommand {
     }
 
     private int runListPackages(boolean showSourceDir) throws RemoteException {
+        return runListPackages(showSourceDir, false);
+    }
+
+    private int runListSdks() throws RemoteException {
+        return runListPackages(false, true);
+    }
+
+    private int runListPackages(boolean showSourceDir, boolean showSdks) throws RemoteException {
+        final String prefix = showSdks ? "sdk:" : "package:";
         final PrintWriter pw = getOutPrintWriter();
         int getFlags = 0;
         boolean listDisabled = false, listEnabled = false;
@@ -757,8 +950,9 @@ class PackageManagerShellCommand extends ShellCommand {
         boolean showUid = false;
         boolean showVersionCode = false;
         boolean listApexOnly = false;
+        boolean showStopped = false;
         int uid = -1;
-        int userId = UserHandle.USER_SYSTEM;
+        int defaultUserId = UserHandle.USER_ALL;
         try {
             String opt;
             while ((opt = getNextOption()) != null) {
@@ -801,12 +995,21 @@ class PackageManagerShellCommand extends ShellCommand {
                         getFlags |= PackageManager.MATCH_APEX;
                         listApexOnly = true;
                         break;
+                    case "--factory-only":
+                        getFlags |= PackageManager.MATCH_FACTORY_ONLY;
+                        break;
                     case "--user":
-                        userId = UserHandle.parseUserArg(getNextArgRequired());
+                        defaultUserId = UserHandle.parseUserArg(getNextArgRequired());
                         break;
                     case "--uid":
                         showUid = true;
                         uid = Integer.parseInt(getNextArgRequired());
+                        break;
+                    case "--match-libraries":
+                        getFlags |= PackageManager.MATCH_STATIC_SHARED_AND_SDK_LIBRARIES;
+                        break;
+                    case "--show-stopped":
+                        showStopped = true;
                         break;
                     default:
                         pw.println("Error: Unknown option: " + opt);
@@ -820,67 +1023,119 @@ class PackageManagerShellCommand extends ShellCommand {
 
         final String filter = getNextArg();
 
-        if (userId == UserHandle.USER_ALL) {
-            getFlags |= PackageManager.MATCH_KNOWN_PACKAGES;
+        int[] userIds = {defaultUserId};
+        if (defaultUserId == UserHandle.USER_ALL) {
+            final UserManagerInternal umi = LocalServices.getService(UserManagerInternal.class);
+            userIds = umi.getUserIds();
         }
-        final int translatedUserId =
-                translateUserId(userId, UserHandle.USER_SYSTEM, "runListPackages");
-        @SuppressWarnings("unchecked")
-        final ParceledListSlice<PackageInfo> slice =
-                mInterface.getInstalledPackages(getFlags, translatedUserId);
-        final List<PackageInfo> packages = slice.getList();
+        if (showSdks) {
+            getFlags |= PackageManager.MATCH_STATIC_SHARED_AND_SDK_LIBRARIES;
+        }
 
-        final int count = packages.size();
-        for (int p = 0; p < count; p++) {
-            final PackageInfo info = packages.get(p);
-            if (filter != null && !info.packageName.contains(filter)) {
-                continue;
-            }
-            final boolean isApex = info.isApex;
-            if (uid != -1 && !isApex && info.applicationInfo.uid != uid) {
-                continue;
-            }
+        // Build a map of packages to a list of corresponding uids. Keys are strings containing
+        // the sdk or package name along with optional additional information based on opt.
+        final Map<String, List<String>> out = new HashMap<>();
+        for (int userId : userIds) {
+            final int translatedUserId =
+                    translateUserId(userId, UserHandle.USER_SYSTEM, "runListPackages");
+            @SuppressWarnings("unchecked") final ParceledListSlice<PackageInfo> slice =
+                    mInterface.getInstalledPackages(getFlags, translatedUserId);
+            final List<PackageInfo> packages = slice.getList();
 
-            final boolean isSystem = !isApex &&
-                    (info.applicationInfo.flags&ApplicationInfo.FLAG_SYSTEM) != 0;
-            final boolean isEnabled = !isApex && info.applicationInfo.enabled;
-            if ((!listDisabled || !isEnabled) &&
-                    (!listEnabled || isEnabled) &&
-                    (!listSystem || isSystem) &&
-                    (!listThirdParty || !isSystem) &&
-                    (!listApexOnly || isApex)) {
-                pw.print("package:");
-                if (showSourceDir) {
-                    pw.print(info.applicationInfo.sourceDir);
-                    pw.print("=");
+            final int count = packages.size();
+            for (int p = 0; p < count; p++) {
+                final PackageInfo info = packages.get(p);
+                final StringBuilder stringBuilder = new StringBuilder();
+                if (filter != null && !info.packageName.contains(filter)) {
+                    continue;
                 }
-                pw.print(info.packageName);
+                final boolean isApex = info.isApex;
+                if (uid != -1 && !isApex && info.applicationInfo.uid != uid) {
+                    continue;
+                }
+
+                final boolean isSystem = !isApex
+                        && (info.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+                final boolean isEnabled = !isApex && info.applicationInfo.enabled;
+                if ((listDisabled && isEnabled)
+                        || (listEnabled && !isEnabled)
+                        || (listSystem && !isSystem)
+                        || (listThirdParty && isSystem)
+                        || (listApexOnly && !isApex)) {
+                    continue;
+                }
+
+                String name = null;
+                if (showSdks) {
+                    final ParceledListSlice<SharedLibraryInfo> libsSlice =
+                            mInterface.getDeclaredSharedLibraries(
+                                info.packageName, getFlags, userId
+                            );
+                    if (libsSlice == null) {
+                        continue;
+                    }
+                    final List<SharedLibraryInfo> libs = libsSlice.getList();
+                    for (int l = 0, lsize = libs.size(); l < lsize; ++l) {
+                        SharedLibraryInfo lib = libs.get(l);
+                        if (lib.getType() == SharedLibraryInfo.TYPE_SDK_PACKAGE) {
+                            name = lib.getName() + ":" + lib.getLongVersion();
+                            break;
+                        }
+                    }
+                    if (name == null) {
+                        continue;
+                    }
+                } else {
+                    name = info.packageName;
+                }
+
+                stringBuilder.append(prefix);
+                if (showSourceDir) {
+                    stringBuilder.append(info.applicationInfo.sourceDir);
+                    stringBuilder.append("=");
+                }
+                stringBuilder.append(name);
                 if (showVersionCode) {
-                    pw.print(" versionCode:");
+                    stringBuilder.append(" versionCode:");
                     if (info.applicationInfo != null) {
-                        pw.print(info.applicationInfo.longVersionCode);
+                        stringBuilder.append(info.applicationInfo.longVersionCode);
                     } else {
-                        pw.print(info.getLongVersionCode());
+                        stringBuilder.append(info.getLongVersionCode());
                     }
                 }
+                if (showStopped) {
+                    stringBuilder.append(" stopped=");
+                    stringBuilder.append(
+                            ((info.applicationInfo.flags & ApplicationInfo.FLAG_STOPPED) != 0)
+                            ? "true" : "false");
+                }
                 if (listInstaller) {
-                    pw.print("  installer=");
-                    pw.print(mInterface.getInstallerPackageName(info.packageName));
+                    stringBuilder.append("  installer=");
+                    stringBuilder.append(mInterface.getInstallerPackageName(info.packageName));
                 }
+                List<String> uids = out.computeIfAbsent(
+                        stringBuilder.toString(), k -> new ArrayList<>()
+                );
                 if (showUid && !isApex) {
-                    pw.print(" uid:");
-                    pw.print(info.applicationInfo.uid);
+                    uids.add(String.valueOf(info.applicationInfo.uid));
                 }
-                pw.println();
             }
+        }
+        for (Map.Entry<String, List<String>> entry : out.entrySet()) {
+            pw.print(entry.getKey());
+            List<String> uids = entry.getValue();
+            if (!uids.isEmpty()) {
+                pw.print(" uid:");
+                pw.print(String.join(",", uids));
+            }
+            pw.println();
         }
         return 0;
     }
 
     private int runListPermissionGroups() throws RemoteException {
         final PrintWriter pw = getOutPrintWriter();
-        final List<PermissionGroupInfo> pgs =
-                mPermissionManager.getAllPermissionGroups(0).getList();
+        final List<PermissionGroupInfo> pgs = mPermissionManager.getAllPermissionGroups(0);
 
         final int count = pgs.size();
         for (int p = 0; p < count ; p++) {
@@ -927,7 +1182,7 @@ class PackageManagerShellCommand extends ShellCommand {
         final ArrayList<String> groupList = new ArrayList<String>();
         if (groups) {
             final List<PermissionGroupInfo> infos =
-                    mPermissionManager.getAllPermissionGroups(0 /*flags*/).getList();
+                    mPermissionManager.getAllPermissionGroups(0 /*flags*/);
             final int count = infos.size();
             for (int i = 0; i < count; i++) {
                 groupList.add(infos.get(i).name);
@@ -1247,7 +1502,7 @@ class PackageManagerShellCommand extends ShellCommand {
     }
 
     private int runStreamingInstall() throws RemoteException {
-        final InstallParams params = makeInstallParams();
+        final InstallParams params = makeInstallParams(UNSUPPORTED_INSTALL_CMD_OPTS);
         if (params.sessionParams.dataLoaderParams == null) {
             params.sessionParams.setDataLoaderParams(
                     PackageManagerShellCommandDataLoader.getStreamingDataLoaderParams(this));
@@ -1256,7 +1511,7 @@ class PackageManagerShellCommand extends ShellCommand {
     }
 
     private int runIncrementalInstall() throws RemoteException {
-        final InstallParams params = makeInstallParams();
+        final InstallParams params = makeInstallParams(UNSUPPORTED_INSTALL_CMD_OPTS);
         if (params.sessionParams.dataLoaderParams == null) {
             params.sessionParams.setDataLoaderParams(
                     PackageManagerShellCommandDataLoader.getIncrementalDataLoaderParams(this));
@@ -1265,7 +1520,7 @@ class PackageManagerShellCommand extends ShellCommand {
     }
 
     private int runInstall() throws RemoteException {
-        return doRunInstall(makeInstallParams());
+        return doRunInstall(makeInstallParams(UNSUPPORTED_INSTALL_CMD_OPTS));
     }
 
     private int doRunInstall(final InstallParams params) throws RemoteException {
@@ -1417,7 +1672,7 @@ class PackageManagerShellCommand extends ShellCommand {
 
     private int runInstallCreate() throws RemoteException {
         final PrintWriter pw = getOutPrintWriter();
-        final InstallParams installParams = makeInstallParams();
+        final InstallParams installParams = makeInstallParams(UNSUPPORTED_SESSION_CREATE_OPTS);
         final int sessionId = doCreateSession(installParams.sessionParams,
                 installParams.installerPackageName, installParams.userId);
 
@@ -1448,7 +1703,7 @@ class PackageManagerShellCommand extends ShellCommand {
         final PrintWriter pw = getOutPrintWriter();
         final int parentSessionId = Integer.parseInt(getNextArg());
 
-        List<Integer> otherSessionIds = new ArrayList<>();
+        IntArray otherSessionIds = new IntArray();
         String opt;
         while ((opt = getNextArg()) != null) {
             otherSessionIds.add(Integer.parseInt(opt));
@@ -1457,7 +1712,7 @@ class PackageManagerShellCommand extends ShellCommand {
             pw.println("Error: At least two sessions are required.");
             return 1;
         }
-        return doInstallAddSession(parentSessionId, ArrayUtils.convertToIntArray(otherSessionIds),
+        return doInstallAddSession(parentSessionId, otherSessionIds.toArray(),
                 true /*logSuccess*/);
     }
 
@@ -1566,11 +1821,11 @@ class PackageManagerShellCommand extends ShellCommand {
     private int runGetInstallLocation() throws RemoteException {
         int loc = mInterface.getInstallLocation();
         String locStr = "invalid";
-        if (loc == PackageHelper.APP_INSTALL_AUTO) {
+        if (loc == InstallLocationUtils.APP_INSTALL_AUTO) {
             locStr = "auto";
-        } else if (loc == PackageHelper.APP_INSTALL_INTERNAL) {
+        } else if (loc == InstallLocationUtils.APP_INSTALL_INTERNAL) {
             locStr = "internal";
-        } else if (loc == PackageHelper.APP_INSTALL_EXTERNAL) {
+        } else if (loc == InstallLocationUtils.APP_INSTALL_EXTERNAL) {
             locStr = "external";
         }
         getOutPrintWriter().println(loc + "[" + locStr + "]");
@@ -1630,16 +1885,13 @@ class PackageManagerShellCommand extends ShellCommand {
 
     private int runCompile() throws RemoteException {
         final PrintWriter pw = getOutPrintWriter();
-        boolean checkProfiles = SystemProperties.getBoolean("dalvik.vm.usejitprofiles", false);
         boolean forceCompilation = false;
         boolean allPackages = false;
         boolean clearProfileData = false;
         String compilerFilter = null;
         String compilationReason = null;
-        String checkProfilesRaw = null;
         boolean secondaryDex = false;
         String split = null;
-        boolean compileLayouts = false;
 
         String opt;
         while ((opt = getNextOption()) != null) {
@@ -1659,11 +1911,10 @@ class PackageManagerShellCommand extends ShellCommand {
                 case "-r":
                     compilationReason = getNextArgRequired();
                     break;
-                case "--compile-layouts":
-                    compileLayouts = true;
-                    break;
                 case "--check-prof":
-                    checkProfilesRaw = getNextArgRequired();
+                    getNextArgRequired();
+                    pw.println("Warning: Ignoring obsolete flag --check-prof "
+                            + "- it is unconditionally enabled now");
                     break;
                 case "--reset":
                     forceCompilation = true;
@@ -1682,27 +1933,17 @@ class PackageManagerShellCommand extends ShellCommand {
             }
         }
 
-        if (checkProfilesRaw != null) {
-            if ("true".equals(checkProfilesRaw)) {
-                checkProfiles = true;
-            } else if ("false".equals(checkProfilesRaw)) {
-                checkProfiles = false;
-            } else {
-                pw.println("Invalid value for \"--check-prof\". Expected \"true\" or \"false\".");
-                return 1;
-            }
-        }
-
         final boolean compilerFilterGiven = compilerFilter != null;
         final boolean compilationReasonGiven = compilationReason != null;
-        // Make sure exactly one of -m, -r, or --compile-layouts is given.
-        if ((!compilerFilterGiven && !compilationReasonGiven && !compileLayouts)
-            || (!compilerFilterGiven && compilationReasonGiven && compileLayouts)
-            || (compilerFilterGiven && !compilationReasonGiven && compileLayouts)
-            || (compilerFilterGiven && compilationReasonGiven && !compileLayouts)
-            || (compilerFilterGiven && compilationReasonGiven && compileLayouts)) {
-            pw.println("Must specify exactly one of compilation filter (\"-m\"), compilation " +
-                    "reason (\"-r\"), or compile layouts (\"--compile-layouts\")");
+        // Make sure exactly one of -m, or -r is given.
+        if (compilerFilterGiven && compilationReasonGiven) {
+            pw.println("Cannot use compilation filter (\"-m\") and compilation reason (\"-r\") "
+                    + "at the same time");
+            return 1;
+        }
+        if (!compilerFilterGiven && !compilationReasonGiven) {
+            pw.println("Cannot run without any of compilation filter (\"-m\") and compilation "
+                    + "reason (\"-r\")");
             return 1;
         }
 
@@ -1746,6 +1987,8 @@ class PackageManagerShellCommand extends ShellCommand {
         List<String> packageNames = null;
         if (allPackages) {
             packageNames = mInterface.getAllPackages();
+            // Compiling the system server is only supported from odrefresh, so skip it.
+            packageNames.removeIf(packageName -> PLATFORM_PACKAGE_NAME.equals(packageName));
         } else {
             String packageName = getNextArg();
             if (packageName == null) {
@@ -1767,19 +2010,11 @@ class PackageManagerShellCommand extends ShellCommand {
                 pw.flush();
             }
 
-            boolean result = true;
-            if (compileLayouts) {
-                PackageManagerInternal internal = LocalServices.getService(
-                        PackageManagerInternal.class);
-                result = internal.compileLayouts(packageName);
-            } else {
-                result = secondaryDex
-                    ? mInterface.performDexOptSecondary(packageName,
-                            targetCompilerFilter, forceCompilation)
-                    : mInterface.performDexOptMode(packageName,
-                            checkProfiles, targetCompilerFilter, forceCompilation,
-                            true /* bootComplete */, split);
-            }
+            final boolean result = secondaryDex
+                    ? mInterface.performDexOptSecondary(
+                            packageName, targetCompilerFilter, forceCompilation)
+                    : mInterface.performDexOptMode(packageName, true /* checkProfiles */,
+                            targetCompilerFilter, forceCompilation, true /* bootComplete */, split);
             if (!result) {
                 failedPackages.add(packageName);
             }
@@ -1807,32 +2042,102 @@ class PackageManagerShellCommand extends ShellCommand {
         }
     }
 
-    private int runreconcileSecondaryDexFiles() throws RemoteException {
+    private int runreconcileSecondaryDexFiles()
+            throws RemoteException, LegacyDexoptDisabledException {
         String packageName = getNextArg();
-        mInterface.reconcileSecondaryDexFiles(packageName);
+        mPm.legacyReconcileSecondaryDexFiles(packageName);
         return 0;
     }
 
-    public int runForceDexOpt() throws RemoteException {
-        mInterface.forceDexOpt(getNextArgRequired());
+    public int runForceDexOpt() throws RemoteException, LegacyDexoptDisabledException {
+        mPm.legacyForceDexOpt(getNextArgRequired());
         return 0;
     }
 
-    private int runDexoptJob() throws RemoteException {
-        String arg;
-        List<String> packageNames = new ArrayList<>();
-        while ((arg = getNextArg()) != null) {
-            packageNames.add(arg);
+    private int runBgDexOpt() throws RemoteException, LegacyDexoptDisabledException {
+        String opt = getNextOption();
+
+        if (opt == null) {
+            List<String> packageNames = new ArrayList<>();
+            String arg;
+            while ((arg = getNextArg()) != null) {
+                packageNames.add(arg);
+            }
+            if (!BackgroundDexOptService.getService().runBackgroundDexoptJob(
+                        packageNames.isEmpty() ? null : packageNames)) {
+                getOutPrintWriter().println("Failure");
+                return -1;
+            }
+        } else {
+            String extraArg = getNextArg();
+            if (extraArg != null) {
+                getErrPrintWriter().println("Invalid argument: " + extraArg);
+                return -1;
+            }
+
+            switch (opt) {
+                case "--cancel":
+                    return cancelBgDexOptJob();
+
+                case "--disable":
+                    BackgroundDexOptService.getService().setDisableJobSchedulerJobs(true);
+                    break;
+
+                case "--enable":
+                    BackgroundDexOptService.getService().setDisableJobSchedulerJobs(false);
+                    break;
+
+                default:
+                    getErrPrintWriter().println("Unknown option: " + opt);
+                    return -1;
+            }
         }
-        boolean result = mInterface.runBackgroundDexoptJob(packageNames.isEmpty() ? null :
-                packageNames);
-        getOutPrintWriter().println(result ? "Success" : "Failure");
-        return result ? 0 : -1;
+
+        getOutPrintWriter().println("Success");
+        return 0;
     }
 
-    private int runDumpProfiles() throws RemoteException {
+    private int cancelBgDexOptJob() throws RemoteException, LegacyDexoptDisabledException {
+        BackgroundDexOptService.getService().cancelBackgroundDexoptJob();
+        getOutPrintWriter().println("Success");
+        return 0;
+    }
+
+    private int runDeleteDexOpt() throws RemoteException {
+        PrintWriter pw = getOutPrintWriter();
         String packageName = getNextArg();
-        mInterface.dumpProfiles(packageName);
+        if (TextUtils.isEmpty(packageName)) {
+            pw.println("Error: no package name");
+            return 1;
+        }
+        long freedBytes = mPm.deleteOatArtifactsOfPackage(packageName);
+        if (freedBytes < 0) {
+            pw.println("Error: delete failed");
+            return 1;
+        }
+        pw.println("Success: freed " + freedBytes + " bytes");
+        Slog.i(TAG, "delete-dexopt " + packageName + " ,freed " + freedBytes + " bytes");
+        return 0;
+    }
+
+    private int runDumpProfiles() throws RemoteException, LegacyDexoptDisabledException {
+        final PrintWriter pw = getOutPrintWriter();
+        boolean dumpClassesAndMethods = false;
+
+        String opt;
+        while ((opt = getNextOption()) != null) {
+            switch (opt) {
+                case "--dump-classes-and-methods":
+                    dumpClassesAndMethods = true;
+                    break;
+                default:
+                    pw.println("Error: Unknown option: " + opt);
+                    return 1;
+            }
+        }
+
+        String packageName = getNextArg();
+        mPm.legacyDumpProfiles(packageName, dumpClassesAndMethods);
         return 0;
     }
 
@@ -2012,7 +2317,7 @@ class PackageManagerShellCommand extends ShellCommand {
         } else {
             if ((flags & PackageManager.DELETE_ALL_USERS) == 0) {
                 final PackageInfo info = mInterface.getPackageInfo(packageName,
-                        PackageManager.MATCH_STATIC_SHARED_LIBRARIES, translatedUserId);
+                        PackageManager.MATCH_STATIC_SHARED_AND_SDK_LIBRARIES, translatedUserId);
                 if (info == null) {
                     pw.println("Failure [not installed for " + translatedUserId + "]");
                     return 1;
@@ -2069,7 +2374,7 @@ class PackageManagerShellCommand extends ShellCommand {
             if (abandonSession) {
                 try {
                     doAbandonSession(sessionId, false /*logSuccess*/);
-                } catch (Exception ignore) {
+                } catch (RuntimeException ignore) {
                 }
             }
         }
@@ -2090,10 +2395,23 @@ class PackageManagerShellCommand extends ShellCommand {
     }
 
     private int runClear() throws RemoteException {
+        final PrintWriter pw = getOutPrintWriter();
         int userId = UserHandle.USER_SYSTEM;
-        String option = getNextOption();
-        if (option != null && option.equals("--user")) {
-            userId = UserHandle.parseUserArg(getNextArgRequired());
+        boolean cacheOnly = false;
+
+        String opt;
+        while ((opt = getNextOption()) != null) {
+            switch (opt) {
+                case "--user":
+                    userId = UserHandle.parseUserArg(getNextArgRequired());
+                    break;
+                case "--cache-only":
+                    cacheOnly = true;
+                    break;
+                default:
+                    pw.println("Error: Unknown option: " + opt);
+                    return 1;
+            }
         }
 
         String pkg = getNextArg();
@@ -2105,7 +2423,12 @@ class PackageManagerShellCommand extends ShellCommand {
         final int translatedUserId =
                 translateUserId(userId, UserHandle.USER_NULL, "runClear");
         final ClearDataObserver obs = new ClearDataObserver();
-        ActivityManager.getService().clearApplicationUserData(pkg, false, obs, translatedUserId);
+        if (!cacheOnly) {
+            ActivityManager.getService()
+                    .clearApplicationUserData(pkg, false, obs, translatedUserId);
+        } else {
+            mInterface.deleteApplicationCacheFilesAsUser(pkg, translatedUserId, obs);
+        }
         synchronized (obs) {
             while (!obs.finished) {
                 try {
@@ -2163,7 +2486,7 @@ class PackageManagerShellCommand extends ShellCommand {
                     mInterface.getApplicationEnabledSetting(pkg, translatedUserId)));
             return 0;
         } else {
-            mInterface.setComponentEnabledSetting(cn, state, 0, translatedUserId);
+            mInterface.setComponentEnabledSetting(cn, state, 0, translatedUserId, "shell");
             getOutPrintWriter().println("Component " + cn.toShortString() + " new state: "
                     + enabledSettingToString(
                     mInterface.getComponentEnabledSetting(cn, translatedUserId)));
@@ -2189,6 +2512,57 @@ class PackageManagerShellCommand extends ShellCommand {
         getOutPrintWriter().println("Package " + pkg + " new hidden state: "
                 + mInterface.getApplicationHiddenSettingAsUser(pkg, translatedUserId));
         return 0;
+    }
+
+    private int runSetDistractingRestriction() {
+        final PrintWriter pw = getOutPrintWriter();
+        int userId = UserHandle.USER_SYSTEM;
+        String opt;
+        int flags = 0;
+        while ((opt = getNextOption()) != null) {
+            switch (opt) {
+                case "--user":
+                    userId = UserHandle.parseUserArg(getNextArgRequired());
+                    break;
+                case "--flag":
+                    final String flag = getNextArgRequired();
+                    switch (flag) {
+                        case "hide-notifications":
+                            flags |= PackageManager.RESTRICTION_HIDE_NOTIFICATIONS;
+                            break;
+                        case "hide-from-suggestions":
+                            flags |= PackageManager.RESTRICTION_HIDE_FROM_SUGGESTIONS;
+                            break;
+                        default:
+                            pw.println("Unrecognized flag: " + flag);
+                            return 1;
+                    }
+                    break;
+                default:
+                    pw.println("Error: Unknown option: " + opt);
+                    return 1;
+            }
+        }
+
+        final List<String> packageNames = getRemainingArgs();
+        if (packageNames.isEmpty()) {
+            pw.println("Error: package name not specified");
+            return 1;
+        }
+        try {
+            final int translatedUserId = translateUserId(userId, UserHandle.USER_NULL,
+                    "set-distracting");
+            final String[] errored = mInterface.setDistractingPackageRestrictionsAsUser(
+                    packageNames.toArray(new String[]{}), flags, translatedUserId);
+            if (errored.length > 0) {
+                pw.println("Could not set restriction for: " + Arrays.toString(errored));
+                return 1;
+            }
+            return 0;
+        } catch (RemoteException | IllegalArgumentException e) {
+            pw.println(e.toString());
+            return 1;
+        }
     }
 
     private int runSuspend(boolean suspendedState) {
@@ -2237,8 +2611,8 @@ class PackageManagerShellCommand extends ShellCommand {
             }
         }
 
-        final String packageName = getNextArg();
-        if (packageName == null) {
+        final List<String> packageNames = getRemainingArgs();
+        if (packageNames.isEmpty()) {
             pw.println("Error: package name not specified");
             return 1;
         }
@@ -2256,12 +2630,15 @@ class PackageManagerShellCommand extends ShellCommand {
         try {
             final int translatedUserId =
                     translateUserId(userId, UserHandle.USER_NULL, "runSuspend");
-            mInterface.setPackagesSuspendedAsUser(new String[]{packageName}, suspendedState,
-                    ((appExtras.size() > 0) ? appExtras : null),
+            mInterface.setPackagesSuspendedAsUser(packageNames.toArray(new String[] {}),
+                    suspendedState, ((appExtras.size() > 0) ? appExtras : null),
                     ((launcherExtras.size() > 0) ? launcherExtras : null),
                     info, callingPackage, translatedUserId);
-            pw.println("Package " + packageName + " new suspended state: "
-                    + mInterface.isPackageSuspendedForUser(packageName, translatedUserId));
+            for (int i = 0; i < packageNames.size(); i++) {
+                final String packageName = packageNames.get(i);
+                pw.println("Package " + packageName + " new suspended state: "
+                        + mInterface.isPackageSuspendedForUser(packageName, translatedUserId));
+            }
             return 0;
         } catch (RemoteException | IllegalArgumentException e) {
             pw.println(e.toString());
@@ -2289,18 +2666,62 @@ class PackageManagerShellCommand extends ShellCommand {
             getErrPrintWriter().println("Error: no permission specified");
             return 1;
         }
-        final int translatedUserId =
-                translateUserId(userId, UserHandle.USER_NULL, "runGrantRevokePermission");
+        final UserHandle translatedUser = UserHandle.of(translateUserId(userId,
+                UserHandle.USER_NULL, "runGrantRevokePermission"));
         if (grant) {
-            mPermissionManager.grantRuntimePermission(pkg, perm, translatedUserId);
+            mPermissionManager.grantRuntimePermission(pkg, perm, translatedUser);
         } else {
-            mPermissionManager.revokeRuntimePermission(pkg, perm, translatedUserId, null);
+            mPermissionManager.revokeRuntimePermission(pkg, perm, translatedUser, null);
         }
         return 0;
     }
 
     private int runResetPermissions() throws RemoteException {
-        mPermissionManager.resetRuntimePermissions();
+        mLegacyPermissionManager.resetRuntimePermissions();
+        return 0;
+    }
+
+    private int setOrClearPermissionFlags(boolean setFlags) {
+        int userId = UserHandle.USER_SYSTEM;
+
+        String opt;
+        while ((opt = getNextOption()) != null) {
+            if (opt.equals("--user")) {
+                userId = UserHandle.parseUserArg(getNextArgRequired());
+            }
+        }
+
+        String pkg = getNextArg();
+        if (pkg == null) {
+            getErrPrintWriter().println("Error: no package specified");
+            return 1;
+        }
+        String perm = getNextArg();
+        if (perm == null) {
+            getErrPrintWriter().println("Error: no permission specified");
+            return 1;
+        }
+
+        int flagMask = 0;
+        String flagName = getNextArg();
+        if (flagName == null) {
+            getErrPrintWriter().println("Error: no permission flags specified");
+            return 1;
+        }
+        while (flagName != null) {
+            if (!SUPPORTED_PERMISSION_FLAGS.containsKey(flagName)) {
+                getErrPrintWriter().println("Error: specified flag " + flagName + " is not one of "
+                        + SUPPORTED_PERMISSION_FLAGS_LIST);
+                return 1;
+            }
+            flagMask |= SUPPORTED_PERMISSION_FLAGS.get(flagName);
+            flagName = getNextArg();
+        }
+
+        final UserHandle translatedUser = UserHandle.of(translateUserId(userId,
+                UserHandle.USER_NULL, "runGrantRevokePermission"));
+        int flagSet = setFlags ? flagMask : 0;
+        mPermissionManager.updatePermissionFlags(pkg, perm, flagMask, flagSet, translatedUser);
         return 0;
     }
 
@@ -2315,7 +2736,7 @@ class PackageManagerShellCommand extends ShellCommand {
             getErrPrintWriter().println("Error: no enforcement specified");
             return 1;
         }
-        mPermissionManager.setPermissionEnforced(permission, Boolean.parseBoolean(enforcedRaw));
+        // Permissions are always enforced now.
         return 0;
     }
 
@@ -2349,27 +2770,22 @@ class PackageManagerShellCommand extends ShellCommand {
         }
     }
 
+    private String getApexPackageNameContainingPackage(String pkg) {
+        ApexManager apexManager = ApexManager.getInstance();
+        return apexManager.getActiveApexPackageNameContainingPackage(pkg);
+    }
+
+    private boolean isApexApp(String pkg) {
+        return getApexPackageNameContainingPackage(pkg) != null;
+    }
+
     private int runGetPrivappPermissions() {
         final String pkg = getNextArg();
         if (pkg == null) {
             getErrPrintWriter().println("Error: no package specified.");
             return 1;
         }
-
-        ArraySet<String> privAppPermissions = null;
-        if (isVendorApp(pkg)) {
-            privAppPermissions = SystemConfig.getInstance().getVendorPrivAppPermissions(pkg);
-        } else if (isProductApp(pkg)) {
-            privAppPermissions = SystemConfig.getInstance().getProductPrivAppPermissions(pkg);
-        } else if (isSystemExtApp(pkg)) {
-            privAppPermissions = SystemConfig.getInstance()
-                    .getSystemExtPrivAppPermissions(pkg);
-        } else {
-            privAppPermissions = SystemConfig.getInstance().getPrivAppPermissions(pkg);
-        }
-
-        getOutPrintWriter().println(privAppPermissions == null
-                ? "{}" : privAppPermissions.toString());
+        getOutPrintWriter().println(getPrivAppPermissionsString(pkg, true));
         return 0;
     }
 
@@ -2379,22 +2795,52 @@ class PackageManagerShellCommand extends ShellCommand {
             getErrPrintWriter().println("Error: no package specified.");
             return 1;
         }
-
-        ArraySet<String> privAppPermissions = null;
-        if (isVendorApp(pkg)) {
-            privAppPermissions = SystemConfig.getInstance().getVendorPrivAppDenyPermissions(pkg);
-        } else if (isProductApp(pkg)) {
-            privAppPermissions = SystemConfig.getInstance().getProductPrivAppDenyPermissions(pkg);
-        } else if (isSystemExtApp(pkg)) {
-            privAppPermissions = SystemConfig.getInstance()
-                    .getSystemExtPrivAppDenyPermissions(pkg);
-        } else {
-            privAppPermissions = SystemConfig.getInstance().getPrivAppDenyPermissions(pkg);
-        }
-
-        getOutPrintWriter().println(privAppPermissions == null
-                ? "{}" : privAppPermissions.toString());
+        getOutPrintWriter().println(getPrivAppPermissionsString(pkg, false));
         return 0;
+    }
+
+    @NonNull
+    private String getPrivAppPermissionsString(@NonNull String packageName, boolean allowed) {
+        final PermissionAllowlist permissionAllowlist =
+                SystemConfig.getInstance().getPermissionAllowlist();
+        final ArrayMap<String, ArrayMap<String, Boolean>> privAppPermissions;
+        if (isVendorApp(packageName)) {
+            privAppPermissions = permissionAllowlist.getVendorPrivilegedAppAllowlist();
+        } else if (isProductApp(packageName)) {
+            privAppPermissions = permissionAllowlist.getProductPrivilegedAppAllowlist();
+        } else if (isSystemExtApp(packageName)) {
+            privAppPermissions = permissionAllowlist.getSystemExtPrivilegedAppAllowlist();
+        } else if (isApexApp(packageName)) {
+            final String moduleName = ApexManager.getInstance().getApexModuleNameForPackageName(
+                    getApexPackageNameContainingPackage(packageName));
+            privAppPermissions = permissionAllowlist.getApexPrivilegedAppAllowlists()
+                    .get(moduleName);
+        } else {
+            privAppPermissions = permissionAllowlist.getPrivilegedAppAllowlist();
+        }
+        final ArrayMap<String, Boolean> permissions = privAppPermissions != null
+                ? privAppPermissions.get(packageName) : null;
+        if (permissions == null) {
+            return "{}";
+        }
+        final StringBuilder result = new StringBuilder("{");
+        boolean isFirstPermission = true;
+        final int permissionsSize = permissions.size();
+        for (int i = 0; i < permissionsSize; i++) {
+            boolean permissionAllowed = permissions.valueAt(i);
+            if (permissionAllowed != allowed) {
+                continue;
+            }
+            if (isFirstPermission) {
+                isFirstPermission = false;
+            } else {
+                result.append(", ");
+            }
+            String permissionName = permissions.keyAt(i);
+            result.append(permissionName);
+        }
+        result.append("}");
+        return result.toString();
     }
 
     private int runGetOemPermissions() {
@@ -2404,7 +2850,7 @@ class PackageManagerShellCommand extends ShellCommand {
             return 1;
         }
         final Map<String, Boolean> oemPermissions = SystemConfig.getInstance()
-                .getOemPermissions(pkg);
+                .getPermissionAllowlist().getOemAppAllowlist().get(pkg);
         if (oemPermissions == null || oemPermissions.isEmpty()) {
             getOutPrintWriter().println("{}");
         } else {
@@ -2412,134 +2858,6 @@ class PackageManagerShellCommand extends ShellCommand {
                     getOutPrintWriter().println(permission + " granted:" + granted)
             );
         }
-        return 0;
-    }
-
-    private String linkStateToString(int state) {
-        switch (state) {
-            case INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_UNDEFINED: return "undefined";
-            case INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ASK: return "ask";
-            case INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ALWAYS: return "always";
-            case INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_NEVER: return "never";
-            case INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ALWAYS_ASK : return "always ask";
-        }
-        return "Unknown link state: " + state;
-    }
-
-    // pm set-app-link [--user USER_ID] PACKAGE {always|ask|always-ask|never|undefined}
-    private int runSetAppLink() throws RemoteException {
-        int userId = UserHandle.USER_SYSTEM;
-
-        String opt;
-        while ((opt = getNextOption()) != null) {
-            if (opt.equals("--user")) {
-                userId = UserHandle.parseUserArg(getNextArgRequired());
-            } else {
-                getErrPrintWriter().println("Error: unknown option: " + opt);
-                return 1;
-            }
-        }
-
-        // Package name to act on; required
-        final String pkg = getNextArg();
-        if (pkg == null) {
-            getErrPrintWriter().println("Error: no package specified.");
-            return 1;
-        }
-
-        // State to apply; {always|ask|never|undefined}, required
-        final String modeString = getNextArg();
-        if (modeString == null) {
-            getErrPrintWriter().println("Error: no app link state specified.");
-            return 1;
-        }
-
-        final int newMode;
-        switch (modeString.toLowerCase()) {
-            case "undefined":
-                newMode = INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_UNDEFINED;
-                break;
-
-            case "always":
-                newMode = INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ALWAYS;
-                break;
-
-            case "ask":
-                newMode = INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ASK;
-                break;
-
-            case "always-ask":
-                newMode = INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ALWAYS_ASK;
-                break;
-
-            case "never":
-                newMode = INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_NEVER;
-                break;
-
-            default:
-                getErrPrintWriter().println("Error: unknown app link state '" + modeString + "'");
-                return 1;
-        }
-
-        final int translatedUserId =
-                translateUserId(userId, UserHandle.USER_NULL, "runSetAppLink");
-        final PackageInfo info = mInterface.getPackageInfo(pkg, 0, translatedUserId);
-        if (info == null) {
-            getErrPrintWriter().println("Error: package " + pkg + " not found.");
-            return 1;
-        }
-
-        if ((info.applicationInfo.privateFlags & ApplicationInfo.PRIVATE_FLAG_HAS_DOMAIN_URLS) == 0) {
-            getErrPrintWriter().println("Error: package " + pkg + " does not handle web links.");
-            return 1;
-        }
-
-        if (!mInterface.updateIntentVerificationStatus(pkg, newMode, translatedUserId)) {
-            getErrPrintWriter().println("Error: unable to update app link status for " + pkg);
-            return 1;
-        }
-
-        return 0;
-    }
-
-    // pm get-app-link [--user USER_ID] PACKAGE
-    private int runGetAppLink() throws RemoteException {
-        int userId = UserHandle.USER_SYSTEM;
-
-        String opt;
-        while ((opt = getNextOption()) != null) {
-            if (opt.equals("--user")) {
-                userId = UserHandle.parseUserArg(getNextArgRequired());
-            } else {
-                getErrPrintWriter().println("Error: unknown option: " + opt);
-                return 1;
-            }
-        }
-
-        // Package name to act on; required
-        final String pkg = getNextArg();
-        if (pkg == null) {
-            getErrPrintWriter().println("Error: no package specified.");
-            return 1;
-        }
-
-        final int translatedUserId =
-                translateUserId(userId, UserHandle.USER_NULL, "runGetAppLink");
-        final PackageInfo info = mInterface.getPackageInfo(pkg, 0, translatedUserId);
-        if (info == null) {
-            getErrPrintWriter().println("Error: package " + pkg + " not found.");
-            return 1;
-        }
-
-        if ((info.applicationInfo.privateFlags
-                & ApplicationInfo.PRIVATE_FLAG_HAS_DOMAIN_URLS) == 0) {
-            getErrPrintWriter().println("Error: package " + pkg + " does not handle web links.");
-            return 1;
-        }
-
-        getOutPrintWriter().println(linkStateToString(
-                mInterface.getIntentVerificationStatus(pkg, translatedUserId)));
-
         return 0;
     }
 
@@ -2609,7 +2927,8 @@ class PackageManagerShellCommand extends ShellCommand {
         while ((opt = getNextOption()) != null) {
             String newUserType = null;
             if ("--profileOf".equals(opt)) {
-                userId = UserHandle.parseUserArg(getNextArgRequired());
+                userId = translateUserId(UserHandle.parseUserArg(getNextArgRequired()),
+                            UserHandle.USER_ALL, "runCreateUser");
             } else if ("--managed".equals(opt)) {
                 newUserType = UserManager.USER_TYPE_PROFILE_MANAGED;
             } else if ("--restricted".equals(opt)) {
@@ -2620,6 +2939,8 @@ class PackageManagerShellCommand extends ShellCommand {
                 newUserType = UserManager.USER_TYPE_FULL_DEMO;
             } else if ("--ephemeral".equals(opt)) {
                 flags |= UserInfo.FLAG_EPHEMERAL;
+            } else if ("--for-testing".equals(opt)) {
+                flags |= UserInfo.FLAG_FOR_TESTING;
             } else if ("--pre-create-only".equals(opt)) {
                 preCreateOnly = true;
             } else if ("--user-type".equals(opt)) {
@@ -2656,6 +2977,7 @@ class PackageManagerShellCommand extends ShellCommand {
         if (userType == null) {
             userType = UserInfo.getDefaultUserType(flags);
         }
+        Trace.traceBegin(Trace.TRACE_TAG_PACKAGE_MANAGER, "shell_runCreateUser");
         try {
             if (UserManager.isUserTypeRestricted(userType)) {
                 // In non-split user mode, userId can only be SYSTEM
@@ -2672,6 +2994,8 @@ class PackageManagerShellCommand extends ShellCommand {
             }
         } catch (ServiceSpecificException e) {
             getErrPrintWriter().println("Error: " + e);
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_PACKAGE_MANAGER);
         }
 
         if (info != null) {
@@ -2683,9 +3007,29 @@ class PackageManagerShellCommand extends ShellCommand {
         }
     }
 
+    // pm remove-user [--set-ephemeral-if-in-use][--wait] USER_ID
     public int runRemoveUser() throws RemoteException {
         int userId;
-        String arg = getNextArg();
+        String arg;
+        boolean setEphemeralIfInUse = false;
+        boolean wait = false;
+
+        while ((arg = getNextOption()) != null) {
+            switch (arg) {
+                case "--set-ephemeral-if-in-use":
+                    setEphemeralIfInUse = true;
+                    break;
+                case "--wait": // fallthrough
+                case "-w":
+                    wait = true;
+                    break;
+                default:
+                    getErrPrintWriter().println("Error: unknown option: " + arg);
+                    return -1;
+            }
+        }
+
+        arg = getNextArg();
         if (arg == null) {
             getErrPrintWriter().println("Error: no user id specified.");
             return 1;
@@ -2693,13 +3037,115 @@ class PackageManagerShellCommand extends ShellCommand {
         userId = UserHandle.parseUserArg(arg);
         IUserManager um = IUserManager.Stub.asInterface(
                 ServiceManager.getService(Context.USER_SERVICE));
+        if (setEphemeralIfInUse) {
+            return removeUserWhenPossible(um, userId);
+        } else {
+            final boolean success = wait ? removeUserAndWait(um, userId) : removeUser(um, userId);
+            if (success) {
+                getOutPrintWriter().println("Success: removed user");
+                return 0;
+            } else {
+                // Error message should already have been printed.
+                return 1;
+            }
+        }
+    }
+
+    private boolean removeUser(IUserManager um, @UserIdInt int userId) throws RemoteException {
+        Slog.i(TAG, "Removing user " + userId);
         if (um.removeUser(userId)) {
-            getOutPrintWriter().println("Success: removed user");
-            return 0;
+            return true;
         } else {
             getErrPrintWriter().println("Error: couldn't remove user id " + userId);
+            return false;
+        }
+    }
+
+    private boolean removeUserAndWait(IUserManager um, @UserIdInt int userId)
+            throws RemoteException {
+        Slog.i(TAG, "Removing (and waiting for completion) user " + userId);
+
+        final CountDownLatch waitLatch = new CountDownLatch(1);
+        final UserManagerInternal.UserLifecycleListener listener =
+                new UserManagerInternal.UserLifecycleListener() {
+                    @Override
+                    public void onUserRemoved(UserInfo user) {
+                        if (userId == user.id) {
+                            waitLatch.countDown();
+                        }
+                    }
+                };
+
+        final UserManagerInternal umi = LocalServices.getService(UserManagerInternal.class);
+        umi.addUserLifecycleListener(listener);
+
+        try {
+            if (um.removeUser(userId)) {
+                final boolean awaitSuccess = waitLatch.await(10, TimeUnit.MINUTES);
+                if (!awaitSuccess) {
+                    getErrPrintWriter().printf("Error: Remove user %d timed out\n", userId);
+                    return false;
+                }
+                // Success!
+                return true;
+            } else {
+                getErrPrintWriter().println("Error: couldn't remove user id " + userId);
+                return false;
+            }
+        } catch (InterruptedException e) {
+            getErrPrintWriter().printf("Error: Remove user %d wait interrupted: %s\n", userId, e);
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            umi.removeUserLifecycleListener(listener);
+        }
+    }
+
+    private int removeUserWhenPossible(IUserManager um, @UserIdInt int userId)
+            throws RemoteException {
+        Slog.i(TAG, "Removing " + userId + " or set as ephemeral if in use.");
+        int result = um.removeUserWhenPossible(userId, /* overrideDevicePolicy= */ false);
+        switch (result) {
+            case UserManager.REMOVE_RESULT_REMOVED:
+                getOutPrintWriter().printf("Success: user %d removed\n", userId);
+                return 0;
+            case UserManager.REMOVE_RESULT_DEFERRED:
+                getOutPrintWriter().printf("Success: user %d set as ephemeral\n", userId);
+                return 0;
+            case UserManager.REMOVE_RESULT_ALREADY_BEING_REMOVED:
+                getOutPrintWriter().printf("Success: user %d is already being removed\n", userId);
+                return 0;
+            case UserManager.REMOVE_RESULT_ERROR_MAIN_USER_PERMANENT_ADMIN:
+                getErrPrintWriter().printf("Error: user %d is a permanent admin main user\n",
+                        userId);
+                return 1;
+            default:
+                getErrPrintWriter().printf("Error: couldn't remove or mark ephemeral user id %d\n",
+                        userId);
+                return 1;
+        }
+    }
+
+    private int runRenameUser() throws RemoteException {
+        String arg = getNextArg();
+        if (arg == null) {
+            getErrPrintWriter().println("Error: no user id specified.");
             return 1;
         }
+        int userId = resolveUserId(UserHandle.parseUserArg(arg));
+
+        String name = getNextArg();
+        if (name == null) {
+            Slog.i(TAG, "Resetting name of user " + userId);
+        } else {
+            Slog.i(TAG, "Renaming user " + userId + " to '" + name + "'");
+        }
+
+        IUserManager um = IUserManager.Stub.asInterface(
+                ServiceManager.getService(Context.USER_SERVICE));
+        um.setUserName(userId, name);
+
+        return 0;
     }
 
     public int runSetUserRestriction() throws RemoteException {
@@ -2728,6 +3174,12 @@ class PackageManagerShellCommand extends ShellCommand {
         return 0;
     }
 
+    public int runSupportsMultipleUsers() {
+        getOutPrintWriter().println("Is multiuser supported: "
+                + UserManager.supportsMultipleUsers());
+        return 0;
+    }
+
     public int runGetMaxUsers() {
         getOutPrintWriter().println("Maximum supported users: "
                 + UserManager.getMaxSupportedUsers());
@@ -2749,17 +3201,23 @@ class PackageManagerShellCommand extends ShellCommand {
         long stagedReadyTimeoutMs = DEFAULT_STAGED_READY_TIMEOUT_MS;
     }
 
-    private InstallParams makeInstallParams() {
+    private InstallParams makeInstallParams(Set<String> unsupportedOptions) {
         final SessionParams sessionParams = new SessionParams(SessionParams.MODE_FULL_INSTALL);
         final InstallParams params = new InstallParams();
 
         params.sessionParams = sessionParams;
         // Allowlist all permissions by default
         sessionParams.installFlags |= PackageManager.INSTALL_ALL_WHITELIST_RESTRICTED_PERMISSIONS;
+        // Set package source to other by default
+        sessionParams.setPackageSource(PackageInstaller.PACKAGE_SOURCE_OTHER);
 
         String opt;
         boolean replaceExisting = true;
+        boolean forceNonStaged = false;
         while ((opt = getNextOption()) != null) {
+            if (unsupportedOptions.contains(opt)) {
+                throw new IllegalArgumentException("Unsupported option " + opt);
+            }
             switch (opt) {
                 case "-r": // ignore
                     break;
@@ -2782,7 +3240,8 @@ class PackageManagerShellCommand extends ShellCommand {
                     sessionParams.installFlags |= PackageManager.INSTALL_REQUEST_DOWNGRADE;
                     break;
                 case "-g":
-                    sessionParams.installFlags |= PackageManager.INSTALL_GRANT_RUNTIME_PERMISSIONS;
+                    sessionParams.installFlags |=
+                            PackageManager.INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS;
                     break;
                 case "--restrict-permissions":
                     sessionParams.installFlags &=
@@ -2840,6 +3299,15 @@ class PackageManagerShellCommand extends ShellCommand {
                 case "--install-reason":
                     sessionParams.installReason = Integer.parseInt(getNextArg());
                     break;
+                case "--update-ownership":
+                    if (params.installerPackageName == null) {
+                        // Enabling update ownership enforcement needs an installer. Since the
+                        // default installer is null when using adb install, that effectively
+                        // disable this enforcement.
+                        params.installerPackageName = "com.android.shell";
+                    }
+                    sessionParams.installFlags |= PackageManager.INSTALL_REQUEST_UPDATE_OWNERSHIP;
+                    break;
                 case "--force-uuid":
                     sessionParams.installFlags |= PackageManager.INSTALL_FORCE_VOLUME_UUID;
                     sessionParams.volumeUuid = getNextArg();
@@ -2852,6 +3320,9 @@ class PackageManagerShellCommand extends ShellCommand {
                 case "--apex":
                     sessionParams.setInstallAsApex();
                     sessionParams.setStaged();
+                    break;
+                case "--force-non-staged":
+                    forceNonStaged = true;
                     break;
                 case "--multi-package":
                     sessionParams.setMultiPackage();
@@ -2881,12 +3352,22 @@ class PackageManagerShellCommand extends ShellCommand {
                 case "--skip-verification":
                     sessionParams.installFlags |= PackageManager.INSTALL_DISABLE_VERIFICATION;
                     break;
+                case "--skip-enable":
+                    sessionParams.setApplicationEnabledSettingPersistent();
+                    break;
+                case "--bypass-low-target-sdk-block":
+                    sessionParams.installFlags |=
+                            PackageManager.INSTALL_BYPASS_LOW_TARGET_SDK_BLOCK;
+                    break;
                 default:
                     throw new IllegalArgumentException("Unknown option " + opt);
             }
         }
         if (replaceExisting) {
             sessionParams.installFlags |= PackageManager.INSTALL_REPLACE_EXISTING;
+        }
+        if (forceNonStaged) {
+            sessionParams.isStaged = false;
         }
         return params;
     }
@@ -2923,12 +3404,10 @@ class PackageManagerShellCommand extends ShellCommand {
         final int translatedUserId =
                 translateUserId(userId, UserHandle.USER_NULL, "runSetHomeActivity");
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
-        final RemoteCallback callback = new RemoteCallback(res -> future.complete(res != null));
         try {
-            IRoleManager roleManager = android.app.role.IRoleManager.Stub.asInterface(
-                    ServiceManager.getServiceOrThrow(Context.ROLE_SERVICE));
-            roleManager.addRoleHolderAsUser(RoleManager.ROLE_HOME, pkgName,
-                    0, translatedUserId, callback);
+            RoleManager roleManager = mContext.getSystemService(RoleManager.class);
+            roleManager.addRoleHolderAsUser(RoleManager.ROLE_HOME, pkgName, 0,
+                    UserHandle.of(translatedUserId), FgThread.getExecutor(), future::complete);
             boolean success = future.get();
             if (success) {
                 pw.println("Success");
@@ -3052,6 +3531,129 @@ class PackageManagerShellCommand extends ShellCommand {
         }
     }
 
+    private int runSetSilentUpdatesPolicy() {
+        final PrintWriter pw = getOutPrintWriter();
+        String opt;
+        String installerPackageName = null;
+        Long throttleTimeInSeconds = null;
+        boolean reset = false;
+        while ((opt = getNextOption()) != null) {
+            switch (opt) {
+                case "--allow-unlimited-silent-updates":
+                    installerPackageName = getNextArgRequired();
+                    break;
+                case "--throttle-time":
+                    throttleTimeInSeconds = Long.parseLong(getNextArgRequired());
+                    break;
+                case "--reset":
+                    reset = true;
+                    break;
+                default:
+                    pw.println("Error: Unknown option: " + opt);
+                    return -1;
+            }
+        }
+        if (throttleTimeInSeconds != null && throttleTimeInSeconds < 0) {
+            pw.println("Error: Invalid value for \"--throttle-time\":" + throttleTimeInSeconds);
+            return -1;
+        }
+
+        try {
+            final IPackageInstaller installer = mInterface.getPackageInstaller();
+            if (reset) {
+                installer.setAllowUnlimitedSilentUpdates(null /* installerPackageName */);
+                installer.setSilentUpdatesThrottleTime(-1 /* restore to the default */);
+            } else {
+                if (installerPackageName != null) {
+                    installer.setAllowUnlimitedSilentUpdates(installerPackageName);
+                }
+                if (throttleTimeInSeconds != null) {
+                    installer.setSilentUpdatesThrottleTime(throttleTimeInSeconds);
+                }
+            }
+        } catch (RemoteException e) {
+            pw.println("Failure ["
+                    + e.getClass().getName() + " - "
+                    + e.getMessage() + "]");
+            return -1;
+        }
+        return 1;
+    }
+
+    private int runGetAppMetadata() {
+        mContext.enforceCallingOrSelfPermission(GET_APP_METADATA, "getAppMetadataFd");
+        final PrintWriter pw = getOutPrintWriter();
+        String pkgName = getNextArgRequired();
+        ParcelFileDescriptor pfd = null;
+        try {
+            pfd = mInterface.getAppMetadataFd(pkgName, mContext.getUserId());
+        } catch (RemoteException e) {
+            pw.println("Failure [" + e.getClass().getName() + " - " + e.getMessage() + "]");
+            return -1;
+        }
+        if (pfd != null) {
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(new ParcelFileDescriptor.AutoCloseInputStream(pfd)))) {
+                while (br.ready()) {
+                    pw.println(br.readLine());
+                }
+            } catch (IOException e) {
+                pw.println("Failure [" + e.getClass().getName() + " - " + e.getMessage() + "]");
+                return -1;
+            }
+        }
+        return 1;
+    }
+
+    private int runWaitForHandler(boolean forBackgroundHandler) {
+        final PrintWriter pw = getOutPrintWriter();
+        long timeoutMillis = 60000; // default timeout is 60 seconds
+        String opt;
+        while ((opt = getNextOption()) != null) {
+            switch (opt) {
+                case "--timeout":
+                    timeoutMillis = Long.parseLong(getNextArgRequired());
+                    break;
+                default:
+                    pw.println("Error: Unknown option: " + opt);
+                    return -1;
+            }
+        }
+        if (timeoutMillis <= 0) {
+            pw.println("Error: --timeout value must be positive: " + timeoutMillis);
+            return -1;
+        }
+        final boolean success;
+        try {
+            success = mInterface.waitForHandler(timeoutMillis, forBackgroundHandler);
+        } catch (RemoteException e) {
+            pw.println("Failure [" + e.getClass().getName() + " - " + e.getMessage() + "]");
+            return -1;
+        }
+        if (success) {
+            pw.println("Success");
+            return 0;
+        } else {
+            pw.println("Timeout. PackageManager handlers are still busy.");
+            return -1;
+        }
+    }
+
+    private int runArtServiceCommand() {
+        try (var in = ParcelFileDescriptor.dup(getInFileDescriptor());
+                var out = ParcelFileDescriptor.dup(getOutFileDescriptor());
+                var err = ParcelFileDescriptor.dup(getErrFileDescriptor())) {
+            return LocalManagerRegistry.getManagerOrThrow(ArtManagerLocal.class)
+                    .handleShellCommand(getTarget(), in, out, err, getAllArgs());
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (ManagerNotFoundException e) {
+            PrintWriter epw = getErrPrintWriter();
+            epw.println("ART Service is not ready. Please try again later");
+            return -1;
+        }
+    }
+
     private static String checkAbiArgument(String abi) {
         if (TextUtils.isEmpty(abi)) {
             throw new IllegalArgumentException("Missing ABI argument");
@@ -3086,7 +3688,8 @@ class PackageManagerShellCommand extends ShellCommand {
         final int translatedUserId =
                 translateUserId(userId, UserHandle.USER_SYSTEM, "doCreateSession");
         final int sessionId = mInterface.getPackageInstaller()
-                .createSession(params, installerPackageName, translatedUserId);
+                .createSession(params, installerPackageName, null /*installerAttributionTag*/,
+                        translatedUserId);
         return sessionId;
     }
 
@@ -3099,7 +3702,7 @@ class PackageManagerShellCommand extends ShellCommand {
 
             // 1. Single file from stdin.
             if (args.isEmpty() || STDIN_PATH.equals(args.get(0))) {
-                final String name = "base." + (isApex ? "apex" : "apk");
+                final String name = "base" + RANDOM.nextInt() + "." + (isApex ? "apex" : "apk");
                 final Metadata metadata = Metadata.forStdIn(name);
                 session.addFile(LOCATION_DATA_APP, name, sessionSizeBytes,
                         metadata.toByteArray(), null);
@@ -3197,12 +3800,24 @@ class PackageManagerShellCommand extends ShellCommand {
         return 0;
     }
 
+    private long getFileStatSize(File file) {
+        final ParcelFileDescriptor pfd = openFileForSystem(file.getPath(), "r");
+        if (pfd == null) {
+            throw new IllegalArgumentException("Error: Can't open file: " + file.getPath());
+        }
+        try {
+            return pfd.getStatSize();
+        } finally {
+            IoUtils.closeQuietly(pfd);
+        }
+    }
+
     private void processArgForLocalFile(String arg, PackageInstaller.Session session) {
         final String inPath = arg;
 
         final File file = new File(inPath);
         final String name = file.getName();
-        final long size = file.length();
+        final long size = getFileStatSize(file);
         final Metadata metadata = Metadata.forLocalFile(inPath);
 
         byte[] v4signatureBytes = null;
@@ -3264,7 +3879,7 @@ class PackageManagerShellCommand extends ShellCommand {
                 fd = ParcelFileDescriptor.dup(getInFileDescriptor());
             }
             if (sizeBytes <= 0) {
-                getErrPrintWriter().println("Error: must specify a APK size");
+                getErrPrintWriter().println("Error: must specify an APK size");
                 return 1;
             }
 
@@ -3349,18 +3964,27 @@ class PackageManagerShellCommand extends ShellCommand {
             }
             final LocalIntentReceiver receiver = new LocalIntentReceiver();
             session.commit(receiver.getIntentSender());
-            final Intent result = receiver.getResult();
-            final int status = result.getIntExtra(PackageInstaller.EXTRA_STATUS,
-                    PackageInstaller.STATUS_FAILURE);
-            if (status == PackageInstaller.STATUS_SUCCESS) {
+            if (!session.isStaged()) {
+                final Intent result = receiver.getResult();
+                final int status = result.getIntExtra(PackageInstaller.EXTRA_STATUS,
+                        PackageInstaller.STATUS_FAILURE);
+                if (status == PackageInstaller.STATUS_SUCCESS) {
+                    if (logSuccess) {
+                        pw.println("Success");
+                    }
+                } else {
+                    pw.println("Failure ["
+                            + result.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) + "]");
+                }
+                return status;
+            } else {
+                // Return immediately without retrieving the result. The caller will decide
+                // whether to wait for the session to become ready.
                 if (logSuccess) {
                     pw.println("Success");
                 }
-            } else {
-                pw.println("Failure ["
-                        + result.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) + "]");
+                return PackageInstaller.STATUS_SUCCESS;
             }
-            return status;
         } finally {
             IoUtils.closeQuietly(session);
         }
@@ -3425,8 +4049,8 @@ class PackageManagerShellCommand extends ShellCommand {
                 prefix = "  ";
             }
             List<PermissionInfo> ps = mPermissionManager
-                    .queryPermissionsByGroup(groupList.get(i), 0 /*flags*/).getList();
-            final int count = ps.size();
+                    .queryPermissionsByGroup(groupList.get(i), 0 /*flags*/);
+            final int count = (ps == null ? 0 : ps.size());
             boolean first = true;
             for (int p = 0 ; p < count ; p++) {
                 PermissionInfo pi = ps.get(p);
@@ -3502,11 +4126,20 @@ class PackageManagerShellCommand extends ShellCommand {
                 PackageManager.MATCH_DISABLED_COMPONENTS
                         | PackageManager.MATCH_HIDDEN_UNTIL_INSTALLED_COMPONENTS
                         | PackageManager.MATCH_DISABLED_UNTIL_USED_COMPONENTS, 0);
+        if (ai == null) {
+            Slog.e(TAG, "Failed to get ApplicationInfo for package name(" + pii.packageName + ").");
+            return null;
+        }
         AssetManager am = new AssetManager();
         am.addAssetPath(ai.publicSourceDir);
         res = new Resources(am, null, null);
         mResourceCache.put(pii.packageName, res);
         return res;
+    }
+
+    // Resolves the userId; supports UserHandle.USER_CURRENT, but not other special values
+    private @UserIdInt int resolveUserId(@UserIdInt int userId) {
+        return userId == UserHandle.USER_CURRENT ? ActivityManager.getCurrentUser() : userId;
     }
 
     @Override
@@ -3538,7 +4171,8 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("    Prints all system libraries.");
         pw.println("");
         pw.println("  list packages [-f] [-d] [-e] [-s] [-3] [-i] [-l] [-u] [-U] ");
-        pw.println("      [--show-versioncode] [--apex-only] [--uid UID] [--user USER_ID] [FILTER]");
+        pw.println("      [--show-versioncode] [--apex-only] [--factory-only]");
+        pw.println("      [--uid UID] [--user USER_ID] [FILTER]");
         pw.println("    Prints all packages; optionally only those whose name contains");
         pw.println("    the text in FILTER.  Options are:");
         pw.println("      -f: see their associated file");
@@ -3553,8 +4187,10 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("      -u: also include uninstalled packages");
         pw.println("      --show-versioncode: also show the version code");
         pw.println("      --apex-only: only show APEX packages");
+        pw.println("      --factory-only: only show system packages excluding updates");
         pw.println("      --uid UID: filter to only show packages with the given UID");
         pw.println("      --user USER_ID: only list packages belonging to the given user");
+        pw.println("      --match-libraries: include packages that declare static shared and SDK libraries");
         pw.println("");
         pw.println("  list permission-groups");
         pw.println("    Prints all known permission groups.");
@@ -3592,7 +4228,7 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("       [--user USER_ID] INTENT");
         pw.println("    Prints all broadcast receivers that can handle the given INTENT.");
         pw.println("");
-        pw.println("  install [-rtfdgw] [-i PACKAGE] [--user USER_ID|all|current]");
+        pw.println("  install [-rtfdg] [-i PACKAGE] [--user USER_ID|all|current]");
         pw.println("       [-p INHERIT_PACKAGE] [--install-location 0/1/2]");
         pw.println("       [--install-reason 0/1/2/3/4] [--originating-uri URI]");
         pw.println("       [--referrer URI] [--abi ABI_NAME] [--force-sdk]");
@@ -3625,6 +4261,7 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("      --install-reason: indicates why the app is being installed:");
         pw.println("          0=unknown, 1=admin policy, 2=device restore,");
         pw.println("          3=device setup, 4=user request");
+        pw.println("      --update-ownership: request the update ownership enforcement");
         pw.println("      --force-uuid: force install on to disk volume with given UUID");
         pw.println("      --apex: install an .apex file, not an .apk");
         pw.println("      --staged-ready-timeout: By default, staged sessions wait "
@@ -3648,7 +4285,7 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("       [--referrer URI] [--abi ABI_NAME] [--force-sdk]");
         pw.println("       [--preload] [--instant] [--full] [--dont-kill]");
         pw.println("       [--force-uuid internal|UUID] [--pkg PACKAGE] [--apex] [-S BYTES]");
-        pw.println("       [--multi-package] [--staged]");
+        pw.println("       [--multi-package] [--staged] [--update-ownership]");
         pw.println("    Like \"install\", but starts an install session.  Use \"install-write\"");
         pw.println("    to push data into the session, and \"install-commit\" to finish.");
         pw.println("");
@@ -3693,8 +4330,10 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("      --user: remove the app from the given user.");
         pw.println("      --versionCode: only uninstall if the app has the given version code.");
         pw.println("");
-        pw.println("  clear [--user USER_ID] PACKAGE");
-        pw.println("    Deletes all data associated with a package.");
+        pw.println("  clear [--user USER_ID] [--cache-only] PACKAGE");
+        pw.println("    Deletes data associated with a package. Options are:");
+        pw.println("    --user: specifies the user for which we need to clear data");
+        pw.println("    --cache-only: a flag which tells if we only need to clear cache data");
         pw.println("");
         pw.println("  enable [--user USER_ID] PACKAGE_OR_COMPONENT");
         pw.println("  disable [--user USER_ID] PACKAGE_OR_COMPONENT");
@@ -3707,17 +4346,34 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("  hide [--user USER_ID] PACKAGE_OR_COMPONENT");
         pw.println("  unhide [--user USER_ID] PACKAGE_OR_COMPONENT");
         pw.println("");
-        pw.println("  suspend [--user USER_ID] TARGET-PACKAGE");
-        pw.println("    Suspends the specified package (as user).");
+        pw.println("  suspend [--user USER_ID] PACKAGE [PACKAGE...]");
+        pw.println("    Suspends the specified package(s) (as user).");
         pw.println("");
-        pw.println("  unsuspend [--user USER_ID] TARGET-PACKAGE");
-        pw.println("    Unsuspends the specified package (as user).");
+        pw.println("  unsuspend [--user USER_ID] PACKAGE [PACKAGE...]");
+        pw.println("    Unsuspends the specified package(s) (as user).");
+        pw.println("");
+        pw.println("  set-distracting-restriction [--user USER_ID] [--flag FLAG ...]");
+        pw.println("      PACKAGE [PACKAGE...]");
+        pw.println("    Sets the specified restriction flags to given package(s) (for user).");
+        pw.println("    Flags are:");
+        pw.println("      hide-notifications: Hides notifications from this package");
+        pw.println("      hide-from-suggestions: Hides this package from suggestions");
+        pw.println("        (by the launcher, etc.)");
+        pw.println("    Any existing flags are overwritten, which also means that if no flags are");
+        pw.println("    specified then all existing flags will be cleared.");
         pw.println("");
         pw.println("  grant [--user USER_ID] PACKAGE PERMISSION");
         pw.println("  revoke [--user USER_ID] PACKAGE PERMISSION");
         pw.println("    These commands either grant or revoke permissions to apps.  The permissions");
         pw.println("    must be declared as used in the app's manifest, be runtime permissions");
         pw.println("    (protection level dangerous), and the app targeting SDK greater than Lollipop MR1.");
+        pw.println("");
+        pw.println("  set-permission-flags [--user USER_ID] PACKAGE PERMISSION [FLAGS..]");
+        pw.println("  clear-permission-flags [--user USER_ID] PACKAGE PERMISSION [FLAGS..]");
+        pw.println("    These commands either set or clear permission flags on apps.  The permissions");
+        pw.println("    must be declared as used in the app's manifest, be runtime permissions");
+        pw.println("    (protection level dangerous), and the app targeting SDK greater than Lollipop MR1.");
+        pw.println("    The flags must be one or more of " + SUPPORTED_PERMISSION_FLAGS_LIST);
         pw.println("");
         pw.println("  reset-permissions");
         pw.println("    Revert all runtime permissions to their default state.");
@@ -3733,17 +4389,14 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("  get-oem-permissions TARGET-PACKAGE");
         pw.println("    Prints all OEM permissions for a package.");
         pw.println("");
-        pw.println("  set-app-link [--user USER_ID] PACKAGE {always|ask|never|undefined}");
-        pw.println("  get-app-link [--user USER_ID] PACKAGE");
-        pw.println("");
         pw.println("  trim-caches DESIRED_FREE_SPACE [internal|UUID]");
         pw.println("    Trim cache files to reach the given free space.");
         pw.println("");
         pw.println("  list users");
         pw.println("    Lists the current users.");
         pw.println("");
-        pw.println("  create-user [--profileOf USER_ID] [--managed] [--restricted] [--ephemeral]");
-        pw.println("      [--guest] [--pre-create-only] [--user-type USER_TYPE] USER_NAME");
+        pw.println("  create-user [--profileOf USER_ID] [--managed] [--restricted] [--guest]");
+        pw.println("       [--user-type USER_TYPE] [--ephemeral] [--for-testing] [--pre-create-only]   USER_NAME");
         pw.println("    Create a new user with the given USER_NAME, printing the new user identifier");
         pw.println("    of the user.");
         // TODO(b/142482943): Consider fetching the list of user types from UMS.
@@ -3753,66 +4406,23 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("      --restricted is shorthand for '--user-type android.os.usertype.full.RESTRICTED'.");
         pw.println("      --guest is shorthand for '--user-type android.os.usertype.full.GUEST'.");
         pw.println("");
-        pw.println("  remove-user USER_ID");
+        pw.println("  remove-user [--set-ephemeral-if-in-use | --wait] USER_ID");
         pw.println("    Remove the user with the given USER_IDENTIFIER, deleting all data");
-        pw.println("    associated with that user");
+        pw.println("    associated with that user.");
+        pw.println("      --set-ephemeral-if-in-use: If the user is currently running and");
+        pw.println("        therefore cannot be removed immediately, mark the user as ephemeral");
+        pw.println("        so that it will be automatically removed when possible (after user");
+        pw.println("        switch or reboot)");
+        pw.println("      --wait: Wait until user is removed. Ignored if set-ephemeral-if-in-use");
+        pw.println("");
+        pw.println("  rename-user USER_ID [USER_NAME]");
+        pw.println("    Rename USER_ID with USER_NAME (or null when [USER_NAME] is not set)");
         pw.println("");
         pw.println("  set-user-restriction [--user USER_ID] RESTRICTION VALUE");
         pw.println("");
         pw.println("  get-max-users");
         pw.println("");
         pw.println("  get-max-running-users");
-        pw.println("");
-        pw.println("  compile [-m MODE | -r REASON] [-f] [-c] [--split SPLIT_NAME]");
-        pw.println("          [--reset] [--check-prof (true | false)] (-a | TARGET-PACKAGE)");
-        pw.println("    Trigger compilation of TARGET-PACKAGE or all packages if \"-a\".  Options are:");
-        pw.println("      -a: compile all packages");
-        pw.println("      -c: clear profile data before compiling");
-        pw.println("      -f: force compilation even if not needed");
-        pw.println("      -m: select compilation mode");
-        pw.println("          MODE is one of the dex2oat compiler filters:");
-        pw.println("            assume-verified");
-        pw.println("            extract");
-        pw.println("            verify");
-        pw.println("            quicken");
-        pw.println("            space-profile");
-        pw.println("            space");
-        pw.println("            speed-profile");
-        pw.println("            speed");
-        pw.println("            everything");
-        pw.println("      -r: select compilation reason");
-        pw.println("          REASON is one of:");
-        for (int i = 0; i < PackageManagerServiceCompilerMapping.REASON_STRINGS.length; i++) {
-            pw.println("            " + PackageManagerServiceCompilerMapping.REASON_STRINGS[i]);
-        }
-        pw.println("      --reset: restore package to its post-install state");
-        pw.println("      --check-prof (true | false): look at profiles when doing dexopt?");
-        pw.println("      --secondary-dex: compile app secondary dex files");
-        pw.println("      --split SPLIT: compile only the given split name");
-        pw.println("      --compile-layouts: compile layout resources for faster inflation");
-        pw.println("");
-        pw.println("  force-dex-opt PACKAGE");
-        pw.println("    Force immediate execution of dex opt for the given PACKAGE.");
-        pw.println("");
-        pw.println("  bg-dexopt-job");
-        pw.println("    Execute the background optimizations immediately.");
-        pw.println("    Note that the command only runs the background optimizer logic. It may");
-        pw.println("    overlap with the actual job but the job scheduler will not be able to");
-        pw.println("    cancel it. It will also run even if the device is not in the idle");
-        pw.println("    maintenance mode.");
-        pw.println("");
-        pw.println("  reconcile-secondary-dex-files TARGET-PACKAGE");
-        pw.println("    Reconciles the package secondary dex files with the generated oat files.");
-        pw.println("");
-        pw.println("  dump-profiles TARGET-PACKAGE");
-        pw.println("    Dumps method/class profile files to");
-        pw.println("    " + ART_PROFILE_SNAPSHOT_DEBUG_LOCATION + "TARGET-PACKAGE.txt");
-        pw.println("");
-        pw.println("  snapshot-profile TARGET-PACKAGE [--code-path path]");
-        pw.println("    Take a snapshot of the package profiles to");
-        pw.println("    " + ART_PROFILE_SNAPSHOT_DEBUG_LOCATION
-                + "TARGET-PACKAGE[-code-path].prof");
-        pw.println("    If TARGET-PACKAGE=android it will take a snapshot of the boot image");
         pw.println("");
         pw.println("  set-home-activity [--user USER_ID] TARGET-COMPONENT");
         pw.println("    Set the default home activity (aka launcher).");
@@ -3825,7 +4435,8 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("    Set installer package name");
         pw.println("");
         pw.println("  get-instantapp-resolver");
-        pw.println("    Return the name of the component that is the current instant app installer.");
+        pw.println(
+                "    Return the name of the component that is the current instant app installer.");
         pw.println("");
         pw.println("  set-harmful-app-warning [--user <USER_ID>] <PACKAGE> [<WARNING>]");
         pw.println("    Mark the app as harmful with the given warning message.");
@@ -3849,7 +4460,117 @@ class PackageManagerShellCommand extends ShellCommand {
         pw.println("      --enable: turn on debug logging (default)");
         pw.println("      --disable: turn off debug logging");
         pw.println("");
-        Intent.printIntentArgsHelp(pw , "");
+        pw.println("  set-silent-updates-policy [--allow-unlimited-silent-updates <INSTALLER>]");
+        pw.println("                            [--throttle-time <SECONDS>] [--reset]");
+        pw.println("    Sets the policies of the silent updates.");
+        pw.println("      --allow-unlimited-silent-updates: allows unlimited silent updated");
+        pw.println("        installation requests from the installer without the throttle time.");
+        pw.println("      --throttle-time: update the silent updates throttle time in seconds.");
+        pw.println("      --reset: restore the installer and throttle time to the default, and");
+        pw.println("        clear tracks of silent updates in the system.");
+        pw.println("");
+        pw.println("  wait-for-handler --timeout <MILLIS>");
+        pw.println("    Wait for a given amount of time till the package manager handler finishes");
+        pw.println("    handling all pending messages.");
+        pw.println("      --timeout: wait for a given number of milliseconds. If the handler(s)");
+        pw.println("        fail to finish before the timeout, the command returns error.");
+        pw.println("");
+        pw.println("  wait-for-background-handler --timeout <MILLIS>");
+        pw.println("    Wait for a given amount of time till the package manager's background");
+        pw.println("    handler finishes handling all pending messages.");
+        pw.println("      --timeout: wait for a given number of milliseconds. If the handler(s)");
+        pw.println("        fail to finish before the timeout, the command returns error.");
+        pw.println("");
+        if (DexOptHelper.useArtService()) {
+            printArtServiceHelp();
+        } else {
+            printLegacyDexoptHelp();
+        }
+        pw.println("");
+        mDomainVerificationShell.printHelp(pw);
+        pw.println("");
+        Intent.printIntentArgsHelp(pw, "");
+    }
+
+    private void printArtServiceHelp() {
+        final var ipw = new IndentingPrintWriter(getOutPrintWriter(), "  " /* singleIndent */);
+        ipw.increaseIndent();
+        try {
+            LocalManagerRegistry.getManagerOrThrow(ArtManagerLocal.class)
+                    .printShellCommandHelp(ipw);
+        } catch (ManagerNotFoundException e) {
+            ipw.println("ART Service is not ready. Please try again later");
+        }
+        ipw.decreaseIndent();
+    }
+
+    private void printLegacyDexoptHelp() {
+        final PrintWriter pw = getOutPrintWriter();
+        pw.println("  compile [-m MODE | -r REASON] [-f] [-c] [--split SPLIT_NAME]");
+        pw.println("          [--reset] [--check-prof (true | false)] (-a | TARGET-PACKAGE)");
+        pw.println("    Trigger compilation of TARGET-PACKAGE or all packages if \"-a\".  Options are:");
+        pw.println("      -a: compile all packages");
+        pw.println("      -c: clear profile data before compiling");
+        pw.println("      -f: force compilation even if not needed");
+        pw.println("      -m: select compilation mode");
+        pw.println("          MODE is one of the dex2oat compiler filters:");
+        pw.println("            verify");
+        pw.println("            speed-profile");
+        pw.println("            speed");
+        pw.println("      -r: select compilation reason");
+        pw.println("          REASON is one of:");
+        for (int i = 0; i < PackageManagerServiceCompilerMapping.REASON_STRINGS.length; i++) {
+            pw.println("            " + PackageManagerServiceCompilerMapping.REASON_STRINGS[i]);
+        }
+        pw.println("      --reset: restore package to its post-install state");
+        pw.println("      --check-prof (true | false): ignored - this is always true");
+        pw.println("      --secondary-dex: compile app secondary dex files");
+        pw.println("      --split SPLIT: compile only the given split name");
+        pw.println("");
+        pw.println("  force-dex-opt PACKAGE");
+        pw.println("    Force immediate execution of dex opt for the given PACKAGE.");
+        pw.println("");
+        pw.println("  delete-dexopt PACKAGE");
+        pw.println("    Delete dex optimization results for the given PACKAGE.");
+        pw.println("");
+        pw.println("  bg-dexopt-job [PACKAGE... | --cancel | --disable | --enable]");
+        pw.println("    Controls the background job that optimizes dex files:");
+        pw.println("    Without flags, run background optimization immediately on the given");
+        pw.println("    PACKAGEs, or all packages if none is specified, and wait until the job");
+        pw.println("    finishes. Note that the command only runs the background optimizer logic.");
+        pw.println("    It will run even if the device is not in the idle maintenance mode. If a");
+        pw.println("    job is already running (including one started automatically by the");
+        pw.println("    system) it will wait for it to finish before starting. A background job");
+        pw.println("    will not be started automatically while one started this way is running.");
+        pw.println("      --cancel: Cancels any currently running background optimization job");
+        pw.println("        immediately. This cancels jobs started either automatically by the");
+        pw.println("        system or through this command. Note that cancelling a currently");
+        pw.println("        running bg-dexopt-job command requires running this command from a");
+        pw.println("        separate adb shell.");
+        pw.println("      --disable: Disables background jobs from being started by the job");
+        pw.println("        scheduler. Does not affect bg-dexopt-job invocations from the shell.");
+        pw.println("        Does not imply --cancel. This state will be lost when the");
+        pw.println("        system_server process exits.");
+        pw.println("      --enable: Enables background jobs to be started by the job scheduler");
+        pw.println("        again, if previously disabled by --disable.");
+        pw.println("  cancel-bg-dexopt-job");
+        pw.println("    Same as bg-dexopt-job --cancel.");
+        pw.println("");
+        pw.println("  reconcile-secondary-dex-files TARGET-PACKAGE");
+        pw.println("    Reconciles the package secondary dex files with the generated oat files.");
+        pw.println("");
+        pw.println("  dump-profiles [--dump-classes-and-methods] TARGET-PACKAGE");
+        pw.println("    Dumps method/class profile files to");
+        pw.println("    " + ART_PROFILE_SNAPSHOT_DEBUG_LOCATION
+                + "TARGET-PACKAGE-primary.prof.txt.");
+        pw.println("      --dump-classes-and-methods: passed along to the profman binary to");
+        pw.println("        switch to the format used by 'profman --create-profile-from'.");
+        pw.println("");
+        pw.println("  snapshot-profile TARGET-PACKAGE [--code-path path]");
+        pw.println("    Take a snapshot of the package profiles to");
+        pw.println("    " + ART_PROFILE_SNAPSHOT_DEBUG_LOCATION
+                + "TARGET-PACKAGE[-code-path].prof");
+        pw.println("    If TARGET-PACKAGE=android it will take a snapshot of the boot image");
     }
 
     private static class LocalIntentReceiver {

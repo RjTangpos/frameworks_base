@@ -16,10 +16,13 @@
 
 package com.android.server.am;
 
+import android.annotation.Nullable;
 import android.content.IntentFilter;
 import android.util.PrintWriterPrinter;
 import android.util.Printer;
 import android.util.proto.ProtoOutputStream;
+
+import dalvik.annotation.optimization.NeverCompile;
 
 import java.io.PrintWriter;
 
@@ -28,26 +31,42 @@ final class BroadcastFilter extends IntentFilter {
     final ReceiverList receiverList;
     final String packageName;
     final String featureId;
+    final String receiverId;
     final String requiredPermission;
     final int owningUid;
     final int owningUserId;
     final boolean instantApp;
     final boolean visibleToInstantApp;
+    final boolean exported;
 
     BroadcastFilter(IntentFilter _filter, ReceiverList _receiverList,
-            String _packageName, String _featureId, String _requiredPermission, int _owningUid, int _userId,
-            boolean _instantApp, boolean _visibleToInstantApp) {
+            String _packageName, String _featureId, String _receiverId, String _requiredPermission,
+            int _owningUid, int _userId, boolean _instantApp, boolean _visibleToInstantApp,
+            boolean _exported) {
         super(_filter);
         receiverList = _receiverList;
         packageName = _packageName;
         featureId = _featureId;
+        receiverId = _receiverId;
         requiredPermission = _requiredPermission;
         owningUid = _owningUid;
         owningUserId = _userId;
         instantApp = _instantApp;
         visibleToInstantApp = _visibleToInstantApp;
+        exported = _exported;
     }
 
+    public @Nullable String getReceiverClassName() {
+        if (receiverId != null) {
+            final int index = receiverId.lastIndexOf('@');
+            if (index > 0) {
+                return receiverId.substring(0, index);
+            }
+        }
+        return null;
+    }
+
+    @NeverCompile
     public void dumpDebug(ProtoOutputStream proto, long fieldId) {
         long token = proto.start(fieldId);
         super.dumpDebug(proto, BroadcastFilterProto.INTENT_FILTER);
@@ -59,20 +78,24 @@ final class BroadcastFilter extends IntentFilter {
         proto.end(token);
     }
 
+    @NeverCompile
     public void dump(PrintWriter pw, String prefix) {
         dumpInReceiverList(pw, new PrintWriterPrinter(pw), prefix);
         receiverList.dumpLocal(pw, prefix);
     }
 
+    @NeverCompile
     public void dumpBrief(PrintWriter pw, String prefix) {
         dumpBroadcastFilterState(pw, prefix);
     }
 
+    @NeverCompile
     public void dumpInReceiverList(PrintWriter pw, Printer pr, String prefix) {
         super.dump(pr, prefix);
         dumpBroadcastFilterState(pw, prefix);
     }
 
+    @NeverCompile
     void dumpBroadcastFilterState(PrintWriter pw, String prefix) {
         if (requiredPermission != null) {
             pw.print(prefix); pw.print("requiredPermission="); pw.println(requiredPermission);

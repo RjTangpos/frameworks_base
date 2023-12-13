@@ -26,17 +26,20 @@ import android.content.Context;
 import android.content.pm.ServiceInfo;
 import android.os.Handler;
 import android.os.IBinder;
-import android.util.Slog;
+import android.util.IndentingPrintWriter;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.os.BackgroundThread;
-import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.am.PersistentConnection;
 import com.android.server.appbinding.AppBindingUtils;
+import com.android.server.utils.Slogf;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
- * Manages connections to persistent services in owner packages.
+ * Manages connections to persistent services in admin packages.
  */
 public class DeviceAdminServiceController {
     static final String TAG = DevicePolicyManagerService.LOG_TAG;
@@ -46,18 +49,10 @@ public class DeviceAdminServiceController {
     final Object mLock = new Object();
     final Context mContext;
 
-    private final DevicePolicyManagerService mService;
     private final DevicePolicyManagerService.Injector mInjector;
     private final DevicePolicyConstants mConstants;
 
     private final Handler mHandler; // needed?
-
-    static void debug(String format, Object... args) {
-        if (!DEBUG) {
-            return;
-        }
-        Slog.d(TAG, String.format(format, args));
-    }
 
     private class DevicePolicyServiceConnection
             extends PersistentConnection<IDeviceAdminService> {
@@ -84,11 +79,11 @@ public class DeviceAdminServiceController {
      * User-ID -> {@link PersistentConnection}.
      */
     @GuardedBy("mLock")
-    private final SparseArray<DevicePolicyServiceConnection> mConnections = new SparseArray<>();
+    private final SparseArray<Map<String, DevicePolicyServiceConnection>> mConnections =
+            new SparseArray<>();
 
     public DeviceAdminServiceController(DevicePolicyManagerService service,
             DevicePolicyConstants constants) {
-        mService = service;
         mInjector = service.mInjector;
         mContext = mInjector.mContext;
         mHandler = new Handler(BackgroundThread.get().getLooper());
@@ -113,40 +108,49 @@ public class DeviceAdminServiceController {
 
     /**
      * Find a service that handles {@link DevicePolicyManager#ACTION_DEVICE_ADMIN_SERVICE}
-     * in an owner package and connect to it.
+     * in an admin package and connect to it.
      */
-    public void startServiceForOwner(@NonNull String packageName, int userId,
+    public void startServiceForAdmin(@NonNull String packageName, int userId,
             @NonNull String actionForLog) {
         final long token = mInjector.binderClearCallingIdentity();
         try {
             synchronized (mLock) {
                 final ServiceInfo service = findService(packageName, userId);
                 if (service == null) {
-                    debug("Owner package %s on u%d has no service.",
-                            packageName, userId);
-                    disconnectServiceOnUserLocked(userId, actionForLog);
+                    if (DEBUG) {
+                        Slogf.d(TAG, "Admin package %s on u%d has no service.", packageName,
+                                userId);
+                    }
+                    disconnectServiceOnUserLocked(packageName, userId, actionForLog);
                     return;
                 }
                 // See if it's already running.
                 final PersistentConnection<IDeviceAdminService> existing =
-                        mConnections.get(userId);
+                        mConnections.contains(userId)
+                                ? mConnections.get(userId).get(packageName) : null;
                 if (existing != null) {
                     // Note even when we're already connected to the same service, the binding
                     // would have died at this point due to a package update.  So we disconnect
                     // anyway and re-connect.
-                    debug("Disconnecting from existing service connection.",
-                            packageName, userId);
-                    disconnectServiceOnUserLocked(userId, actionForLog);
+                    if (DEBUG) {
+                        Slogf.d("Disconnecting from existing service connection.", packageName,
+                                userId);
+                    }
+                    disconnectServiceOnUserLocked(packageName, userId, actionForLog);
                 }
 
-                debug("Owner package %s on u%d has service %s for %s",
-                        packageName, userId,
+                if (DEBUG) {
+                    Slogf.d("Admin package %s on u%d has service %s for %s", packageName, userId,
                         service.getComponentName().flattenToShortString(), actionForLog);
+                }
 
                 final DevicePolicyServiceConnection conn =
                         new DevicePolicyServiceConnection(
                                 userId, service.getComponentName());
-                mConnections.put(userId, conn);
+                if (!mConnections.contains(userId)) {
+                    mConnections.put(userId, new HashMap<>());
+                }
+                mConnections.get(userId).put(packageName, conn);
                 conn.bind();
             }
         } finally {
@@ -155,9 +159,24 @@ public class DeviceAdminServiceController {
     }
 
     /**
-     * Stop an owner service on a given user.
+     * Stop an admin service on a given user.
      */
-    public void stopServiceForOwner(int userId, @NonNull String actionForLog) {
+    public void stopServiceForAdmin(
+            @NonNull String packageName, int userId, @NonNull String actionForLog) {
+        final long token = mInjector.binderClearCallingIdentity();
+        try {
+            synchronized (mLock) {
+                disconnectServiceOnUserLocked(packageName, userId, actionForLog);
+            }
+        } finally {
+            mInjector.binderRestoreCallingIdentity(token);
+        }
+    }
+
+    /**
+     * Stop all admin services on a given user.
+     */
+    public void stopServicesForUser(int userId, @NonNull String actionForLog) {
         final long token = mInjector.binderClearCallingIdentity();
         try {
             synchronized (mLock) {
@@ -169,14 +188,42 @@ public class DeviceAdminServiceController {
     }
 
     @GuardedBy("mLock")
-    private void disconnectServiceOnUserLocked(int userId, @NonNull String actionForLog) {
-        final DevicePolicyServiceConnection conn = mConnections.get(userId);
+    private void disconnectServiceOnUserLocked(
+            @NonNull String packageName, int userId, @NonNull String actionForLog) {
+        final DevicePolicyServiceConnection conn = mConnections.contains(userId)
+                ? mConnections.get(userId).get(packageName) : null;
         if (conn != null) {
-            debug("Stopping service for u%d if already running for %s.",
-                    userId, actionForLog);
+            if (DEBUG) {
+                Slogf.d(TAG, "Stopping service for package %s on u%d if already running for %s.",
+                        packageName,
+                        userId,
+                        actionForLog);
+            }
             conn.unbind();
-            mConnections.remove(userId);
+            mConnections.get(userId).remove(packageName);
+            if (mConnections.get(userId).isEmpty()) {
+                mConnections.remove(userId);
+            }
         }
+    }
+
+    @GuardedBy("mLock")
+    private void disconnectServiceOnUserLocked(int userId, @NonNull String actionForLog) {
+        if (!mConnections.contains(userId)) {
+            return;
+        }
+        for (String packageName : mConnections.get(userId).keySet()) {
+            DevicePolicyServiceConnection conn = mConnections.get(userId).get(packageName);
+            if (DEBUG) {
+                Slogf.d(TAG,
+                        "Stopping service for package %s on u%d if already running for %s.",
+                        packageName,
+                        userId,
+                        actionForLog);
+            }
+            conn.unbind();
+        }
+        mConnections.remove(userId);
     }
 
     /** dump content */
@@ -185,16 +232,24 @@ public class DeviceAdminServiceController {
             if (mConnections.size() == 0) {
                 return;
             }
-            pw.println("Owner Services:");
+            pw.println("Admin Services:");
             pw.increaseIndent();
             for (int i = 0; i < mConnections.size(); i++) {
                 final int userId = mConnections.keyAt(i);
-                pw.print("User: "); pw.println(userId);
+                pw.print("User: ");
+                pw.println(userId);
+                for (String packageName : mConnections.get(userId).keySet()) {
+                    pw.increaseIndent();
+                    pw.print("Package: ");
+                    pw.println(packageName);
 
-                final DevicePolicyServiceConnection con = mConnections.valueAt(i);
-                pw.increaseIndent();
-                con.dump("", pw);
-                pw.decreaseIndent();
+                    final DevicePolicyServiceConnection con = mConnections.valueAt(i)
+                            .get(packageName);
+                    pw.increaseIndent();
+                    con.dump("", pw);
+                    pw.decreaseIndent();
+                    pw.decreaseIndent();
+                }
             }
             pw.decreaseIndent();
         }

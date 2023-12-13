@@ -16,11 +16,12 @@
 
 package com.android.systemui.statusbar.notification.row;
 
+import static com.android.systemui.util.ColorUtilKt.hexColorString;
+
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.PorterDuff;
-import android.graphics.PorterDuffXfermode;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
@@ -28,35 +29,37 @@ import android.graphics.drawable.RippleDrawable;
 import android.util.AttributeSet;
 import android.view.View;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
 import com.android.internal.util.ArrayUtils;
-import com.android.systemui.Interpolators;
+import com.android.systemui.Dumpable;
 import com.android.systemui.R;
-import com.android.systemui.statusbar.notification.ActivityLaunchAnimator;
+
+import java.io.PrintWriter;
+import java.util.Arrays;
 
 /**
  * A view that can be used for both the dimmed and normal background of an notification.
  */
-public class NotificationBackgroundView extends View {
+public class NotificationBackgroundView extends View implements Dumpable {
 
     private final boolean mDontModifyCorners;
     private Drawable mBackground;
     private int mClipTopAmount;
-    private int mActualHeight;
     private int mClipBottomAmount;
     private int mTintColor;
-    private float[] mCornerRadii = new float[8];
+    @Nullable private Integer mRippleColor;
+    private final float[] mCornerRadii = new float[8];
     private boolean mBottomIsRounded;
-    private boolean mLastInSection;
-    private boolean mFirstInSection;
-    private int mBackgroundTop;
     private boolean mBottomAmountClips = true;
+    private int mActualHeight = -1;
+    private int mActualWidth = -1;
     private boolean mExpandAnimationRunning;
-    private float mActualWidth;
+    private int mExpandAnimationWidth = -1;
+    private int mExpandAnimationHeight = -1;
     private int mDrawableAlpha = 255;
     private boolean mIsPressedAllowed;
-
-    private boolean mTopAmountRounded;
-    private float mDistanceToTopRoundness;
 
     public NotificationBackgroundView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -66,11 +69,11 @@ public class NotificationBackgroundView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
-        if (mClipTopAmount + mClipBottomAmount < mActualHeight - mBackgroundTop
-                || mExpandAnimationRunning) {
+        if (mClipTopAmount + mClipBottomAmount < getActualHeight() || mExpandAnimationRunning) {
             canvas.save();
             if (!mExpandAnimationRunning) {
-                canvas.clipRect(0, mClipTopAmount, getWidth(), mActualHeight - mClipBottomAmount);
+                canvas.clipRect(0, mClipTopAmount, getWidth(),
+                        getActualHeight() - mClipBottomAmount);
             }
             draw(canvas, mBackground);
             canvas.restore();
@@ -79,28 +82,24 @@ public class NotificationBackgroundView extends View {
 
     private void draw(Canvas canvas, Drawable drawable) {
         if (drawable != null) {
-            int top = mBackgroundTop;
-            int bottom = mActualHeight;
+            int top = 0;
+            int bottom = getActualHeight();
             if (mBottomIsRounded
                     && mBottomAmountClips
-                    && !mExpandAnimationRunning
-                    && !mLastInSection) {
+                    && !mExpandAnimationRunning) {
                 bottom -= mClipBottomAmount;
             }
-            int left = 0;
-            int right = getWidth();
+            final boolean isRtl = isLayoutRtl();
+            final int width = getWidth();
+            final int actualWidth = getActualWidth();
+
+            int left = isRtl ? width - actualWidth : 0;
+            int right = isRtl ? width : actualWidth;
+
             if (mExpandAnimationRunning) {
-                left = (int) ((getWidth() - mActualWidth) / 2.0f);
-                right = (int) (left + mActualWidth);
-            }
-            if (mTopAmountRounded) {
-                int clipTop = (int) (mClipTopAmount - mDistanceToTopRoundness);
-                if (clipTop >= 0 || !mFirstInSection) {
-                    top += clipTop;
-                }
-                if (clipTop >= 0 && !mLastInSection) {
-                    bottom += clipTop;
-                }
+                // Horizontally center this background view inside of the container
+                left = (int) ((width - actualWidth) / 2.0f);
+                right = (int) (left + actualWidth);
             }
             drawable.setBounds(left, top, right, bottom);
             drawable.draw(canvas);
@@ -134,6 +133,7 @@ public class NotificationBackgroundView extends View {
             unscheduleDrawable(mBackground);
         }
         mBackground = background;
+        mRippleColor = null;
         mBackground.mutate();
         if (mBackground != null) {
             mBackground.setCallback(this);
@@ -169,8 +169,26 @@ public class NotificationBackgroundView extends View {
         invalidate();
     }
 
-    public int getActualHeight() {
-        return mActualHeight;
+    private int getActualHeight() {
+        if (mExpandAnimationRunning && mExpandAnimationHeight > -1) {
+            return mExpandAnimationHeight;
+        } else if (mActualHeight > -1) {
+            return mActualHeight;
+        }
+        return getHeight();
+    }
+
+    public void setActualWidth(int actualWidth) {
+        mActualWidth = actualWidth;
+    }
+
+    private int getActualWidth() {
+        if (mExpandAnimationRunning && mExpandAnimationWidth > -1) {
+            return mExpandAnimationWidth;
+        } else if (mActualWidth > -1) {
+            return mActualWidth;
+        }
+        return getWidth();
     }
 
     public void setClipTopAmount(int clipTopAmount) {
@@ -181,14 +199,6 @@ public class NotificationBackgroundView extends View {
     public void setClipBottomAmount(int clipBottomAmount) {
         mClipBottomAmount = clipBottomAmount;
         invalidate();
-    }
-
-    public void setDistanceToTopRoundness(float distanceToTopRoundness) {
-        if (distanceToTopRoundness != mDistanceToTopRoundness) {
-            mTopAmountRounded = distanceToTopRoundness >= 0;
-            mDistanceToTopRoundness = distanceToTopRoundness;
-            invalidate();
-        }
     }
 
     @Override
@@ -212,6 +222,9 @@ public class NotificationBackgroundView extends View {
         if (mBackground instanceof RippleDrawable) {
             RippleDrawable ripple = (RippleDrawable) mBackground;
             ripple.setColor(ColorStateList.valueOf(color));
+            mRippleColor = color;
+        } else {
+            mRippleColor = null;
         }
     }
 
@@ -224,10 +237,9 @@ public class NotificationBackgroundView extends View {
     }
 
     /**
-     * Sets the current top and bottom roundness amounts for this background, between 0.0 (not
-     * rounded) and 1.0 (maximally rounded).
+     * Sets the current top and bottom radius for this background.
      */
-    public void setRoundness(float topRoundness, float bottomRoundness) {
+    public void setRadius(float topRoundness, float bottomRoundness) {
         if (topRoundness == mCornerRadii[0] && bottomRoundness == mCornerRadii[4]) {
             return;
         }
@@ -250,18 +262,6 @@ public class NotificationBackgroundView extends View {
         }
     }
 
-    /** Sets whether this background belongs to the last notification in a section. */
-    public void setLastInSection(boolean lastInSection) {
-        mLastInSection = lastInSection;
-        invalidate();
-    }
-
-    /** Sets whether this background belongs to the first notification in a section. */
-    public void setFirstInSection(boolean firstInSection) {
-        mFirstInSection = firstInSection;
-        invalidate();
-    }
-
     private void updateBackgroundRadii() {
         if (mDontModifyCorners) {
             return;
@@ -273,19 +273,10 @@ public class NotificationBackgroundView extends View {
         }
     }
 
-    public void setBackgroundTop(int backgroundTop) {
-        mBackgroundTop = backgroundTop;
-        invalidate();
-    }
-
-    public void setExpandAnimationParams(ActivityLaunchAnimator.ExpandAnimationParameters params) {
-        mActualHeight = params.getHeight();
-        mActualWidth = params.getWidth();
-        float alphaProgress = Interpolators.ALPHA_IN.getInterpolation(
-                params.getProgress(
-                        ActivityLaunchAnimator.ANIMATION_DURATION_FADE_CONTENT /* delay */,
-                        ActivityLaunchAnimator.ANIMATION_DURATION_FADE_APP /* duration */));
-        mBackground.setAlpha((int) (mDrawableAlpha * (1.0f - alphaProgress)));
+    /** Set the current expand animation size. */
+    public void setExpandAnimationSize(int width, int height) {
+        mExpandAnimationHeight = height;
+        mExpandAnimationWidth = width;
         invalidate();
     }
 
@@ -294,8 +285,6 @@ public class NotificationBackgroundView extends View {
         if (mBackground instanceof LayerDrawable) {
             GradientDrawable gradientDrawable =
                     (GradientDrawable) ((LayerDrawable) mBackground).getDrawable(0);
-            gradientDrawable.setXfermode(
-                    running ? new PorterDuffXfermode(PorterDuff.Mode.SRC) : null);
             // Speed optimization: disable AA if transfer mode is not SRC_OVER. AA is not easy to
             // spot during animation anyways.
             gradientDrawable.setAntiAlias(!running);
@@ -308,5 +297,20 @@ public class NotificationBackgroundView extends View {
 
     public void setPressedAllowed(boolean allowed) {
         mIsPressedAllowed = allowed;
+    }
+
+    @Override
+    public void dump(PrintWriter pw, @NonNull String[] args) {
+        pw.println("mDontModifyCorners: " + mDontModifyCorners);
+        pw.println("mClipTopAmount: " + mClipTopAmount);
+        pw.println("mClipBottomAmount: " + mClipBottomAmount);
+        pw.println("mCornerRadii: " + Arrays.toString(mCornerRadii));
+        pw.println("mBottomIsRounded: " + mBottomIsRounded);
+        pw.println("mBottomAmountClips: " + mBottomAmountClips);
+        pw.println("mActualWidth: " + mActualWidth);
+        pw.println("mActualHeight: " + mActualHeight);
+        pw.println("mTintColor: " + hexColorString(mTintColor));
+        pw.println("mRippleColor: " + hexColorString(mRippleColor));
+        pw.println("mBackground: " + mBackground);
     }
 }

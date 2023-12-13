@@ -16,15 +16,79 @@
 
 package com.android.internal.widget;
 
+import android.annotation.IntDef;
 import android.annotation.Nullable;
+import android.annotation.UserIdInt;
 import android.app.admin.PasswordMetrics;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 /**
  * LockSettingsService local system service interface.
  *
  * @hide Only for use within the system server.
  */
 public abstract class LockSettingsInternal {
+    /** ErrorCode for armRebootEscrow failures. **/
+    @IntDef(prefix = {"ARM_REBOOT_ERROR_"}, value = {
+            ARM_REBOOT_ERROR_NONE,
+            ARM_REBOOT_ERROR_UNSPECIFIED,
+            ARM_REBOOT_ERROR_ESCROW_NOT_READY,
+            ARM_REBOOT_ERROR_NO_PROVIDER,
+            ARM_REBOOT_ERROR_PROVIDER_MISMATCH,
+            ARM_REBOOT_ERROR_NO_ESCROW_KEY,
+            ARM_REBOOT_ERROR_KEYSTORE_FAILURE,
+            ARM_REBOOT_ERROR_STORE_ESCROW_KEY,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ArmRebootEscrowErrorCode {}
+
+    public static final int ARM_REBOOT_ERROR_NONE = 0;
+    public static final int ARM_REBOOT_ERROR_UNSPECIFIED = 1;
+    public static final int ARM_REBOOT_ERROR_ESCROW_NOT_READY = 2;
+    public static final int ARM_REBOOT_ERROR_NO_PROVIDER = 3;
+    public static final int ARM_REBOOT_ERROR_PROVIDER_MISMATCH = 4;
+    public static final int ARM_REBOOT_ERROR_NO_ESCROW_KEY = 5;
+    public static final int ARM_REBOOT_ERROR_KEYSTORE_FAILURE = 6;
+    public static final int ARM_REBOOT_ERROR_STORE_ESCROW_KEY = 7;
+    // TODO(b/183140900) split store escrow key errors into detailed ones.
+
+    /**
+     * This is called when Weaver is guaranteed to be available (if the device supports Weaver).
+     * It does any synthetic password related work that was delayed from earlier in the boot.
+     */
+    public abstract void onThirdPartyAppsStarted();
+
+    /**
+     * Unlocks the credential-encrypted storage for the given user if the user is not secured, i.e.
+     * doesn't have an LSKF.
+     * <p>
+     * This doesn't throw an exception on failure; whether the storage has been unlocked can be
+     * determined by {@link StorageManager#isUserKeyUnlocked()}.
+     *
+     * @param userId the ID of the user whose storage to unlock
+     */
+    public abstract void unlockUserKeyIfUnsecured(@UserIdInt int userId);
+
+    /**
+     * Creates the locksettings state for a new user.
+     * <p>
+     * This includes creating a synthetic password and protecting it with an empty LSKF.
+     *
+     * @param userId the ID of the new user
+     * @param userSerialNumber the serial number of the new user
+     */
+    public abstract void createNewUser(@UserIdInt int userId, int userSerialNumber);
+
+    /**
+     * Removes the locksettings state for the given user.
+     * <p>
+     * This includes removing the user's synthetic password and any protectors that are protecting
+     * it.
+     *
+     * @param userId the ID of the user being removed
+     */
+    public abstract void removeUser(@UserIdInt int userId);
 
     /**
      * Create an escrow token for the current user, which can later be used to unlock FBE
@@ -84,7 +148,7 @@ public abstract class LockSettingsInternal {
      * #setRebootEscrowListener}, then {@link #armRebootEscrow()} should be called before
      * rebooting to apply the update.
      */
-    public abstract void prepareRebootEscrow();
+    public abstract boolean prepareRebootEscrow();
 
     /**
      * Registers a listener for when the RebootEscrow HAL has stored its data needed for rebooting
@@ -98,15 +162,15 @@ public abstract class LockSettingsInternal {
     /**
      * Requests that any data needed for rebooting is cleared from the RebootEscrow HAL.
      */
-    public abstract void clearRebootEscrow();
+    public abstract boolean clearRebootEscrow();
 
     /**
      * Should be called immediately before rebooting for an update. This depends on {@link
      * #prepareRebootEscrow()} having been called and the escrow completing.
      *
-     * @return true if the arming worked
+     * @return ARM_ERROR_NONE if the arming worked
      */
-    public abstract boolean armRebootEscrow();
+    public abstract @ArmRebootEscrowErrorCode int armRebootEscrow();
 
 
     /**

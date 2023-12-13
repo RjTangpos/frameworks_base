@@ -55,13 +55,15 @@ using hardware::cas::native::V1_0::IDescrambler;
 struct JMediaCodec : public AHandler {
     JMediaCodec(
             JNIEnv *env, jobject thiz,
-            const char *name, bool nameIsType, bool encoder);
+            const char *name, bool nameIsType, bool encoder, int pid, int uid);
 
     status_t initCheck() const;
 
     void registerSelf();
     void release();
     void releaseAsync();
+
+    status_t enableOnFirstTunnelFrameReadyListener(jboolean enable);
 
     status_t enableOnFrameRenderedListener(jboolean enable);
 
@@ -172,6 +174,10 @@ struct JMediaCodec : public AHandler {
 
     bool hasCryptoOrDescrambler() { return mHasCryptoOrDescrambler; }
 
+    const sp<ICrypto> &getCrypto() { return mCrypto; }
+
+    std::string getExceptionMessage(const char *msg) const;
+
 protected:
     virtual ~JMediaCodec();
 
@@ -182,6 +188,7 @@ private:
         kWhatCallbackNotify,
         kWhatFrameRendered,
         kWhatAsyncReleaseComplete,
+        kWhatFirstTunnelFrameReady,
     };
 
     jclass mClass;
@@ -197,9 +204,12 @@ private:
     std::once_flag mAsyncReleaseFlag;
 
     sp<AMessage> mCallbackNotification;
+    sp<AMessage> mOnFirstTunnelFrameReadyNotification;
     sp<AMessage> mOnFrameRenderedNotification;
 
     status_t mInitStatus;
+
+    sp<ICrypto> mCrypto;
 
     template <typename T>
     status_t createByteBufferFromABuffer(
@@ -207,6 +217,7 @@ private:
             jobject *buf) const;
 
     void handleCallback(const sp<AMessage> &msg);
+    void handleFirstTunnelFrameReadyNotification(const sp<AMessage> &msg);
     void handleFrameRenderedNotification(const sp<AMessage> &msg);
 
     DISALLOW_EVIL_CONSTRUCTORS(JMediaCodec);

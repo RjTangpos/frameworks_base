@@ -25,6 +25,7 @@ package {
 
 android_app {
     name: "WallpaperBackup",
+    defaults: ["platform_app_defaults"],
     srcs: ["src/**/*.java"],
     optimize: {
         proguard_flags_files: ["proguard.flags"],
@@ -41,7 +42,7 @@ android_test {
     srcs: [
         // Include the app source code because the app runs as the system user on-device.
         "src/**/*.java",
-        "test/src/**/*.java"
+        "test/src/**/*.java",
     ],
     libs: [
         "android.test.base",
@@ -53,7 +54,8 @@ android_test {
         "mockito-target-minus-junit4",
         "truth-prebuilt",
     ],
+    resource_dirs: ["test/res"],
     certificate: "platform",
     platform_apis: true,
-    test_suites: ["device-tests"]
+    test_suites: ["device-tests"],
 }

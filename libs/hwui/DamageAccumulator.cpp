@@ -150,9 +150,19 @@ static inline void applyMatrix(const SkMatrix* transform, SkRect* rect) {
     }
 }
 
+static inline void applyMatrix(const SkMatrix& transform, SkRect* rect) {
+    return applyMatrix(&transform, rect);
+}
+
 static inline void mapRect(const RenderProperties& props, const SkRect& in, SkRect* out) {
     if (in.isEmpty()) return;
     SkRect temp(in);
+    if (Properties::getStretchEffectBehavior() == StretchEffectBehavior::UniformScale) {
+        const StretchEffect& stretch = props.layerProperties().getStretchEffect();
+        if (!stretch.isEmpty()) {
+            applyMatrix(stretch.makeLinearStretch(props.getWidth(), props.getHeight()), &temp);
+        }
+    }
     applyMatrix(props.getTransformMatrix(), &temp);
     if (props.getStaticMatrix()) {
         applyMatrix(props.getStaticMatrix(), &temp);
@@ -247,6 +257,35 @@ void DamageAccumulator::finish(SkRect* totalDirty) {
     *totalDirty = mHead->pendingDirty;
     totalDirty->roundOut(totalDirty);
     mHead->pendingDirty.setEmpty();
+}
+
+DamageAccumulator::StretchResult DamageAccumulator::findNearestStretchEffect() const {
+    DirtyStack* frame = mHead;
+    while (frame->prev != frame) {
+        if (frame->type == TransformRenderNode) {
+            const auto& renderNode = frame->renderNode;
+            const auto& frameRenderNodeProperties = renderNode->properties();
+            const auto& effect =
+                    frameRenderNodeProperties.layerProperties().getStretchEffect();
+            const float width = (float) frameRenderNodeProperties.getWidth();
+            const float height = (float) frameRenderNodeProperties.getHeight();
+            if (!effect.isEmpty()) {
+                Matrix4 stretchMatrix;
+                computeTransformImpl(frame, &stretchMatrix);
+                Rect stretchRect = Rect(0.f, 0.f, width, height);
+                stretchMatrix.mapRect(stretchRect);
+
+                return StretchResult{
+                        .stretchEffect = &effect,
+                        .parentBounds = SkRect::MakeLTRB(stretchRect.left, stretchRect.top,
+                                                         stretchRect.right, stretchRect.bottom),
+                        .width = width,
+                        .height = height};
+            }
+        }
+        frame = frame->prev;
+    }
+    return StretchResult{};
 }
 
 } /* namespace uirenderer */

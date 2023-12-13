@@ -16,8 +16,13 @@
 
 package android.net.vcn;
 
+import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
+import static android.net.vcn.VcnGatewayConnectionConfig.MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET;
+import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.net.NetworkCapabilities;
 import android.net.TransportInfo;
 import android.net.wifi.WifiInfo;
 import android.os.Parcel;
@@ -37,28 +42,37 @@ import java.util.Objects;
  * SubscriptionManager#INVALID_SUBSCRIPTION_ID}. If the underlying Network is Cellular, the WifiInfo
  * will be {@code null}.
  *
+ * <p>Receipt of a VcnTransportInfo requires the NETWORK_SETTINGS permission; else the entire
+ * VcnTransportInfo instance will be redacted.
+ *
  * @hide
  */
 public class VcnTransportInfo implements TransportInfo, Parcelable {
     @Nullable private final WifiInfo mWifiInfo;
     private final int mSubId;
+    private final int mMinUdpPort4500NatTimeoutSeconds;
 
     public VcnTransportInfo(@NonNull WifiInfo wifiInfo) {
-        this(wifiInfo, SubscriptionManager.INVALID_SUBSCRIPTION_ID);
+        this(wifiInfo, INVALID_SUBSCRIPTION_ID, MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET);
+    }
+
+    public VcnTransportInfo(@NonNull WifiInfo wifiInfo, int minUdpPort4500NatTimeoutSeconds) {
+        this(wifiInfo, INVALID_SUBSCRIPTION_ID, minUdpPort4500NatTimeoutSeconds);
     }
 
     public VcnTransportInfo(int subId) {
-        this(null /* wifiInfo */, subId);
+        this(null /* wifiInfo */, subId, MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET);
     }
 
-    private VcnTransportInfo(@Nullable WifiInfo wifiInfo, int subId) {
-        if (wifiInfo == null && subId == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
-            throw new IllegalArgumentException(
-                    "VcnTransportInfo requires either non-null WifiInfo or valid subId");
-        }
+    public VcnTransportInfo(int subId, int minUdpPort4500NatTimeoutSeconds) {
+        this(null /* wifiInfo */, subId, minUdpPort4500NatTimeoutSeconds);
+    }
 
+    private VcnTransportInfo(
+            @Nullable WifiInfo wifiInfo, int subId, int minUdpPort4500NatTimeoutSeconds) {
         mWifiInfo = wifiInfo;
         mSubId = subId;
+        mMinUdpPort4500NatTimeoutSeconds = minUdpPort4500NatTimeoutSeconds;
     }
 
     /**
@@ -80,23 +94,34 @@ public class VcnTransportInfo implements TransportInfo, Parcelable {
      * SubscriptionManager#INVALID_SUBSCRIPTION_ID}.
      *
      * @return the Subscription ID if a cellular underlying Network is present, else {@link
-     *     android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID}.
+     *     android.telephony.SubscriptionManager#INVALID_SUBSCRIPTION_ID}.
      */
     public int getSubId() {
         return mSubId;
     }
 
+    /**
+     * Get the VCN provided UDP port 4500 NAT timeout
+     *
+     * @return the UDP 4500 NAT timeout, or
+     *     VcnGatewayConnectionConfig.MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET if not set.
+     */
+    public int getMinUdpPort4500NatTimeoutSeconds() {
+        return mMinUdpPort4500NatTimeoutSeconds;
+    }
+
     @Override
     public int hashCode() {
-        return Objects.hash(mWifiInfo, mSubId);
+        return Objects.hash(mWifiInfo, mSubId, mMinUdpPort4500NatTimeoutSeconds);
     }
 
     @Override
     public boolean equals(Object o) {
         if (!(o instanceof VcnTransportInfo)) return false;
         final VcnTransportInfo that = (VcnTransportInfo) o;
-
-        return Objects.equals(mWifiInfo, that.mWifiInfo) && mSubId == that.mSubId;
+        return Objects.equals(mWifiInfo, that.mWifiInfo)
+                && mSubId == that.mSubId
+                && mMinUdpPort4500NatTimeoutSeconds == that.mMinUdpPort4500NatTimeoutSeconds;
     }
 
     /** {@inheritDoc} */
@@ -105,17 +130,65 @@ public class VcnTransportInfo implements TransportInfo, Parcelable {
         return 0;
     }
 
+    @Override
+    @NonNull
+    public TransportInfo makeCopy(long redactions) {
+        if ((redactions & NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS) != 0) {
+            return new VcnTransportInfo(
+                    null, INVALID_SUBSCRIPTION_ID, MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET);
+        }
+
+        return new VcnTransportInfo(
+                (mWifiInfo == null) ? null : mWifiInfo.makeCopy(redactions),
+                mSubId,
+                mMinUdpPort4500NatTimeoutSeconds);
+    }
+
+    @Override
+    public long getApplicableRedactions() {
+        long redactions = REDACT_FOR_NETWORK_SETTINGS;
+
+        // Add additional wifi redactions if necessary
+        if (mWifiInfo != null) {
+            redactions |= mWifiInfo.getApplicableRedactions();
+        }
+
+        return redactions;
+    }
+
     /** {@inheritDoc} */
     @Override
-    public void writeToParcel(@NonNull Parcel dest, int flags) {}
+    public void writeToParcel(@NonNull Parcel dest, int flags) {
+        dest.writeInt(mSubId);
+        dest.writeParcelable(mWifiInfo, flags);
+        dest.writeInt(mMinUdpPort4500NatTimeoutSeconds);
+    }
+
+    @Override
+    public String toString() {
+        return "VcnTransportInfo { mWifiInfo = " + mWifiInfo + ", mSubId = " + mSubId + " }";
+    }
 
     /** Implement the Parcelable interface */
     public static final @NonNull Creator<VcnTransportInfo> CREATOR =
             new Creator<VcnTransportInfo>() {
                 public VcnTransportInfo createFromParcel(Parcel in) {
-                    // return null instead of a default VcnTransportInfo to avoid leaking
-                    // information about this being a VCN Network (instead of macro cellular, etc)
-                    return null;
+                    final int subId = in.readInt();
+                    final WifiInfo wifiInfo =
+                            in.readParcelable(null, android.net.wifi.WifiInfo.class);
+                    final int minUdpPort4500NatTimeoutSeconds = in.readInt();
+
+                    // If all fields are their null values, return null TransportInfo to avoid
+                    // leaking information about this being a VCN Network (instead of macro
+                    // cellular, etc)
+                    if (wifiInfo == null
+                            && subId == INVALID_SUBSCRIPTION_ID
+                            && minUdpPort4500NatTimeoutSeconds
+                                    == MIN_UDP_PORT_4500_NAT_TIMEOUT_UNSET) {
+                        return null;
+                    }
+
+                    return new VcnTransportInfo(wifiInfo, subId, minUdpPort4500NatTimeoutSeconds);
                 }
 
                 public VcnTransportInfo[] newArray(int size) {

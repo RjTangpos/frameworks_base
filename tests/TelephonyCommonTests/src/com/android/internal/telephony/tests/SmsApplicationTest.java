@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNotNull;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.matches;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
@@ -43,9 +44,11 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
+import android.content.res.Resources;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.provider.Telephony;
 import android.telephony.TelephonyManager;
 
@@ -73,9 +76,12 @@ import java.util.stream.Collectors;
 public class SmsApplicationTest {
     private static final ComponentName TEST_COMPONENT_NAME =
             ComponentName.unflattenFromString("com.android.test/.TestSmsApp");
+    public static final String BLUETOOTH_PACKAGE_NAME = "com.android.bluetooth.services";
     private static final String MMS_RECEIVER_NAME = "TestMmsReceiver";
     private static final String RESPOND_VIA_SMS_NAME = "TestRespondViaSmsHandler";
     private static final String SEND_TO_NAME = "TestSendTo";
+    private static final String EXTERNAL_PROVIDER_CHANGE_NAME = "TestExternalProviderChangeHandler";
+    private static final String SIM_FULL_NAME = "TestSimFullHandler";
     private static final int SMS_APP_UID = 10001;
 
     private static final int FAKE_PHONE_UID = 10002;
@@ -100,9 +106,11 @@ public class SmsApplicationTest {
     }).collect(Collectors.toSet());
 
     @Mock private Context mContext;
+    @Mock private Resources mResources;
     @Mock private TelephonyManager mTelephonyManager;
     @Mock private RoleManager mRoleManager;
     @Mock private PackageManager mPackageManager;
+    @Mock private UserManager mUserManager;
     @Mock private AppOpsManager mAppOpsManager;
 
     @Before
@@ -112,8 +120,12 @@ public class SmsApplicationTest {
         when(mContext.getSystemService(Context.ROLE_SERVICE)).thenReturn(mRoleManager);
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
         when(mContext.getSystemService(RoleManager.class)).thenReturn(mRoleManager);
+        when(mContext.getSystemService(UserManager.class)).thenReturn(mUserManager);
         when(mContext.getSystemService(AppOpsManager.class)).thenReturn(mAppOpsManager);
         when(mContext.createContextAsUser(isNotNull(), anyInt())).thenReturn(mContext);
+        when(mContext.getResources()).thenReturn(mResources);
+        when(mResources.getString(eq(com.android.internal.R.string.config_systemBluetoothStack)))
+                .thenReturn(BLUETOOTH_PACKAGE_NAME);
 
         doAnswer(invocation -> getResolveInfosForIntent(invocation.getArgument(0)))
                 .when(mPackageManager)
@@ -130,8 +142,10 @@ public class SmsApplicationTest {
 
         when(mTelephonyManager.isSmsCapable()).thenReturn(true);
         when(mRoleManager.isRoleAvailable(RoleManager.ROLE_SMS)).thenReturn(true);
-        when(mRoleManager.getDefaultSmsPackage(anyInt()))
+        when(mRoleManager.getSmsRoleHolder(anyInt()))
                 .thenReturn(TEST_COMPONENT_NAME.getPackageName());
+        when(mUserManager.getUserHandles(true))
+                .thenReturn(Collections.singletonList(UserHandle.SYSTEM));
 
         for (String opStr : APP_OPS_TO_CHECK) {
             when(mAppOpsManager.unsafeCheckOp(
@@ -140,10 +154,46 @@ public class SmsApplicationTest {
         }
     }
 
+
     @Test
-    public void testGetDefaultSmsApplication() {
+    public void testGetDefaultSmsApplicationAsUser() {
         assertEquals(TEST_COMPONENT_NAME,
-                SmsApplication.getDefaultSmsApplicationAsUser(mContext, false, 0));
+                SmsApplication.getDefaultSmsApplicationAsUser(mContext, false,
+                        UserHandle.SYSTEM));
+    }
+
+
+    @Test
+    public void testGetDefaultMmsApplicationAsUser() {
+        ComponentName componentName = SmsApplication.getDefaultMmsApplicationAsUser(mContext,
+                        false, UserHandle.SYSTEM);
+        assertEquals(TEST_COMPONENT_NAME.getPackageName(), componentName.getPackageName());
+        assertEquals(MMS_RECEIVER_NAME, componentName.getClassName());
+    }
+
+    @Test
+    public void testGetDefaultExternalTelephonyProviderChangedApplicationAsUser() {
+        ComponentName componentName = SmsApplication
+                .getDefaultExternalTelephonyProviderChangedApplicationAsUser(mContext,
+                        false, UserHandle.SYSTEM);
+        assertEquals(TEST_COMPONENT_NAME.getPackageName(), componentName.getPackageName());
+        assertEquals(EXTERNAL_PROVIDER_CHANGE_NAME, componentName.getClassName());
+    }
+
+    @Test
+    public void testGetDefaultRespondViaMessageApplicationAsUserAsUser() {
+        ComponentName componentName = SmsApplication.getDefaultRespondViaMessageApplicationAsUser(
+                mContext, false, UserHandle.SYSTEM);
+        assertEquals(TEST_COMPONENT_NAME.getPackageName(), componentName.getPackageName());
+        assertEquals(RESPOND_VIA_SMS_NAME, componentName.getClassName());
+    }
+
+    @Test
+    public void testGetDefaultSimFullApplicationAsUser() {
+        ComponentName componentName = SmsApplication.getDefaultSimFullApplicationAsUser(mContext,
+                false, UserHandle.SYSTEM);
+        assertEquals(TEST_COMPONENT_NAME.getPackageName(), componentName.getPackageName());
+        assertEquals(SIM_FULL_NAME, componentName.getClassName());
     }
 
     @Test
@@ -154,7 +204,8 @@ public class SmsApplicationTest {
         setupPackageInfosForCoreApps();
 
         assertEquals(TEST_COMPONENT_NAME,
-                SmsApplication.getDefaultSmsApplicationAsUser(mContext, true, 0));
+                SmsApplication.getDefaultSmsApplicationAsUser(mContext, true,
+                        UserHandle.SYSTEM));
         verify(mAppOpsManager, atLeastOnce()).setUidMode(AppOpsManager.OPSTR_READ_SMS, SMS_APP_UID,
                 AppOpsManager.MODE_ALLOWED);
     }
@@ -209,7 +260,7 @@ public class SmsApplicationTest {
         ApplicationInfo bluetoothApplicationInfo = new ApplicationInfo();
         bluetoothApplicationInfo.uid = FAKE_BT_UID;
         bluetoothPackageInfo.applicationInfo = bluetoothApplicationInfo;
-        when(mPackageManager.getPackageInfo(eq(SmsApplication.BLUETOOTH_PACKAGE_NAME), anyInt()))
+        when(mPackageManager.getPackageInfo(matches(".*android.bluetooth.services"), anyInt()))
                 .thenReturn(bluetoothPackageInfo);
 
         PackageInfo telephonyProviderPackageInfo = new PackageInfo();
@@ -231,6 +282,10 @@ public class SmsApplicationTest {
                 return Collections.singletonList(makeRespondViaMessageResolveInfo());
             case Intent.ACTION_SENDTO:
                 return Collections.singletonList(makeSendToResolveInfo());
+            case Telephony.Sms.Intents.ACTION_EXTERNAL_PROVIDER_CHANGE:
+                return Collections.singletonList(makeExternalProviderChangeResolveInfo());
+            case Telephony.Sms.Intents.SIM_FULL_ACTION:
+                return Collections.singletonList(makeSimFullResolveInfo());
         }
         return Collections.emptyList();
     }
@@ -284,6 +339,28 @@ public class SmsApplicationTest {
 
         activityInfo.packageName = TEST_COMPONENT_NAME.getPackageName();
         activityInfo.name = SEND_TO_NAME;
+
+        info.activityInfo = activityInfo;
+        return info;
+    }
+
+    private ResolveInfo makeExternalProviderChangeResolveInfo() {
+        ResolveInfo info = new ResolveInfo();
+        ActivityInfo activityInfo = new ActivityInfo();
+
+        activityInfo.packageName = TEST_COMPONENT_NAME.getPackageName();
+        activityInfo.name = EXTERNAL_PROVIDER_CHANGE_NAME;
+
+        info.activityInfo = activityInfo;
+        return info;
+    }
+
+    private ResolveInfo makeSimFullResolveInfo() {
+        ResolveInfo info = new ResolveInfo();
+        ActivityInfo activityInfo = new ActivityInfo();
+
+        activityInfo.packageName = TEST_COMPONENT_NAME.getPackageName();
+        activityInfo.name = SIM_FULL_NAME;
 
         info.activityInfo = activityInfo;
         return info;

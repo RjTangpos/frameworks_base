@@ -18,11 +18,22 @@ package com.android.internal.statusbar;
 
 import android.app.ITransientNotificationCallback;
 import android.content.ComponentName;
+import android.graphics.drawable.Icon;
 import android.graphics.Rect;
-import android.hardware.biometrics.IBiometricServiceReceiverInternal;
+import android.hardware.biometrics.IBiometricContextListener;
+import android.hardware.biometrics.IBiometricSysuiReceiver;
+import android.hardware.biometrics.PromptInfo;
+import android.hardware.fingerprint.IUdfpsRefreshRateRequestCallback;
+import android.media.INearbyMediaDevicesProvider;
+import android.media.MediaRoute2Info;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
+import android.view.KeyEvent;
 import android.service.notification.StatusBarNotification;
 
+import com.android.internal.statusbar.IAddTileResultCallback;
+import com.android.internal.statusbar.IUndoMediaTransferCallback;
+import com.android.internal.statusbar.LetterboxDetails;
 import com.android.internal.statusbar.StatusBarIcon;
 import com.android.internal.view.AppearanceRegion;
 
@@ -39,18 +50,31 @@ oneway interface IStatusBar
 
     void showWirelessChargingAnimation(int batteryLevel);
 
-    void topAppWindowChanged(int displayId, boolean isFullscreen, boolean isImmersive);
     void setImeWindowStatus(int displayId, in IBinder token, int vis, int backDisposition,
-            boolean showImeSwitcher, boolean isMultiClientImeEnabled);
+            boolean showImeSwitcher);
     void setWindowState(int display, int window, int state);
 
     void showRecentApps(boolean triggeredFromAltTab);
     void hideRecentApps(boolean triggeredFromAltTab, boolean triggeredFromHomeKey);
     void toggleRecentApps();
+    void toggleTaskbar();
     void toggleSplitScreen();
     void preloadRecentApps();
     void cancelPreloadRecentApps();
     void showScreenPinningRequest(int taskId);
+
+    /**
+     * Notify system UI the immersive prompt should be dismissed as confirmed, and the confirmed
+     * status should be saved without user clicking on the button. This could happen when a user
+     * swipe on the edge with the confirmation prompt showing.
+     */
+    void confirmImmersivePrompt();
+
+    /**
+     * Notify system UI the immersive mode changed. This shall be removed when client immersive is
+     * enabled.
+     */
+    void immersiveModeChanged(int rootDisplayAreaId, boolean isImmersiveMode);
 
     void dismissKeyboardShortcutsMenu();
     void toggleKeyboardShortcutsMenu(int deviceId);
@@ -100,6 +124,13 @@ oneway interface IStatusBar
     void onCameraLaunchGestureDetected(int source);
 
     /**
+     * Notifies the status bar that the Emergency Action launch gesture has been detected.
+     *
+     * TODO(b/169175022) Update method name and docs when feature name is locked.
+     */
+    void onEmergencyActionLaunchGestureDetected();
+
+    /**
      * Shows the picture-in-picture menu if an activity is in picture-in-picture mode.
      */
     void showPictureInPictureMenu();
@@ -124,7 +155,7 @@ oneway interface IStatusBar
     void addQsTile(in ComponentName tile);
     void remQsTile(in ComponentName tile);
     void clickQsTile(in ComponentName tile);
-    void handleSystemKey(in int key);
+    void handleSystemKey(in KeyEvent key);
 
     /**
      * Methods to show toast messages for screen pinning
@@ -134,18 +165,33 @@ oneway interface IStatusBar
 
     void showShutdownUi(boolean isReboot, String reason);
 
-    // Used to show the authentication dialog (Biometrics, Device Credential)
-    void showAuthenticationDialog(in Bundle bundle, IBiometricServiceReceiverInternal receiver,
-            int biometricModality, boolean requireConfirmation, int userId, String opPackageName,
-            long operationId, int sysUiSessionId);
-    // Used to notify the authentication dialog that a biometric has been authenticated
-    void onBiometricAuthenticated();
-    // Used to set a temporary message, e.g. fingerprint not recognized, finger moved too fast, etc
-    void onBiometricHelp(String message);
-    // Used to show an error - the dialog will dismiss after a certain amount of time
+    /**
+    * Used to show the authentication dialog (Biometrics, Device Credential).
+    */
+    void showAuthenticationDialog(in PromptInfo promptInfo, IBiometricSysuiReceiver sysuiReceiver,
+            in int[] sensorIds, boolean credentialAllowed, boolean requireConfirmation, int userId,
+            long operationId, String opPackageName, long requestId);
+    /**
+    * Used to notify the authentication dialog that a biometric has been authenticated.
+    */
+    void onBiometricAuthenticated(int modality);
+    /**
+    * Used to set a temporary message, e.g. fingerprint not recognized, finger moved too fast, etc.
+    */
+    void onBiometricHelp(int modality, String message);
+    /** Used to show an error - the dialog will dismiss after a certain amount of time. */
     void onBiometricError(int modality, int error, int vendorCode);
-    // Used to hide the authentication dialog, e.g. when the application cancels authentication
-    void hideAuthenticationDialog();
+    /**
+    * Used to hide the authentication dialog, e.g. when the application cancels authentication.
+    */
+    void hideAuthenticationDialog(long requestId);
+    /* Used to notify the biometric service of events that occur outside of an operation. */
+    void setBiometicContextListener(in IBiometricContextListener listener);
+
+    /**
+     * Sets an instance of IUdfpsRefreshRateRequestCallback for UdfpsController.
+     */
+    void setUdfpsRefreshRateCallback(in IUdfpsRefreshRateRequestCallback callback);
 
     /**
      * Notifies System UI that the display is ready to show system decorations.
@@ -158,9 +204,9 @@ oneway interface IStatusBar
     void onRecentsAnimationStateChanged(boolean running);
 
     /**
-     * Notifies System UI side of system bar appearance change on the specified display.
+     * Notifies System UI side of system bar attribute change on the specified display.
      *
-     * @param displayId the ID of the display to notify
+     * @param displayId the ID of the display to notify.
      * @param appearance the appearance of the focused window. The light top bar appearance is not
      *                   controlled here, but primaryAppearance and secondaryAppearance.
      * @param appearanceRegions a set of appearances which will be only applied in their own bounds.
@@ -168,18 +214,26 @@ oneway interface IStatusBar
      *                         bar, that the bar can have partial appearances in corresponding
      *                         stacks.
      * @param navbarColorManagedByIme {@code true} if navigation bar color is managed by IME.
+     * @param behavior the behavior of the focused window.
+     * @param requestedVisibleTypes the collection of insets types requested visible.
+     * @param packageName the package name of the focused app.
+     * @param letterboxDetails a set of letterbox details of apps visible on the screen.
      */
-    void onSystemBarAppearanceChanged(int displayId, int appearance,
-            in AppearanceRegion[] appearanceRegions, boolean navbarColorManagedByIme);
+    void onSystemBarAttributesChanged(int displayId, int appearance,
+            in AppearanceRegion[] appearanceRegions, boolean navbarColorManagedByIme,
+            int behavior, int requestedVisibleTypes, String packageName,
+            in LetterboxDetails[] letterboxDetails);
 
     /**
      * Notifies System UI to show transient bars. The transient bars are system bars, e.g., status
      * bar and navigation bar which are temporarily visible to the user.
      *
      * @param displayId the ID of the display to notify.
-     * @param types the internal insets types of the bars are about to show transiently.
+     * @param types the insets types of the bars are about to show transiently.
+     * @param isGestureOnSystemBar whether the gesture to show the transient bar was a gesture on
+     *        one of the bars itself.
      */
-    void showTransient(int displayId, in int[] types);
+    void showTransient(int displayId, int types, boolean isGestureOnSystemBar);
 
     /**
      * Notifies System UI to abort the transient state of system bars, which prevents the bars being
@@ -187,9 +241,9 @@ oneway interface IStatusBar
      * bars again.
      *
      * @param displayId the ID of the display to notify.
-     * @param types the internal insets types of the bars are about to abort the transient state.
+     * @param types the insets types of the bars are about to abort the transient state.
      */
-    void abortTransient(int displayId, in int[] types);
+    void abortTransient(int displayId, int types);
 
     /**
      * Show a warning that the device is about to go to sleep due to user inactivity.
@@ -205,7 +259,8 @@ oneway interface IStatusBar
      * Displays a text toast.
      */
     void showToast(int uid, String packageName, IBinder token, CharSequence text,
-            IBinder windowToken, int duration, @nullable ITransientNotificationCallback callback);
+            IBinder windowToken, int duration, @nullable ITransientNotificationCallback callback,
+            int displayId);
 
     /**
      * Cancels toast with token {@code token} in {@code packageName}.
@@ -227,4 +282,81 @@ oneway interface IStatusBar
      * display.
      */
     void suppressAmbientDisplay(boolean suppress);
+
+    /**
+     * Requests {@link WindowMagnification} to set window magnification connection through
+     * {@link AccessibilityManager#setWindowMagnificationConnection(IWindowMagnificationConnection)}
+     *
+     * @param connect {@code true} if needs connection, otherwise set the connection to null.
+     */
+    void requestWindowMagnificationConnection(boolean connect);
+
+    /**
+     * Allow for pass-through arguments from `adb shell cmd statusbar <args>`, and write to the
+     * file descriptor passed in.
+     */
+     void passThroughShellCommand(in String[] args, in ParcelFileDescriptor pfd);
+
+    /**
+     * Enables/disables the navigation bar luma sampling.
+     *
+     * @param displayId the id of the display to notify.
+     * @param enable {@code true} if enable, otherwise set to {@code false}.
+     */
+    void setNavigationBarLumaSamplingEnabled(int displayId, boolean enable);
+
+    /**
+     * Triggers a GC in the system and status bar.
+     */
+    void runGcForTest();
+
+    /**
+     * Send a request to SystemUI to put a given active tile in listening state
+     */
+    void requestTileServiceListeningState(in ComponentName componentName);
+
+    void requestAddTile(in ComponentName componentName, in CharSequence appName, in CharSequence label, in Icon icon, in IAddTileResultCallback callback);
+    void cancelRequestAddTile(in String packageName);
+
+    /** Notifies System UI about an update to the media tap-to-transfer sender state. */
+    void updateMediaTapToTransferSenderDisplay(
+        int displayState,
+        in MediaRoute2Info routeInfo,
+        in IUndoMediaTransferCallback undoCallback);
+
+    /** Notifies System UI about an update to the media tap-to-transfer receiver state. */
+    void updateMediaTapToTransferReceiverDisplay(
+        int displayState,
+        in MediaRoute2Info routeInfo,
+        in Icon appIcon,
+        in CharSequence appName);
+
+    /** Registers a nearby media devices provider. */
+    void registerNearbyMediaDevicesProvider(in INearbyMediaDevicesProvider provider);
+
+    /** Unregisters a nearby media devices provider. */
+    void unregisterNearbyMediaDevicesProvider(in INearbyMediaDevicesProvider provider);
+
+    /** Dump protos from SystemUI. The proto definition is defined there */
+    void dumpProto(in String[] args, in ParcelFileDescriptor pfd);
+
+    /** Shows rear display educational dialog */
+    void showRearDisplayDialog(int currentBaseState);
+
+    /** Called when requested to go to fullscreen from the active split app. */
+    void goToFullscreenFromSplit();
+
+    /**
+     * Enters stage split from a current running app.
+     *
+     * @param leftOrTop indicates where the stage split is.
+     */
+    void enterStageSplitFromRunningApp(boolean leftOrTop);
+
+    /**
+     * Shows the media output switcher dialog.
+     *
+     * @param packageName of the session for which the output switcher is shown.
+     */
+    void showMediaOutputSwitcher(String packageName);
 }

@@ -176,7 +176,6 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
     /** Write to Parcel. */
     @Override
     public void writeToParcel(Parcel dest, int flags) {
-        dest.writeStrongBinder(mClient.asBinder());
         final boolean writeActivityToken = mActivityToken != null;
         dest.writeBoolean(writeActivityToken);
         if (writeActivityToken) {
@@ -192,16 +191,15 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
 
     /** Read from Parcel. */
     private ClientTransaction(Parcel in) {
-        mClient = (IApplicationThread) in.readStrongBinder();
         final boolean readActivityToken = in.readBoolean();
         if (readActivityToken) {
             mActivityToken = in.readStrongBinder();
         }
-        mLifecycleStateRequest = in.readParcelable(getClass().getClassLoader());
+        mLifecycleStateRequest = in.readParcelable(getClass().getClassLoader(), android.app.servertransaction.ActivityLifecycleItem.class);
         final boolean readActivityCallbacks = in.readBoolean();
         if (readActivityCallbacks) {
             mActivityCallbacks = new ArrayList<>();
-            in.readParcelableList(mActivityCallbacks, getClass().getClassLoader());
+            in.readParcelableList(mActivityCallbacks, getClass().getClassLoader(), android.app.servertransaction.ClientTransactionItem.class);
         }
     }
 
@@ -222,7 +220,7 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) {
             return true;
         }
@@ -241,6 +239,8 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
         int result = 17;
         result = 31 * result + Objects.hashCode(mActivityCallbacks);
         result = 31 * result + Objects.hashCode(mLifecycleStateRequest);
+        result = 31 * result + Objects.hashCode(mClient);
+        result = 31 * result + Objects.hashCode(mActivityToken);
         return result;
     }
 

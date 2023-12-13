@@ -21,11 +21,13 @@
 #define _LIBS_UTILS_RESOURCE_TYPES_H
 
 #include <android-base/expected.h>
+#include <android-base/unique_fd.h>
 
 #include <androidfw/Asset.h>
 #include <androidfw/Errors.h>
 #include <androidfw/LocaleData.h>
 #include <androidfw/StringPiece.h>
+#include <utils/ByteOrder.h>
 #include <utils/Errors.h>
 #include <utils/String16.h>
 #include <utils/Vector.h>
@@ -39,12 +41,26 @@
 #include <android/configuration.h>
 
 #include <array>
+#include <map>
 #include <memory>
 
 namespace android {
 
-constexpr const static uint32_t kIdmapMagic = 0x504D4449u;
-constexpr const static uint32_t kIdmapCurrentVersion = 0x00000005u;
+constexpr const uint32_t kIdmapMagic = 0x504D4449u;
+constexpr const uint32_t kIdmapCurrentVersion = 0x00000009u;
+
+// This must never change.
+constexpr const uint32_t kFabricatedOverlayMagic = 0x4f525246; // FRRO (big endian)
+
+// The version should only be changed when a backwards-incompatible change must be made to the
+// fabricated overlay file format. Old fabricated overlays must be migrated to the new file format
+// to prevent losing fabricated overlay data.
+constexpr const uint32_t kFabricatedOverlayCurrentVersion = 3;
+
+// Returns whether or not the path represents a fabricated overlay.
+bool IsFabricatedOverlay(const std::string& path);
+bool IsFabricatedOverlay(const char* path);
+bool IsFabricatedOverlay(android::base::borrowed_fd fd);
 
 /**
  * In C++11, char16_t is defined as *at least* 16 bits. We do a lot of
@@ -218,30 +234,31 @@ struct ResChunk_header
 };
 
 enum {
-    RES_NULL_TYPE               = 0x0000,
-    RES_STRING_POOL_TYPE        = 0x0001,
-    RES_TABLE_TYPE              = 0x0002,
-    RES_XML_TYPE                = 0x0003,
+    RES_NULL_TYPE                     = 0x0000,
+    RES_STRING_POOL_TYPE              = 0x0001,
+    RES_TABLE_TYPE                    = 0x0002,
+    RES_XML_TYPE                      = 0x0003,
 
     // Chunk types in RES_XML_TYPE
-    RES_XML_FIRST_CHUNK_TYPE    = 0x0100,
-    RES_XML_START_NAMESPACE_TYPE= 0x0100,
-    RES_XML_END_NAMESPACE_TYPE  = 0x0101,
-    RES_XML_START_ELEMENT_TYPE  = 0x0102,
-    RES_XML_END_ELEMENT_TYPE    = 0x0103,
-    RES_XML_CDATA_TYPE          = 0x0104,
-    RES_XML_LAST_CHUNK_TYPE     = 0x017f,
+    RES_XML_FIRST_CHUNK_TYPE          = 0x0100,
+    RES_XML_START_NAMESPACE_TYPE      = 0x0100,
+    RES_XML_END_NAMESPACE_TYPE        = 0x0101,
+    RES_XML_START_ELEMENT_TYPE        = 0x0102,
+    RES_XML_END_ELEMENT_TYPE          = 0x0103,
+    RES_XML_CDATA_TYPE                = 0x0104,
+    RES_XML_LAST_CHUNK_TYPE           = 0x017f,
     // This contains a uint32_t array mapping strings in the string
     // pool back to resource identifiers.  It is optional.
-    RES_XML_RESOURCE_MAP_TYPE   = 0x0180,
+    RES_XML_RESOURCE_MAP_TYPE         = 0x0180,
 
     // Chunk types in RES_TABLE_TYPE
-    RES_TABLE_PACKAGE_TYPE      = 0x0200,
-    RES_TABLE_TYPE_TYPE         = 0x0201,
-    RES_TABLE_TYPE_SPEC_TYPE    = 0x0202,
-    RES_TABLE_LIBRARY_TYPE      = 0x0203,
-    RES_TABLE_OVERLAYABLE_TYPE  = 0x0204,
+    RES_TABLE_PACKAGE_TYPE            = 0x0200,
+    RES_TABLE_TYPE_TYPE               = 0x0201,
+    RES_TABLE_TYPE_SPEC_TYPE          = 0x0202,
+    RES_TABLE_LIBRARY_TYPE            = 0x0203,
+    RES_TABLE_OVERLAYABLE_TYPE        = 0x0204,
     RES_TABLE_OVERLAYABLE_POLICY_TYPE = 0x0205,
+    RES_TABLE_STAGED_ALIAS_TYPE       = 0x0206,
 };
 
 /**
@@ -805,6 +822,11 @@ private:
     uint32_t                    mSourceResourceId;
 };
 
+static inline bool operator==(const android::ResXMLParser::ResXMLPosition& lhs,
+                              const android::ResXMLParser::ResXMLPosition& rhs) {
+  return lhs.curNode == rhs.curNode;
+}
+
 class DynamicRefTable;
 
 /**
@@ -1049,15 +1071,32 @@ struct ResTable_config
         NAVHIDDEN_NO = ACONFIGURATION_NAVHIDDEN_NO << SHIFT_NAVHIDDEN,
         NAVHIDDEN_YES = ACONFIGURATION_NAVHIDDEN_YES << SHIFT_NAVHIDDEN,
     };
-    
-    union {
-        struct {
-            uint8_t keyboard;
-            uint8_t navigation;
-            uint8_t inputFlags;
-            uint8_t inputPad0;
+
+    enum {
+        GRAMMATICAL_GENDER_ANY = ACONFIGURATION_GRAMMATICAL_GENDER_ANY,
+        GRAMMATICAL_GENDER_NEUTER = ACONFIGURATION_GRAMMATICAL_GENDER_NEUTER,
+        GRAMMATICAL_GENDER_FEMININE = ACONFIGURATION_GRAMMATICAL_GENDER_FEMININE,
+        GRAMMATICAL_GENDER_MASCULINE = ACONFIGURATION_GRAMMATICAL_GENDER_MASCULINE,
+        GRAMMATICAL_INFLECTION_GENDER_MASK = 0b11,
+    };
+
+    struct {
+        union {
+            struct {
+                uint8_t keyboard;
+                uint8_t navigation;
+                uint8_t inputFlags;
+                uint8_t inputFieldPad0;
+            };
+            struct {
+                uint32_t input : 24;
+                uint32_t inputFullPad0 : 8;
+            };
+            struct {
+                uint8_t grammaticalInflectionPad0[3];
+                uint8_t grammaticalInflection;
+            };
         };
-        uint32_t input;
     };
     
     enum {
@@ -1080,7 +1119,7 @@ struct ResTable_config
         SDKVERSION_ANY = 0
     };
     
-  enum {
+    enum {
         MINORVERSION_ANY = 0
     };
     
@@ -1241,6 +1280,7 @@ struct ResTable_config
         CONFIG_LAYOUTDIR = ACONFIGURATION_LAYOUTDIR,
         CONFIG_SCREEN_ROUND = ACONFIGURATION_SCREEN_ROUND,
         CONFIG_COLOR_MODE = ACONFIGURATION_COLOR_MODE,
+        CONFIG_GRAMMATICAL_GENDER = ACONFIGURATION_GRAMMATICAL_GENDER,
     };
     
     // Compare two configuration, returning CONFIG_* flags set for each value
@@ -1368,6 +1408,11 @@ struct ResTable_typeSpec
     enum : uint32_t {
         // Additional flag indicating an entry is public.
         SPEC_PUBLIC = 0x40000000u,
+
+        // Additional flag indicating the resource id for this resource may change in a future
+        // build. If this flag is set, the SPEC_PUBLIC flag is also set since the resource must be
+        // public to be exposed as an API to other applications.
+        SPEC_STAGED_API = 0x20000000u,
     };
 };
 
@@ -1414,6 +1459,10 @@ struct ResTable_type
         // Mark any types that use this with a v26 qualifier to prevent runtime issues on older
         // platforms.
         FLAG_SPARSE = 0x01,
+
+        // If set, the offsets to the entries are encoded in 16-bit, real_offset = offset * 4u
+        // An 16-bit offset of 0xffffu means a NO_ENTRY
+        FLAG_OFFSET16 = 0x02,
     };
     uint8_t flags;
 
@@ -1429,6 +1478,11 @@ struct ResTable_type
     // Configuration this collection of entries is designed for. This must always be last.
     ResTable_config config;
 };
+
+// Convert a 16-bit offset to 32-bit if FLAG_OFFSET16 is set
+static inline uint32_t offset_from16(uint16_t off16) {
+    return dtohs(off16) == 0xffffu ? ResTable_type::NO_ENTRY : dtohs(off16) * 4u;
+}
 
 // The minimum size required to read any version of ResTable_type.
 constexpr size_t kResTableTypeMinSize =
@@ -1457,6 +1511,8 @@ union ResTable_sparseTypeEntry {
 static_assert(sizeof(ResTable_sparseTypeEntry) == sizeof(uint32_t),
         "ResTable_sparseTypeEntry must be 4 bytes in size");
 
+struct ResTable_map_entry;
+
 /**
  * This is the beginning of information about an entry in the resource
  * table.  It holds the reference to the name of this entry, and is
@@ -1464,12 +1520,11 @@ static_assert(sizeof(ResTable_sparseTypeEntry) == sizeof(uint32_t),
  *   * A Res_value structure, if FLAG_COMPLEX is -not- set.
  *   * An array of ResTable_map structures, if FLAG_COMPLEX is set.
  *     These supply a set of name/value mappings of data.
+ *   * If FLAG_COMPACT is set, this entry is a compact entry for
+ *     simple values only
  */
-struct ResTable_entry
+union ResTable_entry
 {
-    // Number of bytes in this structure.
-    uint16_t size;
-
     enum {
         // If set, this is a complex entry, holding a set of name/value
         // mappings.  It is followed by an array of ResTable_map structures.
@@ -1481,18 +1536,91 @@ struct ResTable_entry
         // resources of the same name/type. This is only useful during
         // linking with other resource tables.
         FLAG_WEAK = 0x0004,
+        // If set, this is a compact entry with data type and value directly
+        // encoded in the this entry, see ResTable_entry::compact
+        FLAG_COMPACT = 0x0008,
     };
-    uint16_t flags;
-    
-    // Reference into ResTable_package::keyStrings identifying this entry.
-    struct ResStringPool_ref key;
+
+    struct Full {
+        // Number of bytes in this structure.
+        uint16_t size;
+
+        uint16_t flags;
+
+        // Reference into ResTable_package::keyStrings identifying this entry.
+        struct ResStringPool_ref key;
+    } full;
+
+    /* A compact entry is indicated by FLAG_COMPACT, with flags at the same
+     * offset as a normal entry. This is only for simple data values where
+     *
+     * - size for entry or value can be inferred (both being 8 bytes).
+     * - key index is encoded in 16-bit
+     * - dataType is encoded as the higher 8-bit of flags
+     * - data is encoded directly in this entry
+     */
+    struct Compact {
+        uint16_t key;
+        uint16_t flags;
+        uint32_t data;
+    } compact;
+
+    uint16_t flags()  const { return dtohs(full.flags); };
+    bool is_compact() const { return flags() & FLAG_COMPACT; }
+    bool is_complex() const { return flags() & FLAG_COMPLEX; }
+
+    size_t size() const {
+        return is_compact() ? sizeof(ResTable_entry) : dtohs(this->full.size);
+    }
+
+    uint32_t key() const {
+        return is_compact() ? dtohs(this->compact.key) : dtohl(this->full.key.index);
+    }
+
+    /* Always verify the memory associated with this entry and its value
+     * before calling value() or map_entry()
+     */
+    Res_value value() const {
+        Res_value v;
+        if (is_compact()) {
+            v.size = sizeof(Res_value);
+            v.res0 = 0;
+            v.data = dtohl(this->compact.data);
+            v.dataType = dtohs(compact.flags) >> 8;
+        } else {
+            auto vaddr = reinterpret_cast<const uint8_t*>(this) + dtohs(this->full.size);
+            auto value = reinterpret_cast<const Res_value*>(vaddr);
+            v.size = dtohs(value->size);
+            v.res0 = value->res0;
+            v.data = dtohl(value->data);
+            v.dataType = value->dataType;
+        }
+        return v;
+    }
+
+    const ResTable_map_entry* map_entry() const {
+        return is_complex() && !is_compact() ?
+            reinterpret_cast<const ResTable_map_entry*>(this) : nullptr;
+    }
 };
+
+/* Make sure size of ResTable_entry::Full and ResTable_entry::Compact
+ * be the same as ResTable_entry. This is to allow iteration of entries
+ * to work in either cases.
+ *
+ * The offset of flags must be at the same place for both structures,
+ * to ensure the correct reading to decide whether this is a full entry
+ * or a compact entry.
+ */
+static_assert(sizeof(ResTable_entry) == sizeof(ResTable_entry::Full));
+static_assert(sizeof(ResTable_entry) == sizeof(ResTable_entry::Compact));
+static_assert(offsetof(ResTable_entry, full.flags) == offsetof(ResTable_entry, compact.flags));
 
 /**
  * Extended form of a ResTable_entry for map entries, defining a parent map
  * resource from which to inherit values.
  */
-struct ResTable_map_entry : public ResTable_entry
+struct ResTable_map_entry : public ResTable_entry::Full
 {
     // Resource identifier of the parent mapping, or 0 if there is none.
     // This is always treated as a TYPE_DYNAMIC_REFERENCE.
@@ -1618,6 +1746,29 @@ struct ResTable_lib_entry
 };
 
 /**
+ * A map that allows rewriting staged (non-finalized) resource ids to their finalized counterparts.
+ */
+struct ResTable_staged_alias_header
+{
+    struct ResChunk_header header;
+
+    // The number of ResTable_staged_alias_entry that follow this header.
+    uint32_t count;
+};
+
+/**
+ * Maps the staged (non-finalized) resource id to its finalized resource id.
+ */
+struct ResTable_staged_alias_entry
+{
+  // The compile-time staged resource id to rewrite.
+  uint32_t stagedResId;
+
+  // The compile-time finalized resource id to which the staged resource id should be rewritten.
+  uint32_t finalizedResId;
+};
+
+/**
  * Specifies the set of resources that are explicitly allowed to be overlaid by RROs.
  */
 struct ResTable_overlayable_header
@@ -1700,54 +1851,26 @@ inline ResTable_overlayable_policy_header::PolicyFlags& operator |=(
   return first;
 }
 
-struct Idmap_header {
-  // Always 0x504D4449 ('IDMP')
-  uint32_t magic;
+using ResourceId = uint32_t;  // 0xpptteeee
 
-  uint32_t version;
+using DataType = uint8_t;    // Res_value::dataType
+using DataValue = uint32_t;  // Res_value::data
 
-  uint32_t target_crc32;
-  uint32_t overlay_crc32;
-
-  uint32_t fulfilled_policies;
-  uint32_t enforce_overlayable;
-
-  uint8_t target_path[256];
-  uint8_t overlay_path[256];
-
-  uint32_t debug_info_size;
-  uint8_t debug_info[0];
-
-  size_t Size() const;
+struct OverlayManifestInfo {
+  std::string package_name;     // NOLINT(misc-non-private-member-variables-in-classes)
+  std::string name;             // NOLINT(misc-non-private-member-variables-in-classes)
+  std::string target_package;   // NOLINT(misc-non-private-member-variables-in-classes)
+  std::string target_name;      // NOLINT(misc-non-private-member-variables-in-classes)
+  ResourceId resource_mapping;  // NOLINT(misc-non-private-member-variables-in-classes)
 };
 
-struct Idmap_data_header {
-  uint8_t target_package_id;
-  uint8_t overlay_package_id;
-
-  // Padding to ensure 4 byte alignment for target_entry_count
-  uint16_t p0;
-
-  uint32_t target_entry_count;
-  uint32_t target_inline_entry_count;
-  uint32_t overlay_entry_count;
-
-  uint32_t string_pool_index_offset;
-};
-
-struct Idmap_target_entry {
-  uint32_t target_id;
-  uint32_t overlay_id;
-};
-
-struct Idmap_target_entry_inline {
-  uint32_t target_id;
-  Res_value value;
-};
-
-struct Idmap_overlay_entry {
-  uint32_t overlay_id;
-  uint32_t target_id;
+struct FabricatedOverlayEntryParameters {
+  std::string resource_name;
+  DataType data_type;
+  DataValue data_value;
+  std::string data_string_value;
+  std::optional<android::base::borrowed_fd> data_binary_value;
+  std::string configuration;
 };
 
 class AssetManager2;
@@ -1780,6 +1903,11 @@ public:
 
     void addMapping(uint8_t buildPackageId, uint8_t runtimePackageId);
 
+    using AliasMap = std::vector<std::pair<uint32_t, uint32_t>>;
+    void setAliases(AliasMap aliases) {
+        mAliasId = std::move(aliases);
+    }
+
     // Returns whether or not the value must be looked up.
     bool requiresLookup(const Res_value* value) const;
 
@@ -1792,11 +1920,12 @@ public:
         return mEntries;
     }
 
-private:
-    uint8_t                         mAssignedPackageId;
-    uint8_t                         mLookupTable[256];
-    KeyedVector<String16, uint8_t>  mEntries;
-    bool                            mAppAsLib;
+   private:
+    uint8_t mLookupTable[256];
+    uint8_t mAssignedPackageId;
+    bool mAppAsLib;
+    KeyedVector<String16, uint8_t> mEntries;
+    AliasMap mAliasId;
 };
 
 bool U16StringToInt(const char16_t* s, size_t len, Res_value* outValue);

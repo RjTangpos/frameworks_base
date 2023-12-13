@@ -16,6 +16,8 @@
 
 package com.android.server.security;
 
+import static android.os.PowerWhitelistManager.REASON_KEY_CHAIN;
+
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -43,6 +45,7 @@ import com.android.server.SystemService;
  * <p>
  * TODO (b/35968281): take a more sophisticated look at what bits of KeyChain should be inside the
  *                    system server and which make sense inside a system app.
+ * @hide
  */
 public class KeyChainSystemService extends SystemService {
 
@@ -102,7 +105,8 @@ public class KeyChainSystemService extends SystemService {
         final DeviceIdleInternal idleController =
                 LocalServices.getService(DeviceIdleInternal.class);
         idleController.addPowerSaveTempWhitelistApp(Process.myUid(), packageName,
-                KEYCHAIN_IDLE_WHITELIST_DURATION_MS, user.getIdentifier(), false, "keychain");
+                KEYCHAIN_IDLE_WHITELIST_DURATION_MS, user.getIdentifier(), false,
+                REASON_KEY_CHAIN, "keychain");
 
         getContext().startServiceAsUser(intent, user);
     }

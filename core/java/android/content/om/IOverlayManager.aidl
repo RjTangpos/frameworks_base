@@ -16,6 +16,7 @@
 
 package android.content.om;
 
+import android.content.om.OverlayIdentifier;
 import android.content.om.OverlayInfo;
 import android.content.om.OverlayManagerTransaction;
 
@@ -39,7 +40,7 @@ interface IOverlayManager {
      *         requested user, an empty map is returned.
      */
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
-    Map getAllOverlays(in int userId);
+    Map<String, List<OverlayInfo>> getAllOverlays(in int userId);
 
     /**
      * Returns information about all overlays for the given target package for
@@ -51,7 +52,7 @@ interface IOverlayManager {
      * @return A list of OverlayInfo objects; if no overlays exist for the
      *         requested package, an empty list is returned.
      */
-    List getOverlayInfosForTarget(in String targetPackageName, in int userId);
+    List<OverlayInfo> getOverlayInfosForTarget(in String targetPackageName, in int userId);
 
     /**
      * Returns information about the overlay with the given package name for the
@@ -64,6 +65,17 @@ interface IOverlayManager {
      */
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     OverlayInfo getOverlayInfo(in String packageName, in int userId);
+
+    /**
+     * Returns information about the overlay with the given package name for the
+     * specified user.
+     *
+     * @param packageName The name of the overlay package.
+     * @param userId The user to get the OverlayInfo for.
+     * @return The OverlayInfo for the overlay package; or null if no such
+     *         overlay package exists.
+     */
+    OverlayInfo getOverlayInfoByIdentifier(in OverlayIdentifier packageName, in int userId);
 
     /**
      * Request that an overlay package be enabled or disabled when possible to
@@ -163,7 +175,7 @@ interface IOverlayManager {
      * Invalidates and removes the idmap for an overlay,
      * @param packageName The name of the overlay package whose idmap should be deleted.
      */
-    void invalidateCachesForOverlay(in String packageName, in int userIs);
+    void invalidateCachesForOverlay(in String packageName, in int userId);
 
     /**
      * Perform a series of requests related to overlay packages. This is an

@@ -19,6 +19,8 @@ package com.android.systemui.statusbar.notification.collection.coalescer;
 import static java.util.Objects.requireNonNull;
 
 import android.annotation.MainThread;
+import android.app.NotificationChannel;
+import android.os.UserHandle;
 import android.service.notification.NotificationListenerService.Ranking;
 import android.service.notification.NotificationListenerService.RankingMap;
 import android.service.notification.StatusBarNotification;
@@ -30,15 +32,18 @@ import com.android.systemui.Dumpable;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.statusbar.NotificationListener;
 import com.android.systemui.statusbar.NotificationListener.NotificationHandler;
+import com.android.systemui.statusbar.notification.collection.PipelineDumpable;
+import com.android.systemui.statusbar.notification.collection.PipelineDumper;
 import com.android.systemui.util.concurrency.DelayableExecutor;
 import com.android.systemui.util.time.SystemClock;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.inject.Inject;
 
@@ -62,7 +67,7 @@ import javax.inject.Inject;
  * passed along to the NotifCollection.
  */
 @MainThread
-public class GroupCoalescer implements Dumpable {
+public class GroupCoalescer implements Dumpable, PipelineDumpable {
     private final DelayableExecutor mMainExecutor;
     private final SystemClock mClock;
     private final GroupCoalescerLogger mLogger;
@@ -115,6 +120,11 @@ public class GroupCoalescer implements Dumpable {
         mHandler = handler;
     }
 
+    /** @return the set of notification keys currently in the coalescer */
+    public Set<String> getCoalescedKeySet() {
+        return Collections.unmodifiableSet(mCoalescedEvents.keySet());
+    }
+
     private final NotificationHandler mListener = new NotificationHandler() {
         @Override
         public void onNotificationPosted(StatusBarNotification sbn, RankingMap rankingMap) {
@@ -157,6 +167,15 @@ public class GroupCoalescer implements Dumpable {
         @Override
         public void onNotificationsInitialized() {
             mHandler.onNotificationsInitialized();
+        }
+
+        @Override
+        public void onNotificationChannelModified(
+                String pkgName,
+                UserHandle user,
+                NotificationChannel channel,
+                int modificationType) {
+            mHandler.onNotificationChannelModified(pkgName, user, channel, modificationType);
         }
     };
 
@@ -249,7 +268,8 @@ public class GroupCoalescer implements Dumpable {
         }
         events.sort(mEventComparator);
 
-        mLogger.logEmitBatch(batch.mGroupKey);
+        long batchAge = mClock.uptimeMillis() - batch.mCreatedTimestamp;
+        mLogger.logEmitBatch(batch.mGroupKey, batch.mMembers.size(), batchAge);
 
         mHandler.onNotificationBatchPosted(events);
     }
@@ -277,7 +297,7 @@ public class GroupCoalescer implements Dumpable {
     }
 
     @Override
-    public void dump(@NonNull FileDescriptor fd, @NonNull PrintWriter pw, @NonNull String[] args) {
+    public void dump(@NonNull PrintWriter pw, @NonNull String[] args) {
         long now = mClock.uptimeMillis();
 
         int eventCount = 0;
@@ -303,6 +323,11 @@ public class GroupCoalescer implements Dumpable {
         }
     }
 
+    @Override
+    public void dumpPipeline(@NonNull PipelineDumper d) {
+        d.dump("handler", mHandler);
+    }
+
     private final Comparator<CoalescedEvent> mEventComparator = (o1, o2) -> {
         int cmp = Boolean.compare(
                 o2.getSbn().getNotification().isGroupSummary(),
@@ -326,6 +351,6 @@ public class GroupCoalescer implements Dumpable {
         void onNotificationBatchPosted(List<CoalescedEvent> events);
     }
 
-    private static final int MIN_GROUP_LINGER_DURATION = 50;
+    private static final int MIN_GROUP_LINGER_DURATION = 200;
     private static final int MAX_GROUP_LINGER_DURATION = 500;
 }

@@ -17,13 +17,17 @@
 package android.view;
 
 import android.compat.annotation.UnsupportedAppUsage;
+import android.graphics.FrameInfo;
 import android.os.Build;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
+
 import dalvik.annotation.optimization.FastNative;
-import dalvik.system.CloseGuard;
+
+import libcore.util.NativeAllocationRegistry;
 
 import java.lang.ref.WeakReference;
 
@@ -42,7 +46,7 @@ public abstract class DisplayEventReceiver {
      * When retrieving vsync events, this specifies that the vsync event should happen at the normal
      * vsync-app tick.
      * <p>
-     * Needs to be kept in sync with frameworks/native/include/gui/ISurfaceComposer.h
+     * Keep in sync with frameworks/native/libs/gui/aidl/android/gui/ISurfaceComposer.aidl
      */
     public static final int VSYNC_SOURCE_APP = 0;
 
@@ -50,27 +54,25 @@ public abstract class DisplayEventReceiver {
      * When retrieving vsync events, this specifies that the vsync event should happen whenever
      * Surface Flinger is processing a frame.
      * <p>
-     * Needs to be kept in sync with frameworks/native/include/gui/ISurfaceComposer.h
+     * Keep in sync with frameworks/native/libs/gui/aidl/android/gui/ISurfaceComposer.aidl
      */
     public static final int VSYNC_SOURCE_SURFACE_FLINGER = 1;
 
     /**
-     * Specifies to suppress config changed events from being generated from Surface Flinger.
+     * Specifies to generate mode changed events from Surface Flinger.
      * <p>
-     * Needs to be kept in sync with frameworks/native/include/gui/ISurfaceComposer.h
+     * Keep in sync with frameworks/native/libs/gui/aidl/android/gui/ISurfaceComposer.aidl
      */
-    public static final int CONFIG_CHANGED_EVENT_SUPPRESS = 0;
+    public static final int EVENT_REGISTRATION_MODE_CHANGED_FLAG = 0x1;
 
     /**
-     * Specifies to generate config changed events from Surface Flinger.
+     * Specifies to generate frame rate override events from Surface Flinger.
      * <p>
-     * Needs to be kept in sync with frameworks/native/include/gui/ISurfaceComposer.h
+     * Keep in sync with frameworks/native/libs/gui/aidl/android/gui/ISurfaceComposer.aidl
      */
-    public static final int CONFIG_CHANGED_EVENT_DISPATCH = 1;
+    public static final int EVENT_REGISTRATION_FRAME_RATE_OVERRIDE_FLAG = 0x2;
 
     private static final String TAG = "DisplayEventReceiver";
-
-    private final CloseGuard mCloseGuard = CloseGuard.get();
 
     @UnsupportedAppUsage
     private long mReceiverPtr;
@@ -79,11 +81,21 @@ public abstract class DisplayEventReceiver {
     // GC'd while the native peer of the receiver is using them.
     private MessageQueue mMessageQueue;
 
+    private final VsyncEventData mVsyncEventData = new VsyncEventData();
+
     private static native long nativeInit(WeakReference<DisplayEventReceiver> receiver,
-            MessageQueue messageQueue, int vsyncSource, int configChanged);
-    private static native void nativeDispose(long receiverPtr);
+            WeakReference<VsyncEventData> vsyncEventData,
+            MessageQueue messageQueue, int vsyncSource, int eventRegistration, long layerHandle);
+    private static native long nativeGetDisplayEventReceiverFinalizer();
     @FastNative
     private static native void nativeScheduleVsync(long receiverPtr);
+    private static native VsyncEventData nativeGetLatestVsyncEventData(long receiverPtr);
+
+    private static final NativeAllocationRegistry sNativeAllocationRegistry =
+            NativeAllocationRegistry.createMalloced(
+                    DisplayEventReceiver.class.getClassLoader(),
+                    nativeGetDisplayEventReceiverFinalizer());
+    private Runnable mFreeNativeResources;
 
     /**
      * Creates a display event receiver.
@@ -92,7 +104,11 @@ public abstract class DisplayEventReceiver {
      */
     @UnsupportedAppUsage
     public DisplayEventReceiver(Looper looper) {
-        this(looper, VSYNC_SOURCE_APP, CONFIG_CHANGED_EVENT_SUPPRESS);
+        this(looper, VSYNC_SOURCE_APP, /* eventRegistration */ 0, /* layerHandle */ 0L);
+    }
+
+    public DisplayEventReceiver(Looper looper, int vsyncSource, int eventRegistration) {
+        this(looper, vsyncSource, eventRegistration, /* layerHandle */ 0L);
     }
 
     /**
@@ -100,50 +116,124 @@ public abstract class DisplayEventReceiver {
      *
      * @param looper The looper to use when invoking callbacks.
      * @param vsyncSource The source of the vsync tick. Must be on of the VSYNC_SOURCE_* values.
-     * @param configChanged Whether to dispatch config changed events. Must be one of the
-     * CONFIG_CHANGED_EVENT_* values.
+     * @param eventRegistration Which events to dispatch. Must be a bitfield consist of the
+     * EVENT_REGISTRATION_*_FLAG values.
+     * @param layerHandle Layer to which the current instance is attached to
      */
-    public DisplayEventReceiver(Looper looper, int vsyncSource, int configChanged) {
+    public DisplayEventReceiver(Looper looper, int vsyncSource, int eventRegistration,
+            long layerHandle) {
         if (looper == null) {
             throw new IllegalArgumentException("looper must not be null");
         }
 
         mMessageQueue = looper.getQueue();
-        mReceiverPtr = nativeInit(new WeakReference<DisplayEventReceiver>(this), mMessageQueue,
-                vsyncSource, configChanged);
-
-        mCloseGuard.open("dispose");
-    }
-
-    @Override
-    protected void finalize() throws Throwable {
-        try {
-            dispose(true);
-        } finally {
-            super.finalize();
-        }
+        mReceiverPtr = nativeInit(new WeakReference<DisplayEventReceiver>(this),
+                new WeakReference<VsyncEventData>(mVsyncEventData),
+                mMessageQueue,
+                vsyncSource, eventRegistration, layerHandle);
+        mFreeNativeResources = sNativeAllocationRegistry.registerNativeAllocation(this,
+                mReceiverPtr);
     }
 
     /**
      * Disposes the receiver.
      */
     public void dispose() {
-        dispose(false);
-    }
-
-    private void dispose(boolean finalized) {
-        if (mCloseGuard != null) {
-            if (finalized) {
-                mCloseGuard.warnIfOpen();
-            }
-            mCloseGuard.close();
-        }
-
         if (mReceiverPtr != 0) {
-            nativeDispose(mReceiverPtr);
+            mFreeNativeResources.run();
             mReceiverPtr = 0;
         }
         mMessageQueue = null;
+    }
+
+    /**
+     * Class to capture all inputs required for syncing events data.
+     *
+     * @hide
+     */
+    public static final class VsyncEventData {
+        // The max capacity of frame timeline choices.
+        // Must be in sync with VsyncEventData::kFrameTimelinesCapacity in
+        // frameworks/native/libs/gui/include/gui/VsyncEventData.h
+        static final int FRAME_TIMELINES_CAPACITY = 7;
+
+        public static class FrameTimeline {
+            FrameTimeline() {
+                // Some reasonable values (+10 ms) for default timestamps.
+                deadline = System.nanoTime() + 10_000_000;
+                expectedPresentationTime = deadline + 10_000_000;
+            }
+
+            // Called from native code.
+            @SuppressWarnings("unused")
+            FrameTimeline(long vsyncId, long expectedPresentationTime, long deadline) {
+                this.vsyncId = vsyncId;
+                this.expectedPresentationTime = expectedPresentationTime;
+                this.deadline = deadline;
+            }
+
+            void copyFrom(FrameTimeline other) {
+                vsyncId = other.vsyncId;
+                expectedPresentationTime = other.expectedPresentationTime;
+                deadline = other.deadline;
+            }
+
+            // The frame timeline vsync id, used to correlate a frame
+            // produced by HWUI with the timeline data stored in Surface Flinger.
+            public long vsyncId = FrameInfo.INVALID_VSYNC_ID;
+
+            // The frame timestamp for when the frame is expected to be presented.
+            public long expectedPresentationTime;
+
+            // The frame deadline timestamp in {@link System#nanoTime()} timebase that it is
+            // allotted for the frame to be completed.
+            public long deadline;
+        }
+
+        /**
+         * The current interval between frames in ns. This will be used to align
+         * {@link FrameInfo#VSYNC} to the current vsync in case Choreographer callback was heavily
+         * delayed by the app.
+         */
+        public long frameInterval = -1;
+
+        public final FrameTimeline[] frameTimelines;
+
+        public int preferredFrameTimelineIndex = 0;
+
+        // The default FrameTimeline is a placeholder populated with invalid vsync ID and some
+        // reasonable timestamps.
+        public int frameTimelinesLength = 1;
+
+        VsyncEventData() {
+            frameTimelines = new FrameTimeline[FRAME_TIMELINES_CAPACITY];
+            for (int i = 0; i < frameTimelines.length; i++) {
+                frameTimelines[i] = new FrameTimeline();
+            }
+        }
+
+        // Called from native code.
+        @SuppressWarnings("unused")
+        VsyncEventData(FrameTimeline[] frameTimelines, int preferredFrameTimelineIndex,
+                int frameTimelinesLength, long frameInterval) {
+            this.frameTimelines = frameTimelines;
+            this.preferredFrameTimelineIndex = preferredFrameTimelineIndex;
+            this.frameTimelinesLength = frameTimelinesLength;
+            this.frameInterval = frameInterval;
+        }
+
+        void copyFrom(VsyncEventData other) {
+            preferredFrameTimelineIndex = other.preferredFrameTimelineIndex;
+            frameTimelinesLength = other.frameTimelinesLength;
+            frameInterval = other.frameInterval;
+            for (int i = 0; i < frameTimelines.length; i++) {
+                frameTimelines[i].copyFrom(other.frameTimelines[i]);
+            }
+        }
+
+        public FrameTimeline preferredFrameTimeline() {
+            return frameTimelines[preferredFrameTimelineIndex];
+        }
     }
 
     /**
@@ -155,9 +245,10 @@ public abstract class DisplayEventReceiver {
      * timebase.
      * @param physicalDisplayId Stable display ID that uniquely describes a (display, port) pair.
      * @param frame The frame number.  Increases by one for each vertical sync interval.
+     * @param vsyncEventData The vsync event data.
      */
-    @UnsupportedAppUsage
-    public void onVsync(long timestampNanos, long physicalDisplayId, int frame) {
+    public void onVsync(long timestampNanos, long physicalDisplayId, int frame,
+            VsyncEventData vsyncEventData) {
     }
 
     /**
@@ -173,14 +264,51 @@ public abstract class DisplayEventReceiver {
     }
 
     /**
-     * Called when a display config changed event is received.
+     * Called when a display mode changed event is received.
      *
      * @param timestampNanos The timestamp of the event, in the {@link System#nanoTime()}
      * timebase.
      * @param physicalDisplayId Stable display ID that uniquely describes a (display, port) pair.
-     * @param configId The new config Id
+     * @param modeId The new mode Id
+     * @param renderPeriod The render frame period, which is a multiple of the mode's vsync period
      */
-    public void onConfigChanged(long timestampNanos, long physicalDisplayId, int configId) {
+    public void onModeChanged(long timestampNanos, long physicalDisplayId, int modeId,
+            long renderPeriod) {
+    }
+
+    /**
+     * Represents a mapping between a UID and an override frame rate
+     */
+    public static class FrameRateOverride {
+        // The application uid
+        public final int uid;
+
+        // The frame rate that this application runs at
+        public final float frameRateHz;
+
+
+        @VisibleForTesting
+        public FrameRateOverride(int uid, float frameRateHz) {
+            this.uid = uid;
+            this.frameRateHz = frameRateHz;
+        }
+
+        @Override
+        public String toString() {
+            return "{uid=" + uid + " frameRateHz=" + frameRateHz + "}";
+        }
+    }
+
+    /**
+     * Called when frame rate override event is received.
+     *
+     * @param timestampNanos The timestamp of the event, in the {@link System#nanoTime()}
+     * timebase.
+     * @param physicalDisplayId Stable display ID that uniquely describes a (display, port) pair.
+     * @param overrides The mappings from uid to frame rates
+     */
+    public void onFrameRateOverridesChanged(long timestampNanos, long physicalDisplayId,
+            FrameRateOverride[] overrides) {
     }
 
     /**
@@ -197,11 +325,17 @@ public abstract class DisplayEventReceiver {
         }
     }
 
+    /**
+     * Gets the latest vsync event data from surface flinger.
+     */
+    VsyncEventData getLatestVsyncEventData() {
+        return nativeGetLatestVsyncEventData(mReceiverPtr);
+    }
+
     // Called from native code.
     @SuppressWarnings("unused")
-    @UnsupportedAppUsage
     private void dispatchVsync(long timestampNanos, long physicalDisplayId, int frame) {
-        onVsync(timestampNanos, physicalDisplayId, frame);
+        onVsync(timestampNanos, physicalDisplayId, frame, mVsyncEventData);
     }
 
     // Called from native code.
@@ -213,8 +347,16 @@ public abstract class DisplayEventReceiver {
 
     // Called from native code.
     @SuppressWarnings("unused")
-    private void dispatchConfigChanged(long timestampNanos, long physicalDisplayId, int configId) {
-        onConfigChanged(timestampNanos, physicalDisplayId, configId);
+    private void dispatchModeChanged(long timestampNanos, long physicalDisplayId, int modeId,
+            long renderPeriod) {
+        onModeChanged(timestampNanos, physicalDisplayId, modeId, renderPeriod);
+    }
+
+    // Called from native code.
+    @SuppressWarnings("unused")
+    private void dispatchFrameRateOverrides(long timestampNanos, long physicalDisplayId,
+            FrameRateOverride[] overrides) {
+        onFrameRateOverridesChanged(timestampNanos, physicalDisplayId, overrides);
     }
 
 }

@@ -31,5 +31,9 @@ android_test {
     ],
     platform_apis: true,
     test_suites: ["device-tests"],
+    data: [
+        ":MultiUserPerfDummyApp",
+        "trace_configs/*",
+    ],
     certificate: "platform",
 }

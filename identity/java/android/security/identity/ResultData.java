@@ -28,7 +28,10 @@ import java.util.Collection;
 /**
  * An object that contains the result of retrieving data from a credential. This is used to return
  * data requested from a {@link IdentityCredential}.
+ *
+ * @deprecated Use {@link PresentationSession} instead.
  */
+@Deprecated
 public abstract class ResultData {
 
     /** Value was successfully retrieved. */
@@ -130,6 +133,10 @@ public abstract class ResultData {
      *         or {@code null} if the conditions specified above are not met.
      */
     public abstract @Nullable byte[] getMessageAuthenticationCode();
+
+    @Nullable byte[] getSignature() {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * Returns the static authentication data associated with the dynamic authentication

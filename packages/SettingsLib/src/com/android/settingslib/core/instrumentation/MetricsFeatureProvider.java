@@ -96,9 +96,37 @@ public class MetricsFeatureProvider {
     }
 
     /**
-     * Logs a simple action without page id or attribution
+     * Logs an event when user click item.
+     *
+     * @param category the target page id
+     * @param key the key id that user clicked
      */
-    public void action(Context context, int category,  Pair<Integer, Object>... taggedData) {
+    public void clicked(int category, String key) {
+        for (LogWriter writer : mLoggerWriters) {
+            writer.clicked(category, key);
+        }
+    }
+
+    /**
+     * Logs a value changed event when user changed item value.
+     *
+     * @param category the target page id
+     * @param key the key id that user clicked
+     * @param value the value that user changed which converted to integer
+     */
+    public void changed(int category, String key, int value) {
+        for (LogWriter writer : mLoggerWriters) {
+            writer.changed(category, key, value);
+        }
+    }
+
+    /**
+     * Logs a simple action without page id or attribution
+     *
+     * @param category the target page
+     * @param taggedData the data for {@link EventLogWriter}
+     */
+    public void action(Context context, int category, Pair<Integer, Object>... taggedData) {
         for (LogWriter writer : mLoggerWriters) {
             writer.action(context, category, taggedData);
         }
@@ -135,7 +163,7 @@ public class MetricsFeatureProvider {
     }
 
     public int getMetricsCategory(Object object) {
-        if (object == null || !(object instanceof Instrumentable)) {
+        if (!(object instanceof Instrumentable)) {
             return MetricsEvent.VIEW_UNKNOWN;
         }
         return ((Instrumentable) object).getMetricsCategory();
@@ -181,8 +209,7 @@ public class MetricsFeatureProvider {
         }
         final ComponentName cn = intent.getComponent();
         final String key = cn != null ? cn.flattenToString() : intent.getAction();
-        return logSettingsTileClick(key + (isWorkProfile ? "/work" : "/personal"),
-                sourceMetricsCategory);
+        return logSettingsTileClickWithProfile(key, sourceMetricsCategory, isWorkProfile);
     }
 
     /**
@@ -195,11 +222,23 @@ public class MetricsFeatureProvider {
             // Not loggable
             return false;
         }
-        action(sourceMetricsCategory,
-                MetricsEvent.ACTION_SETTINGS_TILE_CLICK,
-                SettingsEnums.PAGE_UNKNOWN,
-                logKey,
-                0);
+        clicked(sourceMetricsCategory, logKey);
+        return true;
+    }
+
+    /**
+     * Logs an event when the setting key is clicked with a specific profile from Profile select
+     * dialog.
+     *
+     * @return true if the key is loggable, otherwise false
+     */
+    public boolean logSettingsTileClickWithProfile(String logKey, int sourceMetricsCategory,
+            boolean isWorkProfile) {
+        if (TextUtils.isEmpty(logKey)) {
+            // Not loggable
+            return false;
+        }
+        clicked(sourceMetricsCategory, logKey + (isWorkProfile ? "/work" : "/personal"));
         return true;
     }
 }

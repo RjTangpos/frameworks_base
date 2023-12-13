@@ -27,6 +27,7 @@ import android.service.controls.IControlsSubscription
 import android.testing.AndroidTestingRunner
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.settings.UserTracker
 import com.android.systemui.util.concurrency.DelayableExecutor
 import com.android.systemui.util.concurrency.FakeExecutor
 import com.android.systemui.util.time.FakeSystemClock
@@ -40,11 +41,11 @@ import org.mockito.ArgumentCaptor
 import org.mockito.Captor
 import org.mockito.Mock
 import org.mockito.Mockito
-import org.mockito.Mockito.`when`
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.`when`
 import org.mockito.MockitoAnnotations
 
 @SmallTest
@@ -61,6 +62,8 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
 
     @Mock
     private lateinit var mockControlsController: ControlsController
+    @Mock(stubOnly = true)
+    private lateinit var mockUserTracker: UserTracker
 
     @Captor
     private lateinit var subscriberCaptor: ArgumentCaptor<IControlsSubscriber.Stub>
@@ -82,9 +85,10 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
     fun setUp() {
         MockitoAnnotations.initMocks(this)
         providers.clear()
+        `when`(mockUserTracker.userHandle).thenReturn(user)
 
         controller = TestableControlsBindingControllerImpl(
-                mContext, executor, Lazy { mockControlsController })
+                mContext, executor, Lazy { mockControlsController }, mockUserTracker)
     }
 
     @After
@@ -112,11 +116,7 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
 
     @Test
     fun testBindAndLoad_cancel() {
-        val callback = object : ControlsBindingController.LoadCallback {
-            override fun error(message: String) {}
-
-            override fun accept(t: List<Control>) {}
-        }
+        val callback = mock(ControlsBindingController.LoadCallback::class.java)
         val subscription = mock(IControlsSubscription::class.java)
 
         val canceller = controller.bindAndLoad(TEST_COMPONENT_NAME_1, callback)
@@ -126,6 +126,7 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
 
         canceller.run()
         verify(providers[0]).cancelSubscription(subscription)
+        verify(callback).error(any())
     }
 
     @Test
@@ -265,6 +266,14 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
     }
 
     @Test
+    fun testBindServiceForPanel() {
+        controller.bindServiceForPanel(TEST_COMPONENT_NAME_1)
+        executor.runAllReady()
+
+        verify(providers[0]).bindServiceForPanel()
+    }
+
+    @Test
     fun testSubscribe() {
         val controlInfo1 = ControlInfo("id_1", "", "", DeviceTypes.TYPE_UNKNOWN)
         val controlInfo2 = ControlInfo("id_2", "", "", DeviceTypes.TYPE_UNKNOWN)
@@ -364,8 +373,15 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
 class TestableControlsBindingControllerImpl(
     context: Context,
     executor: DelayableExecutor,
-    lazyController: Lazy<ControlsController>
-) : ControlsBindingControllerImpl(context, executor, lazyController) {
+    lazyController: Lazy<ControlsController>,
+    userTracker: UserTracker
+) : ControlsBindingControllerImpl(
+    context,
+    executor,
+    lazyController,
+    mock(PackageUpdateMonitor.Factory::class.java),
+    userTracker
+) {
 
     companion object {
         val providers = mutableListOf<ControlsProviderLifecycleManager>()

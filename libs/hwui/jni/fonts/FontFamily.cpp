@@ -30,7 +30,7 @@
 namespace android {
 
 struct NativeFamilyBuilder {
-    std::vector<minikin::Font> fonts;
+    std::vector<std::shared_ptr<minikin::Font>> fonts;
 };
 
 static inline NativeFamilyBuilder* toBuilder(jlong ptr) {
@@ -57,7 +57,8 @@ static void FontFamily_Builder_addFont(CRITICAL_JNI_PARAMS_COMMA jlong builderPt
 
 // Regular JNI
 static jlong FontFamily_Builder_build(JNIEnv* env, jobject clazz, jlong builderPtr,
-            jstring langTags, jint variant, jboolean isCustomFallback) {
+                                      jstring langTags, jint variant, jboolean isCustomFallback,
+                                      jboolean isDefaultFallback) {
     std::unique_ptr<NativeFamilyBuilder> builder(toBuilder(builderPtr));
     uint32_t localeId;
     if (langTags == nullptr) {
@@ -66,9 +67,9 @@ static jlong FontFamily_Builder_build(JNIEnv* env, jobject clazz, jlong builderP
         ScopedUtfChars str(env, langTags);
         localeId = minikin::registerLocaleList(str.c_str());
     }
-    std::shared_ptr<minikin::FontFamily> family = std::make_shared<minikin::FontFamily>(
+    std::shared_ptr<minikin::FontFamily> family = minikin::FontFamily::create(
             localeId, static_cast<minikin::FamilyVariant>(variant), std::move(builder->fonts),
-            isCustomFallback);
+            isCustomFallback, isDefaultFallback);
     if (family->getCoverage().length() == 0) {
         // No coverage means minikin rejected given font for some reasons.
         jniThrowException(env, "java/lang/IllegalArgumentException",
@@ -83,19 +84,57 @@ static jlong FontFamily_Builder_GetReleaseFunc(CRITICAL_JNI_PARAMS) {
     return reinterpret_cast<jlong>(releaseFontFamily);
 }
 
+// FastNative
+static jstring FontFamily_getLangTags(JNIEnv* env, jobject, jlong familyPtr) {
+    FontFamilyWrapper* family = reinterpret_cast<FontFamilyWrapper*>(familyPtr);
+    uint32_t localeListId = family->family->localeListId();
+    if (localeListId == 0) {
+        return nullptr;
+    }
+    std::string langTags = minikin::getLocaleString(localeListId);
+    return env->NewStringUTF(langTags.c_str());
+}
+
+// CriticalNative
+static jint FontFamily_getVariant(CRITICAL_JNI_PARAMS_COMMA jlong familyPtr) {
+    FontFamilyWrapper* family = reinterpret_cast<FontFamilyWrapper*>(familyPtr);
+    return static_cast<jint>(family->family->variant());
+}
+
+// CriticalNative
+static jint FontFamily_getFontSize(CRITICAL_JNI_PARAMS_COMMA jlong familyPtr) {
+    FontFamilyWrapper* family = reinterpret_cast<FontFamilyWrapper*>(familyPtr);
+    return family->family->getNumFonts();
+}
+
+// CriticalNative
+static jlong FontFamily_getFont(CRITICAL_JNI_PARAMS_COMMA jlong familyPtr, jint index) {
+    FontFamilyWrapper* family = reinterpret_cast<FontFamilyWrapper*>(familyPtr);
+    std::shared_ptr<minikin::Font> font = family->family->getFontRef(index);
+    return reinterpret_cast<jlong>(new FontWrapper(std::move(font)));
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 static const JNINativeMethod gFontFamilyBuilderMethods[] = {
-    { "nInitBuilder", "()J", (void*) FontFamily_Builder_initBuilder },
-    { "nAddFont", "(JJ)V", (void*) FontFamily_Builder_addFont },
-    { "nBuild", "(JLjava/lang/String;IZ)J", (void*) FontFamily_Builder_build },
+        {"nInitBuilder", "()J", (void*)FontFamily_Builder_initBuilder},
+        {"nAddFont", "(JJ)V", (void*)FontFamily_Builder_addFont},
+        {"nBuild", "(JLjava/lang/String;IZZ)J", (void*)FontFamily_Builder_build},
+        {"nGetReleaseNativeFamily", "()J", (void*)FontFamily_Builder_GetReleaseFunc},
+};
 
-    { "nGetReleaseNativeFamily", "()J", (void*) FontFamily_Builder_GetReleaseFunc },
+static const JNINativeMethod gFontFamilyMethods[] = {
+        {"nGetFontSize", "(J)I", (void*)FontFamily_getFontSize},
+        {"nGetFont", "(JI)J", (void*)FontFamily_getFont},
+        {"nGetLangTags", "(J)Ljava/lang/String;", (void*)FontFamily_getLangTags},
+        {"nGetVariant", "(J)I", (void*)FontFamily_getVariant},
 };
 
 int register_android_graphics_fonts_FontFamily(JNIEnv* env) {
     return RegisterMethodsOrDie(env, "android/graphics/fonts/FontFamily$Builder",
-            gFontFamilyBuilderMethods, NELEM(gFontFamilyBuilderMethods));
+                                gFontFamilyBuilderMethods, NELEM(gFontFamilyBuilderMethods)) +
+           RegisterMethodsOrDie(env, "android/graphics/fonts/FontFamily", gFontFamilyMethods,
+                                NELEM(gFontFamilyMethods));
 }
 
 }

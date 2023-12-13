@@ -17,6 +17,7 @@
 package com.android.systemui.statusbar.notification.collection.listbuilder.pluggable;
 
 import android.annotation.Nullable;
+import android.os.Trace;
 
 import com.android.systemui.statusbar.notification.collection.NotifPipeline;
 
@@ -48,16 +49,26 @@ public abstract class Pluggable<This> {
      * Call this method when something has caused this pluggable's behavior to change. The pipeline
      * will be re-run.
      */
-    public final void invalidateList() {
+    public final void invalidateList(@Nullable String reason) {
         if (mListener != null) {
-            mListener.onPluggableInvalidated((This) this);
+            if (Trace.isEnabled()) {
+                Trace.traceBegin(Trace.TRACE_TAG_APP, "Pluggable<" + mName + ">.invalidateList");
+            }
+            mListener.onPluggableInvalidated((This) this, reason);
+            Trace.endSection();
         }
     }
 
     /** Set a listener to be notified when a pluggable is invalidated. */
-    public void setInvalidationListener(PluggableListener<This> listener) {
+    public final void setInvalidationListener(PluggableListener<This> listener) {
         mListener = listener;
     }
+
+    /**
+     * Called on the pluggable once at the end of every pipeline run. Override this method to
+     * perform any necessary cleanup.
+     */
+    public void onCleanup() { }
 
     /**
      * Listener interface for when pluggables are invalidated.
@@ -65,7 +76,7 @@ public abstract class Pluggable<This> {
      * @param <T> The type of pluggable that is being listened to.
      */
     public interface PluggableListener<T> {
-        /** Called whenever {@link #invalidateList()} is called on this pluggable. */
-        void onPluggableInvalidated(T pluggable);
+        /** Called whenever {@link #invalidateList(String)} is called on this pluggable. */
+        void onPluggableInvalidated(T pluggable, @Nullable String reason);
     }
 }

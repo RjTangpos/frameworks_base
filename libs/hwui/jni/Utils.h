@@ -17,7 +17,10 @@
 #ifndef _ANDROID_GRAPHICS_UTILS_H_
 #define _ANDROID_GRAPHICS_UTILS_H_
 
+#include "SkRefCnt.h"
 #include "SkStream.h"
+
+class SkData;
 
 #include <jni.h>
 #include <androidfw/Asset.h>
@@ -46,12 +49,11 @@ private:
 };
 
 /**
- *  Make a deep copy of the asset, and return it as a stream, or NULL if there
+ *  Make a deep copy of the asset, and return it as an SkData, or NULL if there
  *  was an error.
- *  FIXME: If we could "ref/reopen" the asset, we may not need to copy it here.
  */
 
-SkMemoryStream* CopyAssetToStream(Asset*);
+sk_sp<SkData> CopyAssetToData(Asset*);
 
 /** Restore the file descriptor's offset in our destructor
  */

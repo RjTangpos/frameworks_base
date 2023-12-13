@@ -16,8 +16,11 @@
 
 package com.android.systemui.statusbar.notification.collection;
 
+import static com.android.systemui.statusbar.notification.NotificationUtils.logKey;
 import static com.android.systemui.statusbar.notification.collection.NotifCollection.REASON_NOT_CANCELED;
 import static com.android.systemui.statusbar.notification.collection.NotificationEntry.DismissState.NOT_DISMISSED;
+
+import static java.util.Objects.requireNonNull;
 
 import com.android.systemui.statusbar.NotificationInteractionTracker;
 
@@ -50,18 +53,29 @@ public class ListDumper {
                     sb,
                     true,
                     includeRecordKeeping,
-                    interactionTracker.hasUserInteractedWith(entry.getKey()));
+                    interactionTracker.hasUserInteractedWith(logKey(entry)));
             if (entry instanceof GroupEntry) {
                 GroupEntry ge = (GroupEntry) entry;
-                List<NotificationEntry> children = ge.getChildren();
-                for (int childIndex = 0;  childIndex < children.size(); childIndex++) {
-                    dumpEntry(children.get(childIndex),
-                            Integer.toString(topEntryIndex) + "." + Integer.toString(childIndex),
+                NotificationEntry summary = ge.getSummary();
+                if (summary != null) {
+                    dumpEntry(summary,
+                            topEntryIndex + ":*",
                             childEntryIndent,
                             sb,
                             true,
                             includeRecordKeeping,
-                            interactionTracker.hasUserInteractedWith(entry.getKey()));
+                            interactionTracker.hasUserInteractedWith(logKey(summary)));
+                }
+                List<NotificationEntry> children = ge.getChildren();
+                for (int childIndex = 0;  childIndex < children.size(); childIndex++) {
+                    NotificationEntry child = children.get(childIndex);
+                    dumpEntry(child,
+                            topEntryIndex + "." + childIndex,
+                            childEntryIndent,
+                            sb,
+                            true,
+                            includeRecordKeeping,
+                            interactionTracker.hasUserInteractedWith(logKey(child)));
                 }
             }
         }
@@ -102,23 +116,28 @@ public class ListDumper {
     ) {
         sb.append(indent)
                 .append("[").append(index).append("] ")
-                .append(entry.getKey());
+                .append(index.length() == 1 ? " " : "")
+                .append(logKey(entry));
 
         if (includeParent) {
             sb.append(" (parent=")
-                    .append(entry.getParent() != null ? entry.getParent().getKey() : null)
+                    .append(logKey(entry.getParent()))
                     .append(")");
+
+            NotificationEntry notifEntry = entry.getRepresentativeEntry();
+            if (notifEntry != null) {
+                sb.append(" rank=")
+                        .append(notifEntry.getRanking().getRank());
+            }
         }
 
-        if (entry.getNotifSection() != null) {
-            sb.append(" sectionIndex=")
-                    .append(entry.getSection())
-                    .append(" sectionName=")
-                    .append(entry.getNotifSection().getName());
+        if (entry.getSection() != null) {
+            sb.append(" section=")
+                    .append(entry.getSection().getLabel());
         }
 
         if (includeRecordKeeping) {
-            NotificationEntry notifEntry = entry.getRepresentativeEntry();
+            NotificationEntry notifEntry = requireNonNull(entry.getRepresentativeEntry());
             StringBuilder rksb = new StringBuilder();
 
             if (!notifEntry.mLifetimeExtenders.isEmpty()) {
@@ -165,7 +184,23 @@ public class ListDumper {
                         .append(" ");
             }
 
-            rksb.append("interacted=").append(hasBeenInteractedWith ? "yes" : "no").append(" ");
+            if (notifEntry.getAttachState().getSuppressedChanges().getParent() != null) {
+                rksb.append("suppressedParent=")
+                        .append(logKey(notifEntry.getAttachState().getSuppressedChanges()
+                                .getParent()))
+                        .append(" ");
+            }
+
+            if (notifEntry.getAttachState().getSuppressedChanges().getSection() != null) {
+                rksb.append("suppressedSection=")
+                        .append(notifEntry.getAttachState().getSuppressedChanges()
+                                .getSection().getLabel())
+                        .append(" ");
+            }
+
+            if (hasBeenInteractedWith) {
+                rksb.append("interacted=yes ");
+            }
 
             String rkString = rksb.toString();
             if (!rkString.isEmpty()) {

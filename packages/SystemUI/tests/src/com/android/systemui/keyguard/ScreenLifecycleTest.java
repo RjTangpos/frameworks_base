@@ -26,6 +26,7 @@ import android.testing.AndroidTestingRunner;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.dump.DumpManager;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -43,7 +44,7 @@ public class ScreenLifecycleTest extends SysuiTestCase {
 
     @Before
     public void setUp() throws Exception {
-        mScreen = new ScreenLifecycle();
+        mScreen = new ScreenLifecycle(mock(DumpManager.class));
         mScreenObserverMock = mock(ScreenLifecycle.Observer.class);
         mScreen.addObserver(mScreenObserverMock);
     }
@@ -56,6 +57,7 @@ public class ScreenLifecycleTest extends SysuiTestCase {
 
     @Test
     public void screenTurningOn() throws Exception {
+        Runnable onDrawn = () -> {};
         mScreen.dispatchScreenTurningOn();
 
         assertEquals(ScreenLifecycle.SCREEN_TURNING_ON, mScreen.getScreenState());
@@ -94,6 +96,6 @@ public class ScreenLifecycleTest extends SysuiTestCase {
 
     @Test
     public void dump() throws Exception {
-        mScreen.dump(null, new PrintWriter(new ByteArrayOutputStream()), new String[0]);
+        mScreen.dump(new PrintWriter(new ByteArrayOutputStream()), new String[0]);
     }
 }

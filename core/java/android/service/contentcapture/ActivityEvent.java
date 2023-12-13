@@ -19,6 +19,7 @@ package android.service.contentcapture;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
+import android.app.assist.ActivityId;
 import android.app.usage.UsageEvents.Event;
 import android.content.ComponentName;
 import android.os.Parcel;
@@ -55,23 +56,47 @@ public final class ActivityEvent implements Parcelable {
      */
     public static final int TYPE_ACTIVITY_DESTROYED = Event.ACTIVITY_DESTROYED;
 
+    /**
+     * TODO: change to public field.
+     * The activity was started.
+     *
+     * <p>There are some reason, ACTIVITY_START cannot be added into UsageStats. We don't depend on
+     * UsageEvents for Activity start.
+     * </p>
+     *
+     * @hide
+     */
+    public static final int TYPE_ACTIVITY_STARTED = 10000;
+
     /** @hide */
     @IntDef(prefix = { "TYPE_" }, value = {
             TYPE_ACTIVITY_RESUMED,
             TYPE_ACTIVITY_PAUSED,
             TYPE_ACTIVITY_STOPPED,
-            TYPE_ACTIVITY_DESTROYED
+            TYPE_ACTIVITY_DESTROYED,
+            TYPE_ACTIVITY_STARTED
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ActivityEventType{}
 
     private final @NonNull ComponentName mComponentName;
     private final @ActivityEventType int mType;
+    private final @NonNull ActivityId mActivityId;
 
     /** @hide */
-    public ActivityEvent(@NonNull ComponentName componentName, @ActivityEventType int type) {
+    public ActivityEvent(@NonNull ActivityId activityId,
+            @NonNull ComponentName componentName, @ActivityEventType int type) {
+        mActivityId = activityId;
         mComponentName = componentName;
         mType = type;
+    }
+
+    /**
+     * Gets the ActivityId of the activity associated with the event.
+     */
+    @NonNull
+    public ActivityId getActivityId() {
+        return mActivityId;
     }
 
     /**
@@ -86,7 +111,8 @@ public final class ActivityEvent implements Parcelable {
      * Gets the event type.
      *
      * @return either {@link #TYPE_ACTIVITY_RESUMED}, {@value #TYPE_ACTIVITY_PAUSED},
-     * {@value #TYPE_ACTIVITY_STOPPED}, or {@value #TYPE_ACTIVITY_DESTROYED}.
+     * {@value #TYPE_ACTIVITY_STOPPED}, {@value #TYPE_ACTIVITY_DESTROYED} or 10000 if the Activity
+     * was started.
      */
     @ActivityEventType
     public int getEventType() {
@@ -104,6 +130,8 @@ public final class ActivityEvent implements Parcelable {
                 return "ACTIVITY_STOPPED";
             case TYPE_ACTIVITY_DESTROYED:
                 return "ACTIVITY_DESTROYED";
+            case TYPE_ACTIVITY_STARTED:
+                return "ACTIVITY_STARTED";
             default:
                 return "UKNOWN_TYPE: " + type;
         }
@@ -113,6 +141,7 @@ public final class ActivityEvent implements Parcelable {
     @Override
     public String toString() {
         return new StringBuilder("ActivityEvent[").append(mComponentName.toShortString())
+                .append(", ActivityId: ").append(mActivityId)
                 .append("]:").append(getTypeAsString(mType)).toString();
     }
 
@@ -125,6 +154,7 @@ public final class ActivityEvent implements Parcelable {
     public void writeToParcel(@NonNull Parcel parcel, int flags) {
         parcel.writeParcelable(mComponentName, flags);
         parcel.writeInt(mType);
+        parcel.writeParcelable(mActivityId, flags);
     }
 
     public static final @android.annotation.NonNull Creator<ActivityEvent> CREATOR =
@@ -133,9 +163,12 @@ public final class ActivityEvent implements Parcelable {
         @Override
         @NonNull
         public ActivityEvent createFromParcel(@NonNull Parcel parcel) {
-            final ComponentName componentName = parcel.readParcelable(null);
+            final ComponentName componentName =
+                    parcel.readParcelable(null, ComponentName.class);
             final int eventType = parcel.readInt();
-            return new ActivityEvent(componentName, eventType);
+            final ActivityId activityId =
+                    parcel.readParcelable(null, ActivityId.class);
+            return new ActivityEvent(activityId, componentName, eventType);
         }
 
         @Override

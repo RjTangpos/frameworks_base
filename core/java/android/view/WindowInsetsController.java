@@ -21,8 +21,8 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.graphics.Insets;
 import android.inputmethodservice.InputMethodService;
+import android.os.Build;
 import android.os.CancellationSignal;
-import android.view.InsetsState.InternalInsetsType;
 import android.view.WindowInsets.Type;
 import android.view.WindowInsets.Type.InsetsType;
 import android.view.animation.Interpolator;
@@ -32,7 +32,6 @@ import java.lang.annotation.RetentionPolicy;
 
 /**
  * Interface to control windows that generate insets.
- *
  */
 public interface WindowInsetsController {
 
@@ -67,23 +66,53 @@ public interface WindowInsetsController {
     int APPEARANCE_LIGHT_NAVIGATION_BARS = 1 << 4;
 
     /**
+     * Makes status bars semi-transparent with dark background and light foreground.
+     * @hide
+     */
+    int APPEARANCE_SEMI_TRANSPARENT_STATUS_BARS = 1 << 5;
+
+    /**
+     * Makes navigation bars semi-transparent with dark background and light foreground.
+     * @hide
+     */
+    int APPEARANCE_SEMI_TRANSPARENT_NAVIGATION_BARS = 1 << 6;
+
+    /**
      * Determines the appearance of system bars.
      * @hide
      */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(flag = true, value = {APPEARANCE_OPAQUE_STATUS_BARS, APPEARANCE_OPAQUE_NAVIGATION_BARS,
             APPEARANCE_LOW_PROFILE_BARS, APPEARANCE_LIGHT_STATUS_BARS,
-            APPEARANCE_LIGHT_NAVIGATION_BARS})
+            APPEARANCE_LIGHT_NAVIGATION_BARS, APPEARANCE_SEMI_TRANSPARENT_STATUS_BARS,
+            APPEARANCE_SEMI_TRANSPARENT_NAVIGATION_BARS})
     @interface Appearance {
     }
 
     /**
-     * The default option for {@link #setSystemBarsBehavior(int)}. System bars will be forcibly
-     * shown on any user interaction on the corresponding display if navigation bars are hidden by
+     * Option for {@link #setSystemBarsBehavior(int)}. System bars will be forcibly shown on any
+     * user interaction on the corresponding display if navigation bars are hidden by
      * {@link #hide(int)} or
      * {@link WindowInsetsAnimationController#setInsetsAndAlpha(Insets, float, float)}.
+     * @deprecated This is not supported on Android {@link Build.VERSION_CODES#S} and later. Use
+     *             {@link #BEHAVIOR_DEFAULT} or {@link #BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE}
+     *             instead.
      */
+    @Deprecated
     int BEHAVIOR_SHOW_BARS_BY_TOUCH = 0;
+
+    /**
+     * The default option for {@link #setSystemBarsBehavior(int)}: Window would like to remain
+     * interactive when hiding navigation bars by calling {@link #hide(int)} or
+     * {@link WindowInsetsAnimationController#setInsetsAndAlpha(Insets, float, float)}.
+     *
+     * <p>When system bars are hidden in this mode, they can be revealed with system gestures, such
+     * as swiping from the edge of the screen where the bar is hidden from.</p>
+     *
+     * <p>When the gesture navigation is enabled, the system gestures can be triggered regardless
+     * the visibility of system bars.</p>
+     */
+    int BEHAVIOR_DEFAULT = 1;
 
     /**
      * Option for {@link #setSystemBarsBehavior(int)}: Window would like to remain interactive when
@@ -92,8 +121,10 @@ public interface WindowInsetsController {
      *
      * <p>When system bars are hidden in this mode, they can be revealed with system gestures, such
      * as swiping from the edge of the screen where the bar is hidden from.</p>
+     * @deprecated Use {@link #BEHAVIOR_DEFAULT} instead.
      */
-    int BEHAVIOR_SHOW_BARS_BY_SWIPE = 1;
+    @Deprecated
+    int BEHAVIOR_SHOW_BARS_BY_SWIPE = BEHAVIOR_DEFAULT;
 
     /**
      * Option for {@link #setSystemBarsBehavior(int)}: Window would like to remain interactive when
@@ -112,8 +143,7 @@ public interface WindowInsetsController {
      * @hide
      */
     @Retention(RetentionPolicy.SOURCE)
-    @IntDef(value = {BEHAVIOR_SHOW_BARS_BY_TOUCH, BEHAVIOR_SHOW_BARS_BY_SWIPE,
-            BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE})
+    @IntDef(value = {BEHAVIOR_DEFAULT, BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE})
     @interface Behavior {
     }
 
@@ -124,7 +154,7 @@ public interface WindowInsetsController {
      * change as soon as the window gains control. The app can listen to the event by observing
      * {@link View#onApplyWindowInsets} and checking visibility with {@link WindowInsets#isVisible}.
      *
-     * @param types A bitmask of {@link InsetsType} specifying what windows the app
+     * @param types A bitmask of {@link WindowInsets.Type} specifying what windows the app
      *              would like to make appear on screen.
      */
     void show(@InsetsType int types);
@@ -136,7 +166,7 @@ public interface WindowInsetsController {
      * change as soon as the window gains control. The app can listen to the event by observing
      * {@link View#onApplyWindowInsets} and checking visibility with {@link WindowInsets#isVisible}.
      *
-     * @param types A bitmask of {@link InsetsType} specifying what windows the app
+     * @param types A bitmask of {@link WindowInsets.Type} specifying what windows the app
      *              would like to make disappear.
      */
     void hide(@InsetsType int types);
@@ -145,7 +175,7 @@ public interface WindowInsetsController {
      * Lets the application control window inset animations in a frame-by-frame manner by modifying
      * the position of the windows in the system causing insets directly.
      *
-     * @param types The {@link InsetsType}s the application has requested to control.
+     * @param types The {@link WindowInsets.Type}s the application has requested to control.
      * @param durationMillis Duration of animation in
      *                       {@link java.util.concurrent.TimeUnit#MILLISECONDS}, or -1 if the
      *                       animation doesn't have a predetermined duration. This value will be
@@ -170,6 +200,21 @@ public interface WindowInsetsController {
             @NonNull WindowInsetsAnimationControlListener listener);
 
     /**
+     * Lets the application add non-controllable listener object that can be called back
+     * when animation is invoked by the system by host calling methods such as {@link #show} or
+     * {@link #hide}.
+     *
+     * The listener is supposed to be used for logging only, using the control or
+     * relying on the timing of the callback in any other way is not supported.
+     *
+     * @param listener The {@link WindowInsetsAnimationControlListener} that gets called when
+     *                 the animation is driven by the system and not the host
+     * @hide
+     */
+    void setSystemDrivenInsetsAnimationLoggingListener(
+            @Nullable WindowInsetsAnimationControlListener listener);
+
+    /**
      * Controls the appearance of system bars.
      * <p>
      * For example, the following statement adds {@link #APPEARANCE_LIGHT_STATUS_BARS}:
@@ -181,7 +226,7 @@ public interface WindowInsetsController {
      * setSystemBarsAppearance(0, APPEARANCE_LIGHT_STATUS_BARS)
      * </pre>
      *
-     * @param appearance Bitmask of {@link Appearance} flags.
+     * @param appearance Bitmask of appearance flags.
      * @param mask Specifies which flags of appearance should be changed.
      * @see #getSystemBarsAppearance
      */
@@ -203,6 +248,16 @@ public interface WindowInsetsController {
      * @hide
      */
     void setCaptionInsetsHeight(int height);
+
+    /**
+     * Sets the insets height for the IME caption bar, which corresponds to the
+     * "fake" IME navigation bar.
+     *
+     * @param height the insets height of the IME caption bar.
+     * @hide
+     */
+    default void setImeCaptionBarInsetsHeight(int height) {
+    }
 
     /**
      * Controls the behavior of system bars.
@@ -233,11 +288,10 @@ public interface WindowInsetsController {
     InsetsState getState();
 
     /**
-     * @return Whether the specified insets source is currently requested to be visible by the
-     *         application.
+     * @return Insets types that have been requested to be visible.
      * @hide
      */
-    boolean isRequestedVisible(@InternalInsetsType int type);
+    @InsetsType int getRequestedVisibleTypes();
 
     /**
      * Adds a {@link OnControllableInsetsChangedListener} to the window insets controller.
@@ -262,11 +316,11 @@ public interface WindowInsetsController {
             @NonNull OnControllableInsetsChangedListener listener);
 
     /**
-     * Listener to be notified when the set of controllable {@link InsetsType} controlled by a
-     * {@link WindowInsetsController} changes.
+     * Listener to be notified when the set of controllable {@link WindowInsets.Type} controlled by
+     * a {@link WindowInsetsController} changes.
      * <p>
-     * Once a {@link InsetsType} becomes controllable, the app will be able to control the window
-     * that is causing this type of insets by calling {@link #controlWindowInsetsAnimation}.
+     * Once a {@link WindowInsets.Type} becomes controllable, the app will be able to control the
+     * window that is causing this type of insets by calling {@link #controlWindowInsetsAnimation}.
      * <p>
      * Note: When listening to controllability of the {@link Type#ime},
      * {@link #controlWindowInsetsAnimation} may still fail in case the {@link InputMethodService}
@@ -279,12 +333,12 @@ public interface WindowInsetsController {
     interface OnControllableInsetsChangedListener {
 
         /**
-         * Called when the set of controllable {@link InsetsType} changes.
+         * Called when the set of controllable {@link WindowInsets.Type} changes.
          *
-         * @param controller The controller for which the set of controllable {@link InsetsType}s
-         *                   are changing.
-         * @param typeMask Bitwise type-mask of the {@link InsetsType}s the controller is currently
-         *                 able to control.
+         * @param controller The controller for which the set of controllable
+         *                   {@link WindowInsets.Type}s are changing.
+         * @param typeMask Bitwise type-mask of the {@link WindowInsets.Type}s the controller is
+         *                 currently able to control.
          */
         void onControllableInsetsChanged(@NonNull WindowInsetsController controller,
                 @InsetsType int typeMask);

@@ -19,8 +19,10 @@ package android.telephony;
 import android.Manifest;
 import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
+import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SuppressAutoDoc;
 import android.annotation.SystemApi;
@@ -31,6 +33,7 @@ import android.compat.annotation.ChangeId;
 import android.compat.annotation.EnabledAfter;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.database.CursorWindow;
 import android.net.Uri;
 import android.os.Build;
@@ -39,11 +42,15 @@ import android.os.RemoteException;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
+import android.util.Pair;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.telephony.IIntegerConsumer;
+import com.android.internal.telephony.IPhoneSubInfo;
 import com.android.internal.telephony.ISms;
 import com.android.internal.telephony.ITelephony;
 import com.android.internal.telephony.SmsRawData;
+import com.android.telephony.Rlog;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -71,13 +78,19 @@ import java.util.concurrent.Executor;
  *
  * @see SubscriptionManager#getActiveSubscriptionInfoList()
  */
+@RequiresFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)
 public final class SmsManager {
     private static final String TAG = "SmsManager";
 
-    /** Singleton object constructed during class initialization. */
-    private static final SmsManager sInstance = new SmsManager(
-            SubscriptionManager.DEFAULT_SUBSCRIPTION_ID);
     private static final Object sLockObject = new Object();
+
+    @GuardedBy("sLockObject")
+    private static final Map<Pair<Context, Integer>, SmsManager> sSubInstances =
+            new ArrayMap<>();
+
+    /** Singleton object constructed during class initialization. */
+    private static final SmsManager DEFAULT_INSTANCE = getSmsManagerForContextAndSubscriptionId(
+            null, SubscriptionManager.DEFAULT_SUBSCRIPTION_ID);
 
     /** SMS record length from TS 51.011 10.5.3
      * @hide
@@ -89,12 +102,15 @@ public final class SmsManager {
      */
     public static final int CDMA_SMS_RECORD_LENGTH = 255;
 
-    private static final Map<Integer, SmsManager> sSubInstances =
-            new ArrayMap<Integer, SmsManager>();
-
     /** A concrete subscription id, or the pseudo DEFAULT_SUBSCRIPTION_ID */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private int mSubId;
+
+    /**
+     * Context this SmsManager is for. Can be {@code null} in the case the manager was created via
+     * legacy APIs
+     */
+    private final @Nullable Context mContext;
 
     /*
      * Key for the various carrier-dependent configuration values.
@@ -282,6 +298,106 @@ public final class SmsManager {
      */
     public static final int SMS_MESSAGE_PERIOD_NOT_SPECIFIED = -1;
 
+    // RP-Cause Values For MO SMS as per TS 124 011, table 8.4.
+
+    /** @hide */
+    @IntDef(prefix = { "SMS_RP_CAUSE" }, value = {
+        SmsManager.SMS_RP_CAUSE_UNALLOCATED_NUMBER,
+        SmsManager.SMS_RP_CAUSE_OPERATOR_DETERMINED_BARRING,
+        SmsManager.SMS_RP_CAUSE_CALL_BARRING,
+        SmsManager.SMS_RP_CAUSE_RESERVED,
+        SmsManager.SMS_RP_CAUSE_SHORT_MESSAGE_TRANSFER_REJECTED,
+        SmsManager.SMS_RP_CAUSE_DESTINATION_OUT_OF_ORDER,
+        SmsManager.SMS_RP_CAUSE_UNIDENTIFIED_SUBSCRIBER,
+        SmsManager.SMS_RP_CAUSE_FACILITY_REJECTED,
+        SmsManager.SMS_RP_CAUSE_UNKNOWN_SUBSCRIBER,
+        SmsManager.SMS_RP_CAUSE_NETWORK_OUT_OF_ORDER,
+        SmsManager.SMS_RP_CAUSE_TEMPORARY_FAILURE,
+        SmsManager.SMS_RP_CAUSE_CONGESTION,
+        SmsManager.SMS_RP_CAUSE_RESOURCES_UNAVAILABLE,
+        SmsManager.SMS_RP_CAUSE_FACILITY_NOT_SUBSCRIBED,
+        SmsManager.SMS_RP_CAUSE_FACILITY_NOT_IMPLEMENTED,
+        SmsManager.SMS_RP_CAUSE_INVALID_MESSAGE_REFERENCE_VALUE,
+        SmsManager.SMS_RP_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE,
+        SmsManager.SMS_RP_CAUSE_INVALID_MANDATORY_INFORMATION,
+        SmsManager.SMS_RP_CAUSE_MESSAGE_TYPE_NON_EXISTENT,
+        SmsManager.SMS_RP_CAUSE_MESSAGE_INCOMPATIBLE_WITH_PROTOCOL_STATE,
+        SmsManager.SMS_RP_CAUSE_INFORMATION_ELEMENT_NON_EXISTENT,
+        SmsManager.SMS_RP_CAUSE_PROTOCOL_ERROR,
+        SmsManager.SMS_RP_CAUSE_INTERWORKING_UNSPECIFIED
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface SMS_RP_CAUSE {}
+
+    /** Unallocated Number Cause */
+    public static final int SMS_RP_CAUSE_UNALLOCATED_NUMBER = 1;
+
+    /** RP-Cause for Operator Barring */
+    public static final int SMS_RP_CAUSE_OPERATOR_DETERMINED_BARRING = 8;
+
+    /** RP-Cause Value for Call Barring */
+    public static final int SMS_RP_CAUSE_CALL_BARRING = 10;
+
+    /** RP-Cause value for Reserved Number */
+    public static final int SMS_RP_CAUSE_RESERVED = 11;
+
+    /** RP-Cause Value for Message Transfer Rejected by Network */
+    public static final int SMS_RP_CAUSE_SHORT_MESSAGE_TRANSFER_REJECTED = 21;
+
+    /** RP-Cause Value for Destination is Out of Order */
+    public static final int SMS_RP_CAUSE_DESTINATION_OUT_OF_ORDER = 27;
+
+    /** RP-Cause Value when Subscriber is not Identified */
+    public static final int SMS_RP_CAUSE_UNIDENTIFIED_SUBSCRIBER = 28;
+
+    /** RP-Cause Value when SMS Facility if Rejected by Operator */
+    public static final int SMS_RP_CAUSE_FACILITY_REJECTED = 29;
+
+    /** RP-Cause Value when Subscriber is not Identified */
+    public static final int SMS_RP_CAUSE_UNKNOWN_SUBSCRIBER = 30;
+
+    /** RP-Cause Value when network is out of order*/
+    public static final int SMS_RP_CAUSE_NETWORK_OUT_OF_ORDER = 38;
+
+    /** RP-Cause Value For Temporary failure*/
+    public static final int SMS_RP_CAUSE_TEMPORARY_FAILURE = 41;
+
+    /** RP-Cause Value for SMS Failure due to Congestion in network*/
+    public static final int SMS_RP_CAUSE_CONGESTION = 42;
+
+    /** RP-Cause Value when Network Resources are unavailable */
+    public static final int SMS_RP_CAUSE_RESOURCES_UNAVAILABLE = 47;
+
+    /** RP-Cause Value when SMS Facilty is not subscribed by Reote device */
+    public static final int SMS_RP_CAUSE_FACILITY_NOT_SUBSCRIBED = 50;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_FACILITY_NOT_IMPLEMENTED = 69;
+
+    /** RP-Cause Value when RP-MessageRefere */
+    public static final int SMS_RP_CAUSE_INVALID_MESSAGE_REFERENCE_VALUE = 81;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_SEMANTICALLY_INCORRECT_MESSAGE = 95;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_INVALID_MANDATORY_INFORMATION = 96;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_MESSAGE_TYPE_NON_EXISTENT = 97;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_MESSAGE_INCOMPATIBLE_WITH_PROTOCOL_STATE = 98;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_INFORMATION_ELEMENT_NON_EXISTENT  = 99;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_PROTOCOL_ERROR = 111;
+
+    /** RP-Cause Value when network does not provide the received service */
+    public static final int SMS_RP_CAUSE_INTERWORKING_UNSPECIFIED = 127;
+
     /** @hide */
     @IntDef(prefix = { "PREMIUM_SMS_CONSENT" }, value = {
         SmsManager.PREMIUM_SMS_CONSENT_UNKNOWN,
@@ -322,6 +438,34 @@ public final class SmsManager {
     private interface SubscriptionResolverResult {
         void onSuccess(int subId);
         void onFailure();
+    }
+
+    /**
+     * Get {@link Context#getOpPackageName()} if this manager has a context, otherwise a dummy
+     * value.
+     *
+     * @return The package name to be used for app-ops checks
+     */
+    private @Nullable String getOpPackageName() {
+        if (mContext == null) {
+            return null;
+        } else {
+            return mContext.getOpPackageName();
+        }
+    }
+
+    /**
+     * Get {@link Context#getAttributionTag()} ()} if this manager has a context, otherwise get the
+     * default attribution tag.
+     *
+     * @return The attribution tag to be used for app-ops checks
+     */
+    private @Nullable String getAttributionTag() {
+        if (mContext == null) {
+            return null;
+        } else {
+            return mContext.getAttributionTag();
+        }
     }
 
     /**
@@ -412,9 +556,6 @@ public final class SmsManager {
      *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> or any of the RESULT_RIL errors,
      *  the sentIntent may include the extra "errorCode" containing a radio technology specific
      *  value, generally only useful for troubleshooting.<br>
-     *  The per-application based SMS control checks sentIntent. If sentIntent
-     *  is NULL the caller will be checked against all unknown applications,
-     *  which cause smaller number of SMS to be sent in checking period.
      * @param deliveryIntent if not NULL this <code>PendingIntent</code> is
      *  broadcast when the message is delivered to the recipient.  The
      *  raw pdu of the status report is in the extended data ("pdu").
@@ -425,7 +566,8 @@ public final class SmsManager {
             String destinationAddress, String scAddress, String text,
             PendingIntent sentIntent, PendingIntent deliveryIntent) {
         sendTextMessageInternal(destinationAddress, scAddress, text, sentIntent, deliveryIntent,
-                true /* persistMessage*/, null, null, 0L /* messageId */);
+                true /* persistMessage*/, getOpPackageName(), getAttributionTag(),
+                0L /* messageId */);
     }
 
 
@@ -444,7 +586,8 @@ public final class SmsManager {
             @Nullable PendingIntent sentIntent, @Nullable PendingIntent deliveryIntent,
             long messageId) {
         sendTextMessageInternal(destinationAddress, scAddress, text, sentIntent, deliveryIntent,
-                true /* persistMessage*/, null, null, messageId);
+                true /* persistMessage*/, getOpPackageName(), getAttributionTag(),
+                messageId);
     }
 
     /**
@@ -526,9 +669,6 @@ public final class SmsManager {
      *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> or any of the RESULT_RIL errors,
      *  the sentIntent may include the extra "errorCode" containing a radio technology specific
      *  value, generally only useful for troubleshooting.<br>
-     *  The per-application based SMS control checks sentIntent. If sentIntent
-     *  is NULL the caller will be checked against all unknown applications,
-     *  which cause smaller number of SMS to be sent in checking period.
      * @param deliveryIntent if not NULL this <code>PendingIntent</code> is
      *  broadcast when the message is delivered to the recipient.  The
      *  raw pdu of the status report is in the extended data ("pdu").
@@ -594,7 +734,7 @@ public final class SmsManager {
                                 persistMessage, messageId);
                     } catch (RemoteException e) {
                         Log.e(TAG, "sendTextMessageInternal: Couldn't send SMS, exception - "
-                                + e.getMessage() + " id: " + messageId);
+                                + e.getMessage() + " " + formatCrossStackMessageId(messageId));
                         notifySmsError(sentIntent, RESULT_REMOTE_EXCEPTION);
                     }
                 }
@@ -614,7 +754,7 @@ public final class SmsManager {
                         persistMessage, messageId);
             } catch (RemoteException e) {
                 Log.e(TAG, "sendTextMessageInternal (no persist): Couldn't send SMS, exception - "
-                        + e.getMessage() + " id: " + messageId);
+                        + e.getMessage() + " " + formatCrossStackMessageId(messageId));
                 notifySmsError(sentIntent, RESULT_REMOTE_EXCEPTION);
             }
         }
@@ -656,8 +796,8 @@ public final class SmsManager {
             String destinationAddress, String scAddress, String text,
             PendingIntent sentIntent, PendingIntent deliveryIntent) {
         sendTextMessageInternal(destinationAddress, scAddress, text, sentIntent, deliveryIntent,
-                false /* persistMessage */, null, null,
-                0L /* messageId */);
+                false /* persistMessage */, getOpPackageName(),
+                getAttributionTag(), 0L /* messageId */);
     }
 
     private void sendTextMessageInternal(
@@ -735,37 +875,6 @@ public final class SmsManager {
                 notifySmsError(sentIntent, RESULT_REMOTE_EXCEPTION);
             }
         }
-    }
-
-    /**
-     * Send a text based SMS without writing it into the SMS Provider.
-     *
-     * <p>Requires Permission:
-     * {@link android.Manifest.permission#MODIFY_PHONE_STATE} or the calling app has carrier
-     * privileges.
-     * </p>
-     *
-     * <p class="note"><strong>Note:</strong> This method is intended for internal use by carrier
-     * applications or the Telephony framework and will never trigger an SMS disambiguation
-     * dialog. If this method is called on a device that has multiple active subscriptions, this
-     * {@link SmsManager} instance has been created with {@link #getDefault()}, and no user-defined
-     * default subscription is defined, the subscription ID associated with this message will be
-     * INVALID, which will result in the SMS being sent on the subscription associated with logical
-     * slot 0. Use {@link #getSmsManagerForSubscriptionId(int)} to ensure the SMS is sent on the
-     * correct subscription.
-     * </p>
-     *
-     * @see #sendTextMessage(String, String, String, PendingIntent,
-     * PendingIntent, int, boolean, int)
-     * @hide
-     */
-    @UnsupportedAppUsage
-    public void sendTextMessageWithoutPersisting(
-            String destinationAddress, String scAddress, String text,
-            PendingIntent sentIntent, PendingIntent deliveryIntent, int priority,
-            boolean expectMore, int validityPeriod) {
-        sendTextMessageInternal(destinationAddress, scAddress, text, sentIntent, deliveryIntent,
-                false /* persistMessage */, priority, expectMore, validityPeriod);
     }
 
     /**
@@ -928,9 +1037,6 @@ public final class SmsManager {
      *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> or any of the RESULT_RIL errors,
      *  the sentIntent may include the extra "errorCode" containing a radio technology specific
      *  value, generally only useful for troubleshooting.<br>
-     *  The per-application based SMS control checks sentIntent. If sentIntent
-     *  is NULL the caller will be checked against all unknown applications,
-     *  which cause smaller number of SMS to be sent in checking period.
      * @param deliveryIntents if not null, an <code>ArrayList</code> of
      *  <code>PendingIntent</code>s (one for each message part) that is
      *  broadcast when the corresponding message part has been delivered
@@ -943,8 +1049,8 @@ public final class SmsManager {
             String destinationAddress, String scAddress, ArrayList<String> parts,
             ArrayList<PendingIntent> sentIntents, ArrayList<PendingIntent> deliveryIntents) {
         sendMultipartTextMessageInternal(destinationAddress, scAddress, parts, sentIntents,
-                deliveryIntents, true /* persistMessage*/, null, null,
-                0L /* messageId */);
+                deliveryIntents, true /* persistMessage*/, getOpPackageName(),
+                getAttributionTag(), 0L /* messageId */);
     }
 
     /**
@@ -961,8 +1067,8 @@ public final class SmsManager {
             @NonNull List<String> parts, @Nullable List<PendingIntent> sentIntents,
             @Nullable List<PendingIntent> deliveryIntents, long messageId) {
         sendMultipartTextMessageInternal(destinationAddress, scAddress, parts, sentIntents,
-                deliveryIntents, true /* persistMessage*/, null, null,
-                messageId);
+                deliveryIntents, true /* persistMessage*/, getOpPackageName(),
+                getAttributionTag(), messageId);
     }
 
     /**
@@ -1026,8 +1132,7 @@ public final class SmsManager {
                                     deliveryIntents, persistMessage, messageId);
                         } catch (RemoteException e) {
                             Log.e(TAG, "sendMultipartTextMessageInternal: Couldn't send SMS - "
-                                    + e.getMessage() + " id: "
-                                    + messageId);
+                                    + e.getMessage() + " " + formatCrossStackMessageId(messageId));
                             notifySmsError(sentIntents, RESULT_REMOTE_EXCEPTION);
                         }
                     }
@@ -1048,7 +1153,7 @@ public final class SmsManager {
                     }
                 } catch (RemoteException e) {
                     Log.e(TAG, "sendMultipartTextMessageInternal: Couldn't send SMS - "
-                            + e.getMessage() + " id: " + messageId);
+                            + e.getMessage() + " " + formatCrossStackMessageId(messageId));
                     notifySmsError(sentIntents, RESULT_REMOTE_EXCEPTION);
                 }
             }
@@ -1092,8 +1197,8 @@ public final class SmsManager {
             String destinationAddress, String scAddress, List<String> parts,
             List<PendingIntent> sentIntents, List<PendingIntent> deliveryIntents) {
         sendMultipartTextMessageInternal(destinationAddress, scAddress, parts, sentIntents,
-                deliveryIntents, false /* persistMessage*/, null, null,
-                0L /* messageId */);
+                deliveryIntents, false /* persistMessage*/, getOpPackageName(),
+                getAttributionTag(), 0L /* messageId */);
     }
 
     /**
@@ -1188,9 +1293,6 @@ public final class SmsManager {
      *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> or any of the RESULT_RIL errors,
      *  the sentIntent may include the extra "errorCode" containing a radio technology specific
      *  value, generally only useful for troubleshooting.<br>
-     *  The per-application based SMS control checks sentIntent. If sentIntent
-     *  is NULL the caller will be checked against all unknown applications,
-     *  which cause smaller number of SMS to be sent in checking period.
      * @param deliveryIntents if not null, an <code>ArrayList</code> of
      *  <code>PendingIntent</code>s (one for each message part) that is
      *  broadcast when the corresponding message part has been delivered
@@ -1389,9 +1491,6 @@ public final class SmsManager {
      *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> or any of the RESULT_RIL errors,
      *  the sentIntent may include the extra "errorCode" containing a radio technology specific
      *  value, generally only useful for troubleshooting.<br>
-     *  The per-application based SMS control checks sentIntent. If sentIntent
-     *  is NULL the caller will be checked against all unknown applications,
-     *  which cause smaller number of SMS to be sent in checking period.
      * @param deliveryIntent if not NULL this <code>PendingIntent</code> is
      *  broadcast when the message is delivered to the recipient.  The
      *  raw pdu of the status report is in the extended data ("pdu").
@@ -1459,9 +1558,57 @@ public final class SmsManager {
      * @return the {@link SmsManager} associated with the default subscription id.
      *
      * @see SubscriptionManager#getDefaultSmsSubscriptionId()
+     *
+     * @deprecated Use {@link Context#getSystemService Context.getSystemService(SmsManager.class)}
+     * instead
      */
+    @Deprecated
     public static SmsManager getDefault() {
-        return sInstance;
+        return DEFAULT_INSTANCE;
+    }
+
+    /**
+     * Get the instance of the SmsManager associated with a particular context and subscription ID.
+     *
+     * @param context The context the manager belongs to
+     * @param subId an SMS subscription ID, typically accessed using {@link SubscriptionManager}
+     *
+     * @return the instance of the SmsManager associated with subscription
+     *
+     * @hide
+     */
+    public static @NonNull SmsManager getSmsManagerForContextAndSubscriptionId(
+            @Nullable Context context, int subId) {
+        synchronized(sLockObject) {
+            Pair<Context, Integer> key = new Pair<>(context, subId);
+
+            SmsManager smsManager = sSubInstances.get(key);
+            if (smsManager == null) {
+                smsManager = new SmsManager(context, subId);
+                sSubInstances.put(key, smsManager);
+            }
+            return smsManager;
+        }
+    }
+
+    /**
+     * Get the instance of the SmsManager associated with a particular subscription ID.
+     *
+     * <p class="note"><strong>Note:</strong> Constructing an {@link SmsManager} in this manner will
+     * never cause an SMS disambiguation dialog to appear, unlike {@link #getDefault()}.
+     * </p>
+     *
+     * @param subId an SMS subscription ID, typically accessed using {@link SubscriptionManager}
+     * @return the instance of the SmsManager associated with subscription
+     *
+     * @see SubscriptionManager#getActiveSubscriptionInfoList()
+     * @see SubscriptionManager#getDefaultSmsSubscriptionId()
+     * @deprecated Use {@link Context#getSystemService Context.getSystemService(SmsManager.class)}
+     * .{@link #createForSubscriptionId createForSubscriptionId(subId)} instead
+     */
+    @Deprecated
+    public static SmsManager getSmsManagerForSubscriptionId(int subId) {
+        return getSmsManagerForContextAndSubscriptionId(null, subId);
     }
 
     /**
@@ -1477,18 +1624,12 @@ public final class SmsManager {
      * @see SubscriptionManager#getActiveSubscriptionInfoList()
      * @see SubscriptionManager#getDefaultSmsSubscriptionId()
      */
-    public static SmsManager getSmsManagerForSubscriptionId(int subId) {
-        synchronized(sLockObject) {
-            SmsManager smsManager = sSubInstances.get(subId);
-            if (smsManager == null) {
-                smsManager = new SmsManager(subId);
-                sSubInstances.put(subId, smsManager);
-            }
-            return smsManager;
-        }
+    public @NonNull SmsManager createForSubscriptionId(int subId) {
+        return getSmsManagerForContextAndSubscriptionId(mContext, subId);
     }
 
-    private SmsManager(int subId) {
+    private SmsManager(@Nullable Context context, int subId) {
+        mContext = context;
         mSubId = subId;
     }
 
@@ -1874,13 +2015,14 @@ public final class SmsManager {
      * @see #disableCellBroadcastRange(int, int, int)
      *
      * @throws IllegalArgumentException if endMessageId < startMessageId
+     * @deprecated Use {@link TelephonyManager#setCellBroadcastIdRanges} instead.
      * {@hide}
      */
+    @Deprecated
     @SystemApi
     public boolean enableCellBroadcastRange(int startMessageId, int endMessageId,
             @android.telephony.SmsCbMessage.MessageFormat int ranType) {
         boolean success = false;
-
         if (endMessageId < startMessageId) {
             throw new IllegalArgumentException("endMessageId < startMessageId");
         }
@@ -1889,10 +2031,14 @@ public final class SmsManager {
             if (iSms != null) {
                 // If getSubscriptionId() returns INVALID or an inactive subscription, we will use
                 // the default phone internally.
-                success = iSms.enableCellBroadcastRangeForSubscriber(getSubscriptionId(),
+                int subId = getSubscriptionId();
+                success = iSms.enableCellBroadcastRangeForSubscriber(subId,
                         startMessageId, endMessageId, ranType);
+                Rlog.d(TAG, "enableCellBroadcastRange: " + (success ? "succeeded" : "failed")
+                        + " at calling enableCellBroadcastRangeForSubscriber. subId = " + subId);
             }
         } catch (RemoteException ex) {
+            Rlog.d(TAG, "enableCellBroadcastRange: ", ex);
             // ignore it
         }
 
@@ -1931,8 +2077,10 @@ public final class SmsManager {
      * @see #enableCellBroadcastRange(int, int, int)
      *
      * @throws IllegalArgumentException if endMessageId < startMessageId
+     * @deprecated Use {@link TelephonyManager#setCellBroadcastIdRanges} instead.
      * {@hide}
      */
+    @Deprecated
     @SystemApi
     public boolean disableCellBroadcastRange(int startMessageId, int endMessageId,
             @android.telephony.SmsCbMessage.MessageFormat int ranType) {
@@ -1946,10 +2094,14 @@ public final class SmsManager {
             if (iSms != null) {
                 // If getSubscriptionId() returns INVALID or an inactive subscription, we will use
                 // the default phone internally.
-                success = iSms.disableCellBroadcastRangeForSubscriber(getSubscriptionId(),
+                int subId = getSubscriptionId();
+                success = iSms.disableCellBroadcastRangeForSubscriber(subId,
                         startMessageId, endMessageId, ranType);
+                Rlog.d(TAG, "disableCellBroadcastRange: " + (success ? "succeeded" : "failed")
+                        + " at calling disableCellBroadcastRangeForSubscriber. subId = " + subId);
             }
         } catch (RemoteException ex) {
+            Rlog.d(TAG, "disableCellBroadcastRange: ", ex);
             // ignore it
         }
 
@@ -2118,7 +2270,9 @@ public final class SmsManager {
      *
      * @return the total number of SMS records which can be stored on the SIM card.
      */
-    @RequiresPermission(android.Manifest.permission.READ_PHONE_STATE)
+    @RequiresPermission(anyOf = {android.Manifest.permission.READ_PHONE_STATE,
+            android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE})
+    @IntRange(from = 0)
     public int getSmsCapacityOnIcc() {
         int ret = 0;
         try {
@@ -2196,6 +2350,7 @@ public final class SmsManager {
             RESULT_SMS_SEND_RETRY_FAILED,
             RESULT_REMOTE_EXCEPTION,
             RESULT_NO_DEFAULT_SMS_APP,
+            RESULT_USER_NOT_ALLOWED,
             RESULT_RIL_RADIO_NOT_AVAILABLE,
             RESULT_RIL_SMS_SEND_FAIL_RETRY,
             RESULT_RIL_NETWORK_REJECT,
@@ -2219,7 +2374,21 @@ public final class SmsManager {
             RESULT_RIL_SIM_ABSENT,
             RESULT_RIL_SIMULTANEOUS_SMS_AND_CALL_NOT_ALLOWED,
             RESULT_RIL_ACCESS_BARRED,
-            RESULT_RIL_BLOCKED_DUE_TO_CALL
+            RESULT_RIL_BLOCKED_DUE_TO_CALL,
+            RESULT_RIL_GENERIC_ERROR,
+            RESULT_RIL_INVALID_RESPONSE,
+            RESULT_RIL_SIM_PIN2,
+            RESULT_RIL_SIM_PUK2,
+            RESULT_RIL_SUBSCRIPTION_NOT_AVAILABLE,
+            RESULT_RIL_SIM_ERROR,
+            RESULT_RIL_INVALID_SIM_STATE,
+            RESULT_RIL_NO_SMS_TO_ACK,
+            RESULT_RIL_SIM_BUSY,
+            RESULT_RIL_SIM_FULL,
+            RESULT_RIL_NO_SUBSCRIPTION,
+            RESULT_RIL_NO_NETWORK_FOUND,
+            RESULT_RIL_DEVICE_IN_USE,
+            RESULT_RIL_ABORTED
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface Result {}
@@ -2376,6 +2545,11 @@ public final class SmsManager {
      */
     public static final int RESULT_NO_DEFAULT_SMS_APP = 32;
 
+    /**
+     * User is not associated with the subscription.
+     */
+    public static final int RESULT_USER_NOT_ALLOWED = 33;
+
     // Radio Error results
 
     /**
@@ -2485,7 +2659,7 @@ public final class SmsManager {
     public static final int RESULT_RIL_SIM_ABSENT = 120;
 
     /**
-     * 1X voice and SMS are not allowed simulteneously.
+     * 1X voice and SMS are not allowed simultaneously.
      */
     public static final int RESULT_RIL_SIMULTANEOUS_SMS_AND_CALL_NOT_ALLOWED = 121;
 
@@ -2498,6 +2672,78 @@ public final class SmsManager {
      * SMS is blocked due to call control, e.g., resource unavailable in the SMR entity.
      */
     public static final int RESULT_RIL_BLOCKED_DUE_TO_CALL = 123;
+
+    /**
+     * A RIL error occurred during the SMS send.
+     */
+    public static final int RESULT_RIL_GENERIC_ERROR = 124;
+
+    /**
+     * A RIL internal error when one of the RIL layers receives an unrecognized response from a
+     * lower layer.
+     */
+    public static final int RESULT_RIL_INVALID_RESPONSE = 125;
+
+    /**
+     * Operation requires SIM PIN2 to be entered
+     */
+    public static final int RESULT_RIL_SIM_PIN2 = 126;
+
+    /**
+     * Operation requires SIM PUK2 to be entered
+     */
+    public static final int RESULT_RIL_SIM_PUK2 = 127;
+
+    /**
+     * Fail to find CDMA subscription from specified location
+     */
+    public static final int RESULT_RIL_SUBSCRIPTION_NOT_AVAILABLE = 128;
+
+    /**
+     * Received error from SIM card
+     */
+    public static final int RESULT_RIL_SIM_ERROR = 129;
+
+    /**
+     * Cannot process the request in current SIM state
+     */
+    public static final int RESULT_RIL_INVALID_SIM_STATE = 130;
+
+    /**
+     * ACK received when there is no SMS to ack
+     */
+    public static final int RESULT_RIL_NO_SMS_TO_ACK = 131;
+
+    /**
+     * SIM is busy
+     */
+    public static final int RESULT_RIL_SIM_BUSY = 132;
+
+    /**
+     * The target EF is full
+     */
+    public static final int RESULT_RIL_SIM_FULL = 133;
+
+    /**
+     * Device does not have subscription
+     */
+    public static final int RESULT_RIL_NO_SUBSCRIPTION = 134;
+
+    /**
+     * Network cannot be found
+     */
+    public static final int RESULT_RIL_NO_NETWORK_FOUND = 135;
+
+    /**
+     * Operation cannot be performed because the device is currently in use
+     */
+    public static final int RESULT_RIL_DEVICE_IN_USE = 136;
+
+    /**
+     * Operation aborted
+     */
+    public static final int RESULT_RIL_ABORTED = 137;
+
 
     // SMS receiving results sent as a "result" extra in {@link Intents.SMS_REJECTED_ACTION}
 
@@ -2556,10 +2802,68 @@ public final class SmsManager {
      *  sending the message.
      * @param sentIntent if not NULL this <code>PendingIntent</code> is
      *  broadcast when the message is successfully sent, or failed
+     * The result code will be <code>Activity.RESULT_OK</code> for success
+     * or one of these errors:<br>
+     * <code>MMS_ERROR_UNSPECIFIED</code><br>
+     * <code>MMS_ERROR_INVALID_APN</code><br>
+     * <code>MMS_ERROR_UNABLE_CONNECT_MMS</code><br>
+     * <code>MMS_ERROR_HTTP_FAILURE</code><br>
+     * <code>MMS_ERROR_IO_ERROR</code><br>
+     * <code>MMS_ERROR_RETRY</code><br>
+     * <code>MMS_ERROR_CONFIGURATION_ERROR</code><br>
+     * <code>MMS_ERROR_NO_DATA_NETWORK</code><br>
+     * <code>MMS_ERROR_INVALID_SUBSCRIPTION_ID</code><br>
+     * <code>MMS_ERROR_INACTIVE_SUBSCRIPTION</code><br>
+     * <code>MMS_ERROR_DATA_DISABLED</code><br>
      * @throws IllegalArgumentException if contentUri is empty
      */
     public void sendMultimediaMessage(Context context, Uri contentUri, String locationUrl,
             Bundle configOverrides, PendingIntent sentIntent) {
+        sendMultimediaMessage(context, contentUri, locationUrl, configOverrides, sentIntent,
+                0L /* messageId */);
+    }
+
+    /**
+     * Send an MMS message
+     *
+     * Same as {@link #sendMultimediaMessage(Context context, Uri contentUri, String locationUrl,
+     *           Bundle configOverrides, PendingIntent sentIntent)}, but adds an optional messageId.
+     * <p class="note"><strong>Note:</strong> If {@link #getDefault()} is used to instantiate this
+     * manager on a multi-SIM device, this operation may fail sending the MMS message because no
+     * suitable default subscription could be found. In this case, if {@code sentIntent} is
+     * non-null, then the {@link PendingIntent} will be sent with an error code
+     * {@code RESULT_NO_DEFAULT_SMS_APP}. See {@link #getDefault()} for more information on the
+     * conditions where this operation may fail.
+     * </p>
+     *
+     * @param context application context
+     * @param contentUri the content Uri from which the message pdu will be read
+     * @param locationUrl the optional location url where message should be sent to
+     * @param configOverrides the carrier-specific messaging configuration values to override for
+     *  sending the message.
+     * @param sentIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is successfully sent, or failed
+     * The result code will be <code>Activity.RESULT_OK</code> for success
+     * or one of these errors:<br>
+     * <code>MMS_ERROR_UNSPECIFIED</code><br>
+     * <code>MMS_ERROR_INVALID_APN</code><br>
+     * <code>MMS_ERROR_UNABLE_CONNECT_MMS</code><br>
+     * <code>MMS_ERROR_HTTP_FAILURE</code><br>
+     * <code>MMS_ERROR_IO_ERROR</code><br>
+     * <code>MMS_ERROR_RETRY</code><br>
+     * <code>MMS_ERROR_CONFIGURATION_ERROR</code><br>
+     * <code>MMS_ERROR_NO_DATA_NETWORK</code><br>
+     * <code>MMS_ERROR_INVALID_SUBSCRIPTION_ID</code><br>
+     * <code>MMS_ERROR_INACTIVE_SUBSCRIPTION</code><br>
+     * <code>MMS_ERROR_DATA_DISABLED</code><br>
+     * @param messageId an id that uniquely identifies the message requested to be sent.
+     * Used for logging and diagnostics purposes. The id may be 0.
+     * @throws IllegalArgumentException if contentUri is empty
+     */
+    public void sendMultimediaMessage(@NonNull Context context, @NonNull Uri contentUri,
+            @Nullable String locationUrl,
+            @SuppressWarnings("NullableCollection") @Nullable Bundle configOverrides,
+            @Nullable PendingIntent sentIntent, long messageId) {
         if (contentUri == null) {
             throw new IllegalArgumentException("Uri contentUri null");
         }
@@ -2569,7 +2873,7 @@ public final class SmsManager {
                 @Override
                 public void onSuccess(int subId) {
                     m.sendMultimediaMessage(subId, contentUri, locationUrl, configOverrides,
-                            sentIntent, 0L /* messageId */);
+                            sentIntent, messageId);
                 }
 
                 @Override
@@ -2599,10 +2903,70 @@ public final class SmsManager {
      *  downloading the message.
      * @param downloadedIntent if not NULL this <code>PendingIntent</code> is
      *  broadcast when the message is downloaded, or the download is failed
+     * The result code will be <code>Activity.RESULT_OK</code> for success
+     * or one of these errors:<br>
+     * <code>MMS_ERROR_UNSPECIFIED</code><br>
+     * <code>MMS_ERROR_INVALID_APN</code><br>
+     * <code>MMS_ERROR_UNABLE_CONNECT_MMS</code><br>
+     * <code>MMS_ERROR_HTTP_FAILURE</code><br>
+     * <code>MMS_ERROR_IO_ERROR</code><br>
+     * <code>MMS_ERROR_RETRY</code><br>
+     * <code>MMS_ERROR_CONFIGURATION_ERROR</code><br>
+     * <code>MMS_ERROR_NO_DATA_NETWORK</code><br>
+     * <code>MMS_ERROR_INVALID_SUBSCRIPTION_ID</code><br>
+     * <code>MMS_ERROR_INACTIVE_SUBSCRIPTION</code><br>
+     * <code>MMS_ERROR_DATA_DISABLED</code><br>
      * @throws IllegalArgumentException if locationUrl or contentUri is empty
      */
     public void downloadMultimediaMessage(Context context, String locationUrl, Uri contentUri,
             Bundle configOverrides, PendingIntent downloadedIntent) {
+        downloadMultimediaMessage(context, locationUrl, contentUri, configOverrides,
+                downloadedIntent, 0L /* messageId */);
+    }
+
+    /**
+     * Download an MMS message from carrier by a given location URL
+     *
+     * Same as {@link #downloadMultimediaMessage(Context context, String locationUrl,
+     *      Uri contentUri, Bundle configOverrides, PendingIntent downloadedIntent)},
+     *      but adds an optional messageId.
+     * <p class="note"><strong>Note:</strong> If {@link #getDefault()} is used to instantiate this
+     * manager on a multi-SIM device, this operation may fail downloading the MMS message because no
+     * suitable default subscription could be found. In this case, if {@code downloadedIntent} is
+     * non-null, then the {@link PendingIntent} will be sent with an error code
+     * {@code RESULT_NO_DEFAULT_SMS_APP}. See {@link #getDefault()} for more information on the
+     * conditions where this operation may fail.
+     * </p>
+     *
+     * @param context application context
+     * @param locationUrl the location URL of the MMS message to be downloaded, usually obtained
+     *  from the MMS WAP push notification
+     * @param contentUri the content uri to which the downloaded pdu will be written
+     * @param configOverrides the carrier-specific messaging configuration values to override for
+     *  downloading the message.
+     * @param downloadedIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is downloaded, or the download is failed
+     * The result code will be <code>Activity.RESULT_OK</code> for success
+     * or one of these errors:<br>
+     * <code>MMS_ERROR_UNSPECIFIED</code><br>
+     * <code>MMS_ERROR_INVALID_APN</code><br>
+     * <code>MMS_ERROR_UNABLE_CONNECT_MMS</code><br>
+     * <code>MMS_ERROR_HTTP_FAILURE</code><br>
+     * <code>MMS_ERROR_IO_ERROR</code><br>
+     * <code>MMS_ERROR_RETRY</code><br>
+     * <code>MMS_ERROR_CONFIGURATION_ERROR</code><br>
+     * <code>MMS_ERROR_NO_DATA_NETWORK</code><br>
+     * <code>MMS_ERROR_INVALID_SUBSCRIPTION_ID</code><br>
+     * <code>MMS_ERROR_INACTIVE_SUBSCRIPTION</code><br>
+     * <code>MMS_ERROR_DATA_DISABLED</code><br>
+     * @param messageId an id that uniquely identifies the message requested to be downloaded.
+     * Used for logging and diagnostics purposes. The id may be 0.
+     * @throws IllegalArgumentException if locationUrl or contentUri is empty
+     */
+    public void downloadMultimediaMessage(@NonNull Context context, @NonNull String locationUrl,
+            @NonNull Uri contentUri,
+            @SuppressWarnings("NullableCollection") @Nullable Bundle configOverrides,
+            @Nullable PendingIntent downloadedIntent, long messageId) {
         if (TextUtils.isEmpty(locationUrl)) {
             throw new IllegalArgumentException("Empty MMS location URL");
         }
@@ -2615,7 +2979,7 @@ public final class SmsManager {
                 @Override
                 public void onSuccess(int subId) {
                     m.downloadMultimediaMessage(subId, locationUrl, contentUri, configOverrides,
-                            downloadedIntent, 0L /* messageId */);
+                            downloadedIntent, messageId);
                 }
 
                 @Override
@@ -2627,14 +2991,61 @@ public final class SmsManager {
     }
 
     // MMS send/download failure result codes
+
+    /**
+     * Unspecific MMS error occurred during send/download.
+     */
     public static final int MMS_ERROR_UNSPECIFIED = 1;
+
+    /**
+     * ApnException occurred during MMS network setup.
+     */
     public static final int MMS_ERROR_INVALID_APN = 2;
+
+    /**
+     * An error occurred during the MMS connection setup.
+     */
     public static final int MMS_ERROR_UNABLE_CONNECT_MMS = 3;
+
+    /**
+     * An error occurred during the HTTP client setup.
+     */
     public static final int MMS_ERROR_HTTP_FAILURE = 4;
+
+    /**
+     * An I/O error occurred reading the PDU.
+     */
     public static final int MMS_ERROR_IO_ERROR = 5;
+
+    /**
+     * An error occurred while retrying sending/downloading the MMS.
+     */
     public static final int MMS_ERROR_RETRY = 6;
+
+    /**
+     * The carrier-dependent configuration values could not be loaded.
+     */
     public static final int MMS_ERROR_CONFIGURATION_ERROR = 7;
+
+    /**
+     * There is no data network.
+     */
     public static final int MMS_ERROR_NO_DATA_NETWORK = 8;
+
+    /**
+     * The subscription id for the send/download is invalid.
+     */
+    public static final int MMS_ERROR_INVALID_SUBSCRIPTION_ID = 9;
+
+    /**
+     * The subscription id for the send/download is inactive.
+     */
+    public static final int MMS_ERROR_INACTIVE_SUBSCRIPTION = 10;
+
+    /**
+     * Data is disabled for the MMS APN.
+     */
+    public static final int MMS_ERROR_DATA_DISABLED = 11;
 
     /** Intent extra name for MMS sending result data in byte array type */
     public static final String EXTRA_MMS_DATA = "android.telephony.extra.MMS_DATA";
@@ -2822,6 +3233,43 @@ public final class SmsManager {
         } catch (RemoteException ex) {
             ex.rethrowFromSystemServer();
             return null;
+        }
+    }
+
+    /**
+     * Set Storage Availability in SmsStorageMonitor
+     * @param storageAvailable storage availability to be set true or false
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_PHONE_STATE)
+    @TestApi
+    public void setStorageMonitorMemoryStatusOverride(boolean storageAvailable) {
+        try {
+            ISms iccISms = getISmsServiceOrThrow();
+            if (iccISms != null) {
+                iccISms.setStorageMonitorMemoryStatusOverride(getSubscriptionId(),
+                                                                storageAvailable);
+            }
+        } catch (RemoteException ex) {
+            ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Clear the memory status override set by
+     * {@link #setStorageMonitorMemoryStatusOverride(boolean)}
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_PHONE_STATE)
+    @TestApi
+    public void clearStorageMonitorMemoryStatusOverride() {
+        try {
+            ISms iccISms = getISmsServiceOrThrow();
+            if (iccISms != null) {
+                iccISms.clearStorageMonitorMemoryStatusOverride(getSubscriptionId());
+            }
+        } catch (RemoteException ex) {
+            ex.rethrowFromSystemServer();
         }
     }
 
@@ -3037,26 +3485,63 @@ public final class SmsManager {
 
     /**
      * Reset all cell broadcast ranges. Previously enabled ranges will become invalid after this.
-     *
-     * @return {@code true} if succeeded, otherwise {@code false}.
-     *
-     * // TODO: Unhide the API in S.
+     * @deprecated Use {@link TelephonyManager#setCellBroadcastIdRanges} with empty list instead
      * @hide
      */
-    public boolean resetAllCellBroadcastRanges() {
-        boolean success = false;
-
+    @Deprecated
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_CELL_BROADCASTS)
+    public void resetAllCellBroadcastRanges() {
         try {
             ISms iSms = getISmsService();
             if (iSms != null) {
                 // If getSubscriptionId() returns INVALID or an inactive subscription, we will use
                 // the default phone internally.
-                success = iSms.resetAllCellBroadcastRanges(getSubscriptionId());
+                iSms.resetAllCellBroadcastRanges(getSubscriptionId());
             }
         } catch (RemoteException ex) {
-            // ignore it
+            ex.rethrowFromSystemServer();
         }
+    }
 
-        return success;
+    private static String formatCrossStackMessageId(long id) {
+        return "{x-message-id:" + id + "}";
+    }
+
+    /**
+     * Fetches the EF_PSISMSC value from the UICC that contains the Public Service Identity of
+     * the SM-SC (either a SIP URI or tel URI). The EF_PSISMSC of ISIM and USIM can be found in
+     * DF_TELECOM.
+     * The EF_PSISMSC value is used by the ME to submit SMS over IP as defined in 24.341 [55].
+     *
+     * @return Uri : Public Service Identity of SM-SC from the ISIM or USIM if the ISIM is not
+     * available.
+     * @throws SecurityException if the caller does not have the required permission/privileges.
+     * @throws IllegalStateException in case of telephony service is not available.
+     * @hide
+     */
+    @NonNull
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE)
+    @RequiresFeature(PackageManager.FEATURE_TELEPHONY_SUBSCRIPTION)
+    public Uri getSmscIdentity() {
+        Uri smscUri = Uri.EMPTY;
+        try {
+            IPhoneSubInfo info = TelephonyManager.getSubscriberInfoService();
+            if (info == null) {
+                Rlog.e(TAG, "getSmscIdentity(): IPhoneSubInfo instance is NULL");
+                throw new IllegalStateException("Telephony service is not available");
+            }
+            /** Fetches the SIM EF_PSISMSC value based on subId and appType */
+            smscUri = info.getSmscIdentity(getSubscriptionId(), TelephonyManager.APPTYPE_ISIM);
+            if (Uri.EMPTY.equals(smscUri)) {
+                /** Fallback in case where ISIM is not available */
+                smscUri = info.getSmscIdentity(getSubscriptionId(), TelephonyManager.APPTYPE_USIM);
+            }
+        } catch (RemoteException ex) {
+            Rlog.e(TAG, "getSmscIdentity(): Exception : " + ex);
+            ex.rethrowAsRuntimeException();
+        }
+        return smscUri;
     }
 }

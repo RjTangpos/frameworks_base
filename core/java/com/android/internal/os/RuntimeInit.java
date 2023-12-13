@@ -22,6 +22,7 @@ import android.app.ApplicationErrorReport;
 import android.app.IActivityManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.type.DefaultMimeMapFactory;
+import android.net.TrafficStats;
 import android.os.Build;
 import android.os.DeadObjectException;
 import android.os.IBinder;
@@ -32,7 +33,6 @@ import android.util.Log;
 import android.util.Slog;
 
 import com.android.internal.logging.AndroidConfig;
-import com.android.server.NetworkManagementSocketTagger;
 
 import dalvik.system.RuntimeHooks;
 import dalvik.system.VMRuntime;
@@ -62,6 +62,8 @@ public class RuntimeInit {
     private static IBinder mApplicationObject;
 
     private static volatile boolean mCrashing = false;
+    private static final String SYSPROP_CRASH_COUNT = "sys.system_server.crash_java";
+    private static int mCrashCount;
 
     private static volatile ApplicationWtfHandler sDefaultApplicationWtfHandler;
 
@@ -105,6 +107,8 @@ public class RuntimeInit {
             // first clause in either of these two cases, only for system_server.
             if (mApplicationObject == null && (Process.SYSTEM_UID == Process.myUid())) {
                 Clog_e(TAG, "*** FATAL EXCEPTION IN SYSTEM PROCESS: " + t.getName(), e);
+                mCrashCount = SystemProperties.getInt(SYSPROP_CRASH_COUNT, 0) + 1;
+                SystemProperties.set(SYSPROP_CRASH_COUNT, String.valueOf(mCrashCount));
             } else {
                 logUncaught(t.getName(), ActivityThread.currentProcessName(), Process.myPid(), e);
             }
@@ -254,7 +258,7 @@ public class RuntimeInit {
         /*
          * Wire socket tagging to traffic stats.
          */
-        NetworkManagementSocketTagger.install();
+        TrafficStats.attachSocketTagger();
 
         initialized = true;
     }

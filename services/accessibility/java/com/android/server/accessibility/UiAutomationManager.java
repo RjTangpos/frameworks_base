@@ -16,12 +16,15 @@
 
 package com.android.server.accessibility;
 
+import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.accessibilityservice.AccessibilityTrace;
 import android.accessibilityservice.IAccessibilityServiceClient;
 import android.annotation.Nullable;
 import android.app.UiAutomation;
 import android.content.ComponentName;
 import android.content.Context;
+import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.IBinder.DeathRecipient;
@@ -32,6 +35,7 @@ import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 
 import com.android.internal.util.DumpUtils;
+import com.android.server.utils.Slogf;
 import com.android.server.wm.WindowManagerInternal;
 
 import java.io.FileDescriptor;
@@ -48,8 +52,6 @@ class UiAutomationManager {
     private final Object mLock;
 
     private UiAutomationService mUiAutomationService;
-
-    private AccessibilityServiceInfo mUiAutomationServiceInfo;
 
     private AbstractAccessibilityServiceConnection.SystemSupport mSystemSupport;
 
@@ -72,7 +74,8 @@ class UiAutomationManager {
             };
 
     /**
-     * Register a UiAutomation. Only one may be registered at a time.
+     * Register a UiAutomation if it uses the accessibility subsystem. Only one may be registered
+     * at a time.
      *
      * @param owner A binder object owned by the process that owns the UiAutomation to be
      *              registered.
@@ -80,6 +83,7 @@ class UiAutomationManager {
      * @param accessibilityServiceInfo The UiAutomation's service info
      * @param flags The UiAutomation's flags
      * @param id The id for the service connection
+     * @see UiAutomation#FLAG_DONT_USE_ACCESSIBILITY
      */
     void registerUiTestAutomationServiceLocked(IBinder owner,
             IAccessibilityServiceClient serviceClient,
@@ -87,15 +91,18 @@ class UiAutomationManager {
             int id, Handler mainHandler,
             AccessibilitySecurityPolicy securityPolicy,
             AbstractAccessibilityServiceConnection.SystemSupport systemSupport,
+            AccessibilityTrace trace,
             WindowManagerInternal windowManagerInternal,
-            SystemActionPerformer systemActionPerfomer,
+            SystemActionPerformer systemActionPerformer,
             AccessibilityWindowManager awm, int flags) {
+        accessibilityServiceInfo.setComponentName(COMPONENT_NAME);
+        Slogf.i(LOG_TAG, "Registering UiTestAutomationService (id=%s) when called by user %d",
+                accessibilityServiceInfo.getId(), Binder.getCallingUserHandle().getIdentifier());
         synchronized (mLock) {
-            accessibilityServiceInfo.setComponentName(COMPONENT_NAME);
-
             if (mUiAutomationService != null) {
-                throw new IllegalStateException("UiAutomationService " + serviceClient
-                        + "already registered!");
+                throw new IllegalStateException(
+                        "UiAutomationService " + mUiAutomationService.mServiceInterface
+                                + "already registered!");
             }
 
             try {
@@ -106,15 +113,18 @@ class UiAutomationManager {
                 return;
             }
 
-            mSystemSupport = systemSupport;
-            mUiAutomationService = new UiAutomationService(context, accessibilityServiceInfo, id,
-                    mainHandler, mLock, securityPolicy, systemSupport, windowManagerInternal,
-                    systemActionPerfomer, awm);
-            mUiAutomationServiceOwner = owner;
             mUiAutomationFlags = flags;
-            mUiAutomationServiceInfo = accessibilityServiceInfo;
+            mSystemSupport = systemSupport;
+            // Ignore registering UiAutomation if it is not allowed to use the accessibility
+            // subsystem.
+            if (!useAccessibility()) {
+                return;
+            }
+            mUiAutomationService = new UiAutomationService(context, accessibilityServiceInfo, id,
+                    mainHandler, mLock, securityPolicy, systemSupport, trace, windowManagerInternal,
+                    systemActionPerformer, awm);
+            mUiAutomationServiceOwner = owner;
             mUiAutomationService.mServiceInterface = serviceClient;
-            mUiAutomationService.onAdded();
             try {
                 mUiAutomationService.mServiceInterface.asBinder().linkToDeath(mUiAutomationService,
                         0);
@@ -124,21 +134,23 @@ class UiAutomationManager {
                 return;
             }
 
+            mUiAutomationService.onAdded();
+
             mUiAutomationService.connectServiceUnknownThread();
         }
     }
 
     void unregisterUiTestAutomationServiceLocked(IAccessibilityServiceClient serviceClient) {
         synchronized (mLock) {
-            if ((mUiAutomationService == null)
+            if (useAccessibility()
+                    && ((mUiAutomationService == null)
                     || (serviceClient == null)
                     || (mUiAutomationService.mServiceInterface == null)
                     || (serviceClient.asBinder()
-                    != mUiAutomationService.mServiceInterface.asBinder())) {
+                    != mUiAutomationService.mServiceInterface.asBinder()))) {
                 throw new IllegalStateException("UiAutomationService " + serviceClient
                         + " not registered!");
             }
-
             destroyUiAutomationService();
         }
     }
@@ -150,12 +162,17 @@ class UiAutomationManager {
     }
 
     boolean isUiAutomationRunningLocked() {
-        return (mUiAutomationService != null);
+        return (mUiAutomationService != null || !useAccessibility());
     }
 
     boolean suppressingAccessibilityServicesLocked() {
-        return (mUiAutomationService != null) && ((mUiAutomationFlags
+        return (mUiAutomationService != null || !useAccessibility())
+                && ((mUiAutomationFlags
                 & UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES) == 0);
+    }
+
+    boolean useAccessibility() {
+        return ((mUiAutomationFlags & UiAutomation.FLAG_DONT_USE_ACCESSIBILITY) == 0);
     }
 
     boolean isTouchExplorationEnabledLocked() {
@@ -209,14 +226,14 @@ class UiAutomationManager {
                 mUiAutomationService.onRemoved();
                 mUiAutomationService.resetLocked();
                 mUiAutomationService = null;
-                mUiAutomationFlags = 0;
                 if (mUiAutomationServiceOwner != null) {
                     mUiAutomationServiceOwner.unlinkToDeath(
                             mUiAutomationServiceOwnerDeathRecipient, 0);
                     mUiAutomationServiceOwner = null;
                 }
-                mSystemSupport.onClientChangeLocked(false);
             }
+            mUiAutomationFlags = 0;
+            mSystemSupport.onClientChangeLocked(false);
         }
     }
 
@@ -226,12 +243,14 @@ class UiAutomationManager {
         UiAutomationService(Context context, AccessibilityServiceInfo accessibilityServiceInfo,
                 int id, Handler mainHandler, Object lock,
                 AccessibilitySecurityPolicy securityPolicy,
-                SystemSupport systemSupport, WindowManagerInternal windowManagerInternal,
-                SystemActionPerformer systemActionPerfomer, AccessibilityWindowManager awm) {
+                SystemSupport systemSupport, AccessibilityTrace trace,
+                WindowManagerInternal windowManagerInternal,
+                SystemActionPerformer systemActionPerformer, AccessibilityWindowManager awm) {
             super(context, COMPONENT_NAME, accessibilityServiceInfo, id, mainHandler, lock,
-                    securityPolicy, systemSupport, windowManagerInternal, systemActionPerfomer,
-                    awm);
+                    securityPolicy, systemSupport, trace, windowManagerInternal,
+                    systemActionPerformer, awm);
             mMainHandler = mainHandler;
+            setDisplayTypes(DISPLAY_TYPE_DEFAULT | DISPLAY_TYPE_PROXY);
         }
 
         void connectServiceUnknownThread() {
@@ -239,16 +258,26 @@ class UiAutomationManager {
             mMainHandler.post(() -> {
                 try {
                     final IAccessibilityServiceClient serviceInterface;
-                    final IBinder service;
                     synchronized (mLock) {
                         serviceInterface = mServiceInterface;
-                        mService = (serviceInterface == null) ? null : mServiceInterface.asBinder();
-                        service = mService;
+                        if (serviceInterface == null) {
+                            mService = null;
+                        } else {
+                            mService = mServiceInterface.asBinder();
+                            mService.linkToDeath(this, 0);
+                        }
                     }
                     // If the serviceInterface is null, the UiAutomation has been shut down on
                     // another thread.
                     if (serviceInterface != null) {
-                        service.linkToDeath(this, 0);
+                        if (mTrace.isA11yTracingEnabledForTypes(
+                                AccessibilityTrace.FLAGS_ACCESSIBILITY_SERVICE_CLIENT)) {
+                            mTrace.logTrace("UiAutomationService.connectServiceUnknownThread",
+                                    AccessibilityTrace.FLAGS_ACCESSIBILITY_SERVICE_CLIENT,
+                                    "serviceConnection=" + this + ";connectionId=" + mId
+                                    + "windowToken="
+                                    + mOverlayWindowTokens.get(Display.DEFAULT_DISPLAY));
+                        }
                         serviceInterface.init(this, mId,
                                 mOverlayWindowTokens.get(Display.DEFAULT_DISPLAY));
                     }
@@ -300,6 +329,11 @@ class UiAutomationManager {
         @Override
         public boolean switchToInputMethod(String imeId) {
             return false;
+        }
+
+        @Override
+        public int setInputMethodEnabled(String imeId, boolean enabled) {
+            return AccessibilityService.SoftKeyboardController.ENABLE_IME_FAIL_UNKNOWN;
         }
 
         @Override

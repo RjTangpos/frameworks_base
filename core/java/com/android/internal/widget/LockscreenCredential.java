@@ -26,18 +26,22 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.os.Parcel;
 import android.os.Parcelable;
-import android.os.storage.StorageManager;
 import android.text.TextUtils;
 
+import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.Preconditions;
 
+import libcore.util.HexEncoding;
+
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
 /**
- * A class representing a lockscreen credential. It can be either an empty password, a pattern
- * or a password (or PIN).
+ * A class representing a lockscreen credential, also called a Lock Screen Knowledge Factor (LSKF).
+ * It can be a PIN, pattern, password, or none (a.k.a. empty).
  *
  * <p> As required by some security certification, the framework tries its best to
  * remove copies of the lockscreen credential bytes from memory. In this regard, this class
@@ -48,10 +52,10 @@ import java.util.Objects;
  *     // Process the credential in some way
  * }
  * </pre>
- * With this construct, we can garantee that there will be no copies of the password left in
- * memory when the credential goes out of scope. This should help mitigate certain class of
- * attacks where the attcker gains read-only access to full device memory (cold boot attack,
- * unsecured software/hardware memory dumping interfaces such as JTAG).
+ * With this construct, we can guarantee that there will be no copies of the credential left in
+ * memory when the object goes out of scope. This should help mitigate certain class of attacks
+ * where the attacker gains read-only access to full device memory (cold boot attack, unsecured
+ * software/hardware memory dumping interfaces such as JTAG).
  */
 public class LockscreenCredential implements Parcelable, AutoCloseable {
 
@@ -171,27 +175,6 @@ public class LockscreenCredential implements Parcelable, AutoCloseable {
         return mCredential;
     }
 
-    /**
-     *  Returns the credential type recognized by {@link StorageManager}. Can be one of
-     *  {@link StorageManager#CRYPT_TYPE_DEFAULT}, {@link StorageManager#CRYPT_TYPE_PATTERN},
-     *  {@link StorageManager#CRYPT_TYPE_PIN} or {@link StorageManager#CRYPT_TYPE_PASSWORD}.
-     */
-    public int getStorageCryptType() {
-        if (isNone()) {
-            return StorageManager.CRYPT_TYPE_DEFAULT;
-        }
-        if (isPattern()) {
-            return StorageManager.CRYPT_TYPE_PATTERN;
-        }
-        if (isPin()) {
-            return StorageManager.CRYPT_TYPE_PIN;
-        }
-        if (isPassword()) {
-            return StorageManager.CRYPT_TYPE_PASSWORD;
-        }
-        throw new IllegalStateException("Unhandled credential type");
-    }
-
     /** Returns whether this is an empty credential */
     public boolean isNone() {
         ensureNotZeroized();
@@ -276,6 +259,60 @@ public class LockscreenCredential implements Parcelable, AutoCloseable {
         return getType() == storedCredentialType;
     }
 
+    /**
+     * Hash the password for password history check purpose.
+     */
+    public String passwordToHistoryHash(byte[] salt, byte[] hashFactor) {
+        return passwordToHistoryHash(mCredential, salt, hashFactor);
+    }
+
+    /**
+     * Hash the password for password history check purpose.
+     */
+    public static String passwordToHistoryHash(
+            byte[] passwordToHash, byte[] salt, byte[] hashFactor) {
+        if (passwordToHash == null || passwordToHash.length == 0
+                || hashFactor == null || salt == null) {
+            return null;
+        }
+        try {
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            sha256.update(hashFactor);
+            sha256.update(passwordToHash);
+            sha256.update(salt);
+            return HexEncoding.encodeToString(sha256.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new AssertionError("Missing digest algorithm: ", e);
+        }
+    }
+
+    /**
+     * Hash the given password for the password history, using the legacy algorithm.
+     *
+     * @deprecated This algorithm is insecure because the password can be easily bruteforced, given
+     *             the hash and salt.  Use {@link #passwordToHistoryHash(byte[], byte[], byte[])}
+     *             instead, which incorporates an SP-derived secret into the hash.
+     *
+     * @return the legacy password hash
+     */
+    @Deprecated
+    public static String legacyPasswordToHash(byte[] password, byte[] salt) {
+        if (password == null || password.length == 0 || salt == null) {
+            return null;
+        }
+
+        try {
+            byte[] saltedPassword = ArrayUtils.concat(password, salt);
+            byte[] sha1 = MessageDigest.getInstance("SHA-1").digest(saltedPassword);
+            byte[] md5 = MessageDigest.getInstance("MD5").digest(saltedPassword);
+
+            Arrays.fill(saltedPassword, (byte) 0);
+            return HexEncoding.encodeToString(ArrayUtils.concat(sha1, md5));
+        } catch (NoSuchAlgorithmException e) {
+            throw new AssertionError("Missing digest algorithm: ", e);
+        }
+    }
+
     @Override
     public void writeToParcel(Parcel dest, int flags) {
         dest.writeInt(mType);
@@ -309,7 +346,7 @@ public class LockscreenCredential implements Parcelable, AutoCloseable {
     @Override
     public int hashCode() {
         // Effective Java — Always override hashCode when you override equals
-        return (17 + mType) * 31 + mCredential.hashCode();
+        return Objects.hash(mType, Arrays.hashCode(mCredential));
     }
 
     @Override

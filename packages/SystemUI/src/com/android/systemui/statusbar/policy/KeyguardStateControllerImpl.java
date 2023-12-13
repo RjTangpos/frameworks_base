@@ -16,6 +16,10 @@
 
 package com.android.systemui.statusbar.policy;
 
+import static android.hardware.biometrics.BiometricSourceType.FACE;
+
+import static com.android.systemui.flags.Flags.LOCKSCREEN_ENABLE_LANDSCAPE;
+
 import android.annotation.NonNull;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -23,6 +27,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.hardware.biometrics.BiometricSourceType;
 import android.os.Build;
+import android.os.SystemProperties;
 import android.os.Trace;
 
 import androidx.annotation.VisibleForTesting;
@@ -30,32 +35,43 @@ import androidx.annotation.VisibleForTesting;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.keyguard.KeyguardUpdateMonitorCallback;
+import com.android.keyguard.logging.KeyguardUpdateMonitorLogger;
 import com.android.systemui.Dumpable;
+import com.android.systemui.R;
+import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FeatureFlags;
+import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
 
-import java.io.FileDescriptor;
+import dagger.Lazy;
+
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Objects;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
+ *
  */
-@Singleton
+@SysUISingleton
 public class KeyguardStateControllerImpl implements KeyguardStateController, Dumpable {
 
     private static final boolean DEBUG_AUTH_WITH_ADB = false;
     private static final String AUTH_BROADCAST_KEY = "debug_trigger_auth";
 
     private final ArrayList<Callback> mCallbacks = new ArrayList<>();
+    private final Context mContext;
     private final KeyguardUpdateMonitor mKeyguardUpdateMonitor;
     private final LockPatternUtils mLockPatternUtils;
     private final KeyguardUpdateMonitorCallback mKeyguardUpdateMonitorCallback =
             new UpdateMonitorCallback();
+    private final Lazy<KeyguardUnlockAnimationController> mUnlockAnimationControllerLazy;
+    private final KeyguardUpdateMonitorLogger mLogger;
 
     private boolean mCanDismissLockScreen;
     private boolean mShowing;
+    private boolean mPrimaryBouncerShowing;
     private boolean mSecure;
     private boolean mOccluded;
 
@@ -64,20 +80,56 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     private long mKeyguardFadingAwayDuration;
     private boolean mKeyguardGoingAway;
     private boolean mLaunchTransitionFadingAway;
-    private boolean mBypassFadingAnimation;
     private boolean mTrustManaged;
     private boolean mTrusted;
     private boolean mDebugUnlocked = false;
     private boolean mFaceAuthEnabled;
 
+    private float mDismissAmount = 0f;
+    private boolean mDismissingFromTouch = false;
+
     /**
+     * Whether the panel is currently flinging to a collapsed state, which means we're dismissing
+     * the keyguard.
+     */
+    private boolean mFlingingToDismissKeyguard = false;
+
+    /**
+     * Whether the panel is currently flinging to a collapsed state, which means we're dismissing
+     * the keyguard, and the fling started during a swipe gesture. This means that we need to take
+     * over the gesture and animate the rest of the way dismissed.
+     */
+    private boolean mFlingingToDismissKeyguardDuringSwipeGesture = false;
+
+    /**
+     * Whether the panel is currently flinging to an expanded state, which means we cancelled the
+     * dismiss gesture and are snapping back to the keyguard state.
+     */
+    private boolean mSnappingKeyguardBackAfterSwipe = false;
+
+    private FeatureFlags mFeatureFlags;
+
+    /**
+     *
      */
     @Inject
-    public KeyguardStateControllerImpl(Context context,
-            KeyguardUpdateMonitor keyguardUpdateMonitor, LockPatternUtils lockPatternUtils) {
+    public KeyguardStateControllerImpl(
+            Context context,
+            KeyguardUpdateMonitor keyguardUpdateMonitor,
+            LockPatternUtils lockPatternUtils,
+            Lazy<KeyguardUnlockAnimationController> keyguardUnlockAnimationController,
+            KeyguardUpdateMonitorLogger logger,
+            DumpManager dumpManager,
+            FeatureFlags featureFlags) {
+        mContext = context;
+        mLogger = logger;
         mKeyguardUpdateMonitor = keyguardUpdateMonitor;
         mLockPatternUtils = lockPatternUtils;
         mKeyguardUpdateMonitor.registerCallback(mKeyguardUpdateMonitorCallback);
+        mUnlockAnimationControllerLazy = keyguardUnlockAnimationController;
+        mFeatureFlags = featureFlags;
+
+        dumpManager.registerDumpable(getClass().getSimpleName(), this);
 
         update(true /* updateAlways */);
         if (Build.IS_DEBUGGABLE && DEBUG_AUTH_WITH_ADB) {
@@ -92,7 +144,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
                         update(true /* updateAlways */);
                     }
                 }
-            }, filter, null, null);
+            }, filter, null, null, Context.RECEIVER_EXPORTED_UNAUDITED);
         }
     }
 
@@ -116,6 +168,11 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     }
 
     @Override
+    public boolean isPrimaryBouncerShowing() {
+        return mPrimaryBouncerShowing;
+    }
+
+    @Override
     public boolean isMethodSecure() {
         return mSecure;
     }
@@ -135,7 +192,15 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
         if (mShowing == showing && mOccluded == occluded) return;
         mShowing = showing;
         mOccluded = occluded;
+        mKeyguardUpdateMonitor.setKeyguardShowing(showing, occluded);
+        Trace.instantForTrack(Trace.TRACE_TAG_APP, "UI Events",
+                "Keyguard showing: " + showing + " occluded: " + occluded);
         notifyKeyguardChanged();
+
+        // Update the dismiss amount to the full 0f/1f if we explicitly show or hide the keyguard.
+        // Otherwise, the dismiss amount could be left at a random value if we show/hide during a
+        // dismiss gesture, canceling the gesture.
+        notifyKeyguardDismissAmountChanged(showing ? 0f : 1f, false);
     }
 
     private void notifyKeyguardChanged() {
@@ -143,6 +208,11 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
         // Copy the list to allow removal during callback.
         new ArrayList<>(mCallbacks).forEach(Callback::onKeyguardShowingChanged);
         Trace.endSection();
+    }
+
+    private void notifyKeyguardFaceAuthEnabledChanged() {
+        // Copy the list to allow removal during callback.
+        new ArrayList<>(mCallbacks).forEach(Callback::onFaceAuthEnabledChanged);
     }
 
     private void notifyUnlockedChanged() {
@@ -153,15 +223,16 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     }
 
     @Override
-    public void notifyKeyguardFadingAway(long delay, long fadeoutDuration, boolean isBypassFading) {
+    public void notifyKeyguardFadingAway(long delay, long fadeoutDuration) {
         mKeyguardFadingAwayDelay = delay;
         mKeyguardFadingAwayDuration = fadeoutDuration;
-        mBypassFadingAnimation = isBypassFading;
         setKeyguardFadingAway(true);
     }
 
     private void setKeyguardFadingAway(boolean keyguardFadingAway) {
         if (mKeyguardFadingAway != keyguardFadingAway) {
+            Trace.traceCounter(Trace.TRACE_TAG_APP, "keyguardFadingAway",
+                    keyguardFadingAway ? 1 : 0);
             mKeyguardFadingAway = keyguardFadingAway;
             ArrayList<Callback> callbacks = new ArrayList<>(mCallbacks);
             for (int i = 0; i < callbacks.size(); i++) {
@@ -172,7 +243,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
 
     @Override
     public void notifyKeyguardDoneFading() {
-        mKeyguardGoingAway = false;
+        notifyKeyguardGoingAway(false);
         setKeyguardFadingAway(false);
     }
 
@@ -195,6 +266,8 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
             mTrusted = trusted;
             mTrustManaged = trustManaged;
             mFaceAuthEnabled = faceAuthEnabled;
+            mLogger.logKeyguardStateUpdate(
+                    mSecure, mCanDismissLockScreen, mTrusted, mTrustManaged);
             notifyUnlockedChanged();
         }
         Trace.endSection();
@@ -203,6 +276,13 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     @Override
     public boolean canDismissLockScreen() {
         return mCanDismissLockScreen;
+    }
+
+    @Override
+    public boolean isKeyguardScreenRotationAllowed() {
+        return SystemProperties.getBoolean("lockscreen.rot_override", false)
+                || mContext.getResources().getBoolean(R.bool.config_enableLockScreenRotation)
+                || mFeatureFlags.isEnabled(LOCKSCREEN_ENABLE_LANDSCAPE);
     }
 
     @Override
@@ -221,8 +301,8 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     }
 
     @Override
-    public boolean isBypassFadingAnimation() {
-        return mBypassFadingAnimation;
+    public boolean isAnimatingBetweenKeyguardAndSurfaceBehind() {
+        return mUnlockAnimationControllerLazy.get().isAnimatingBetweenKeyguardAndSurfaceBehind();
     }
 
     @Override
@@ -241,13 +321,76 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     }
 
     @Override
+    public boolean isFlingingToDismissKeyguard() {
+        return mFlingingToDismissKeyguard;
+    }
+
+    @Override
+    public boolean isFlingingToDismissKeyguardDuringSwipeGesture() {
+        return mFlingingToDismissKeyguardDuringSwipeGesture;
+    }
+
+    @Override
+    public boolean isSnappingKeyguardBackAfterSwipe() {
+        return mSnappingKeyguardBackAfterSwipe;
+    }
+
+    @Override
+    public float getDismissAmount() {
+        return mDismissAmount;
+    }
+
+    @Override
+    public boolean isDismissingFromSwipe() {
+        return mDismissingFromTouch;
+    }
+
+    @Override
     public void notifyKeyguardGoingAway(boolean keyguardGoingAway) {
-        mKeyguardGoingAway = keyguardGoingAway;
+        if (mKeyguardGoingAway != keyguardGoingAway) {
+            Trace.traceCounter(Trace.TRACE_TAG_APP, "keyguardGoingAway",
+                    keyguardGoingAway ? 1 : 0);
+            mKeyguardGoingAway = keyguardGoingAway;
+            new ArrayList<>(mCallbacks).forEach(Callback::onKeyguardGoingAwayChanged);
+        }
+    }
+
+    @Override
+    public void notifyPrimaryBouncerShowing(boolean showing) {
+        if (mPrimaryBouncerShowing != showing) {
+            mPrimaryBouncerShowing = showing;
+
+            new ArrayList<>(mCallbacks).forEach(Callback::onPrimaryBouncerShowingChanged);
+        }
+    }
+
+    @Override
+    public void notifyPanelFlingEnd() {
+        mFlingingToDismissKeyguard = false;
+        mFlingingToDismissKeyguardDuringSwipeGesture = false;
+        mSnappingKeyguardBackAfterSwipe = false;
+    }
+
+    @Override
+    public void notifyPanelFlingStart(boolean flingToDismiss) {
+        mFlingingToDismissKeyguard = flingToDismiss;
+        mFlingingToDismissKeyguardDuringSwipeGesture =
+                flingToDismiss && mDismissingFromTouch;
+        mSnappingKeyguardBackAfterSwipe = !flingToDismiss;
+    }
+
+    @Override
+    public void notifyKeyguardDismissAmountChanged(float dismissAmount,
+            boolean dismissingFromTouch) {
+        mDismissAmount = dismissAmount;
+        mDismissingFromTouch = dismissingFromTouch;
+        new ArrayList<>(mCallbacks).forEach(Callback::onKeyguardDismissAmountChanged);
     }
 
     @Override
     public void setLaunchTransitionFadingAway(boolean fadingAway) {
         mLaunchTransitionFadingAway = fadingAway;
+        new ArrayList<>(mCallbacks).forEach(Callback::onLaunchTransitionFadingAwayChanged);
     }
 
     @Override
@@ -260,14 +403,19 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
      * @param pw Where to dump.
      */
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("KeyguardStateController:");
+        pw.println("  mShowing: " + mShowing);
+        pw.println("  mOccluded: " + mOccluded);
         pw.println("  mSecure: " + mSecure);
         pw.println("  mCanDismissLockScreen: " + mCanDismissLockScreen);
         pw.println("  mTrustManaged: " + mTrustManaged);
         pw.println("  mTrusted: " + mTrusted);
         pw.println("  mDebugUnlocked: " + mDebugUnlocked);
         pw.println("  mFaceAuthEnabled: " + mFaceAuthEnabled);
+        pw.println("  isKeyguardFadingAway: " + isKeyguardFadingAway());
+        pw.println("  isKeyguardGoingAway: " + isKeyguardGoingAway());
+        pw.println("  isLaunchTransitionFadingAway: " + isLaunchTransitionFadingAway());
     }
 
     private class UpdateMonitorCallback extends KeyguardUpdateMonitorCallback {
@@ -288,6 +436,16 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
         }
 
         @Override
+        public void onBiometricEnrollmentStateChanged(BiometricSourceType biometricSourceType) {
+            if (biometricSourceType == FACE) {
+                // We only care about enrollment state here. Keyguard face auth enabled is just
+                // same as face auth enrolled
+                update(false);
+                notifyKeyguardFaceAuthEnabledChanged();
+            }
+        }
+
+        @Override
         public void onStartedWakingUp() {
             update(false /* updateAlways */);
         }
@@ -303,23 +461,28 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
         }
 
         @Override
-        public void onFaceUnlockStateChanged(boolean running, int userId) {
-            update(false /* updateAlways */);
-        }
-
-        @Override
         public void onStrongAuthStateChanged(int userId) {
             update(false /* updateAlways */);
         }
 
         @Override
-        public void onKeyguardVisibilityChanged(boolean showing) {
+        public void onLockedOutStateChanged(BiometricSourceType biometricSourceType) {
+            update(false /* updateAlways */);
+        }
+
+        @Override
+        public void onKeyguardVisibilityChanged(boolean visible) {
             update(false /* updateAlways */);
         }
 
         @Override
         public void onBiometricsCleared() {
             update(false /* alwaysUpdate */);
+        }
+
+        @Override
+        public void onEnabledTrustAgentsChanged(int userId) {
+            update(false /* updateAlways */);
         }
     }
 }

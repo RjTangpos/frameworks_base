@@ -18,6 +18,8 @@ package com.android.systemui.statusbar.notification.collection;
 
 import static org.junit.Assert.assertNotNull;
 
+import android.app.NotificationChannel;
+import android.os.UserHandle;
 import android.service.notification.NotificationListenerService.Ranking;
 import android.service.notification.NotificationListenerService.RankingMap;
 import android.service.notification.StatusBarNotification;
@@ -72,8 +74,20 @@ public class NoManSimulator {
         }
     }
 
+    public void issueChannelModification(
+            String pkg, UserHandle user, NotificationChannel channel, int modificationType) {
+        for (NotificationHandler listener : mListeners) {
+            listener.onNotificationChannelModified(pkg, user, channel, modificationType);
+        }
+    }
+
     public void setRanking(String key, Ranking ranking) {
         mRankings.put(key, ranking);
+    }
+
+    /** This is for testing error cases: b/216384850 */
+    public Ranking removeRankingWithoutEvent(String key) {
+        return mRankings.remove(key);
     }
 
     private RankingMap buildRankingMap() {

@@ -50,8 +50,16 @@ public class SlicePermissionActivity extends Activity implements OnClickListener
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Verify intent is valid
         mUri = getIntent().getParcelableExtra(SliceProvider.EXTRA_BIND_URI);
         mCallingPkg = getIntent().getStringExtra(SliceProvider.EXTRA_PKG);
+        if (mUri == null
+                || !SliceProvider.SLICE_TYPE.equals(getContentResolver().getType(mUri))
+                || !SliceManager.ACTION_REQUEST_SLICE_PERMISSION.equals(getIntent().getAction())) {
+            Log.e(TAG, "Intent is not valid");
+            finish();
+            return;
+        }
 
         try {
             PackageManager pm = getPackageManager();
@@ -103,7 +111,7 @@ public class SlicePermissionActivity extends Activity implements OnClickListener
     }
 
     private void verifyCallingPkg() {
-        final String providerPkg = getIntent().getStringExtra(SliceProvider.EXTRA_PROVIDER_PKG);
+        final String providerPkg = getIntent().getStringExtra("provider_pkg");
         if (providerPkg == null || mProviderPkg.equals(providerPkg)) return;
         final String callingPkg = getCallingPkg();
         EventLog.writeEvent(0x534e4554, "159145361", getUid(callingPkg));

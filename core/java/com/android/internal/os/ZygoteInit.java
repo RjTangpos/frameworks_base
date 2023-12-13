@@ -33,31 +33,31 @@ import android.os.IInstalld;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.ServiceManager;
-import android.os.ServiceSpecificException;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.os.ZygoteProcess;
-import android.os.storage.StorageManager;
 import android.provider.DeviceConfig;
+import android.security.keystore2.AndroidKeyStoreProvider;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructCapUserData;
 import android.system.StructCapUserHeader;
 import android.text.Hyphenator;
+import android.text.TextUtils;
 import android.util.EventLog;
 import android.util.Log;
 import android.util.Slog;
 import android.util.TimingsTraceLog;
+import android.view.WindowManager;
 import android.webkit.WebViewFactory;
 import android.widget.TextView;
 
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.util.Preconditions;
 
-import dalvik.system.DexFile;
 import dalvik.system.VMRuntime;
 import dalvik.system.ZygoteHooks;
 
@@ -73,6 +73,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.security.Provider;
 import java.security.Security;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Startup class for the zygote process.
@@ -125,6 +127,12 @@ public class ZygoteInit {
     private static final int ROOT_GID = 0;
 
     private static boolean sPreloadComplete;
+
+    /**
+     * Cached classloader to use for the system server. Will only be populated in the system
+     * server process.
+     */
+    private static ClassLoader sCachedSystemServerClassLoader = null;
 
     static void preload(TimingsTraceLog bootTimingsTraceLog) {
         Log.d(TAG, "begin preload");
@@ -180,13 +188,12 @@ public class ZygoteInit {
     private static void preloadSharedLibraries() {
         Log.i(TAG, "Preloading shared libraries...");
         System.loadLibrary("android");
-        System.loadLibrary("compiler_rt");
         System.loadLibrary("jnigraphics");
 
-        try {
-            System.loadLibrary("sfplugin_ccodec");
-        } catch (Error | RuntimeException e) {
-            // tolerate missing sfplugin_ccodec which is only present on Codec 2 devices
+        // TODO(b/206676167): This library is only used for renderscript today. When renderscript is
+        // removed, this load can be removed as well.
+        if (!SystemProperties.getBoolean("config.disable_renderscript", false)) {
+            System.loadLibrary("compiler_rt");
         }
     }
 
@@ -222,10 +229,8 @@ public class ZygoteInit {
         long startTime = SystemClock.uptimeMillis();
         Trace.traceBegin(
                 Trace.TRACE_TAG_DALVIK, "Starting installation of AndroidKeyStoreProvider");
-        // AndroidKeyStoreProvider.install() manipulates the list of JCA providers to insert
-        // preferred providers. Note this is not done via security.properties as the JCA providers
-        // are not on the classpath in the case of, for example, raw dalvikvm runtimes.
-        android.security.keystore2.AndroidKeyStoreProvider.install();
+
+        AndroidKeyStoreProvider.install();
         Log.i(TAG, "Installed AndroidKeyStoreProvider in "
                 + (SystemClock.uptimeMillis() - startTime) + "ms.");
         Trace.traceEnd(Trace.TRACE_TAG_DALVIK);
@@ -239,6 +244,21 @@ public class ZygoteInit {
         Log.i(TAG, "Warmed up JCA providers in "
                 + (SystemClock.uptimeMillis() - startTime) + "ms.");
         Trace.traceEnd(Trace.TRACE_TAG_DALVIK);
+    }
+
+    private static boolean isExperimentEnabled(String experiment) {
+        boolean defaultValue = SystemProperties.getBoolean(
+                "dalvik.vm." + experiment,
+                /*def=*/false);
+        // Can't use device_config since we are the zygote, and it's not initialized at this point.
+        return SystemProperties.getBoolean(
+                "persist.device_config." + DeviceConfig.NAMESPACE_RUNTIME_NATIVE_BOOT
+                        + "." + experiment,
+                defaultValue);
+    }
+
+    /* package-private */ static boolean shouldProfileSystemServer() {
+        return isExperimentEnabled("profilesystemserver");
     }
 
     /**
@@ -344,14 +364,7 @@ public class ZygoteInit {
             // If we are profiling the boot image, reset the Jit counters after preloading the
             // classes. We want to preload for performance, and we can use method counters to
             // infer what clases are used after calling resetJitCounters, for profile purposes.
-            // Can't use device_config since we are the zygote.
-            String prop = SystemProperties.get(
-                    "persist.device_config.runtime_native_boot.profilebootclasspath", "");
-            // Might be empty if the property is unset since the default is "".
-            if (prop.length() == 0) {
-                prop = SystemProperties.get("dalvik.vm.profilebootclasspath", "");
-            }
-            if ("true".equals(prop)) {
+            if (isExperimentEnabled("profilebootclasspath")) {
                 Trace.traceBegin(Trace.TRACE_TAG_DALVIK, "ResetJitCounters");
                 VMRuntime.resetJitCounters();
                 Trace.traceEnd(Trace.TRACE_TAG_DALVIK);
@@ -374,30 +387,49 @@ public class ZygoteInit {
      * classpath.
      */
     private static void cacheNonBootClasspathClassLoaders() {
+        // Ordered dependencies first
+        final List<SharedLibraryInfo> libs = new ArrayList<>();
         // These libraries used to be part of the bootclasspath, but had to be removed.
         // Old system applications still get them for backwards compatibility reasons,
         // so they are cached here in order to preserve performance characteristics.
-        SharedLibraryInfo hidlBase = new SharedLibraryInfo(
+        libs.add(new SharedLibraryInfo(
                 "/system/framework/android.hidl.base-V1.0-java.jar", null /*packageName*/,
                 null /*codePaths*/, null /*name*/, 0 /*version*/, SharedLibraryInfo.TYPE_BUILTIN,
-                null /*declaringPackage*/, null /*dependentPackages*/, null /*dependencies*/);
-        SharedLibraryInfo hidlManager = new SharedLibraryInfo(
+                null /*declaringPackage*/, null /*dependentPackages*/, null /*dependencies*/,
+                false /*isNative*/));
+        libs.add(new SharedLibraryInfo(
                 "/system/framework/android.hidl.manager-V1.0-java.jar", null /*packageName*/,
                 null /*codePaths*/, null /*name*/, 0 /*version*/, SharedLibraryInfo.TYPE_BUILTIN,
-                null /*declaringPackage*/, null /*dependentPackages*/, null /*dependencies*/);
+                null /*declaringPackage*/, null /*dependentPackages*/, null /*dependencies*/,
+                false /*isNative*/));
 
-        SharedLibraryInfo androidTestBase = new SharedLibraryInfo(
+        libs.add(new SharedLibraryInfo(
                 "/system/framework/android.test.base.jar", null /*packageName*/,
                 null /*codePaths*/, null /*name*/, 0 /*version*/, SharedLibraryInfo.TYPE_BUILTIN,
-                null /*declaringPackage*/, null /*dependentPackages*/, null /*dependencies*/);
+                null /*declaringPackage*/, null /*dependentPackages*/, null /*dependencies*/,
+                false /*isNative*/));
 
-        ApplicationLoaders.getDefault().createAndCacheNonBootclasspathSystemClassLoaders(
-                new SharedLibraryInfo[]{
-                    // ordered dependencies first
-                    hidlBase,
-                    hidlManager,
-                    androidTestBase,
-                });
+        // WindowManager Extensions is an optional shared library that is required for WindowManager
+        // Jetpack to fully function. Since it is a widely used library, preload it to improve apps
+        // startup performance.
+        if (WindowManager.hasWindowExtensionsEnabled()) {
+            final String systemExtFrameworkPath =
+                    new File(Environment.getSystemExtDirectory(), "framework").getPath();
+            libs.add(new SharedLibraryInfo(
+                    systemExtFrameworkPath + "/androidx.window.extensions.jar",
+                    "androidx.window.extensions", null /*codePaths*/,
+                    "androidx.window.extensions", SharedLibraryInfo.VERSION_UNDEFINED,
+                    SharedLibraryInfo.TYPE_BUILTIN, null /*declaringPackage*/,
+                    null /*dependentPackages*/, null /*dependencies*/, false /*isNative*/));
+            libs.add(new SharedLibraryInfo(
+                    systemExtFrameworkPath + "/androidx.window.sidecar.jar",
+                    "androidx.window.sidecar", null /*codePaths*/,
+                    "androidx.window.sidecar", SharedLibraryInfo.VERSION_UNDEFINED,
+                    SharedLibraryInfo.TYPE_BUILTIN, null /*declaringPackage*/,
+                    null /*dependentPackages*/, null /*dependencies*/, false /*isNative*/));
+        }
+
+        ApplicationLoaders.getDefault().createAndCacheNonBootclasspathSystemClassLoaders(libs);
     }
 
     /**
@@ -489,16 +521,6 @@ public class ZygoteInit {
         ZygoteHooks.gcAndFinalize();
     }
 
-    private static boolean shouldProfileSystemServer() {
-        boolean defaultValue = SystemProperties.getBoolean("dalvik.vm.profilesystemserver",
-                /*default=*/ false);
-        // Can't use DeviceConfig since it's not initialized at this point.
-        return SystemProperties.getBoolean(
-                "persist.device_config." + DeviceConfig.NAMESPACE_RUNTIME_NATIVE_BOOT
-                        + ".profilesystemserver",
-                defaultValue);
-    }
-
     /**
      * Finish remaining work for the newly forked system server process.
      */
@@ -512,13 +534,17 @@ public class ZygoteInit {
 
         final String systemServerClasspath = Os.getenv("SYSTEMSERVERCLASSPATH");
         if (systemServerClasspath != null) {
-            performSystemServerDexOpt(systemServerClasspath);
             // Capturing profiles is only supported for debug or eng builds since selinux normally
             // prevents it.
             if (shouldProfileSystemServer() && (Build.IS_USERDEBUG || Build.IS_ENG)) {
                 try {
                     Log.d(TAG, "Preparing system server profile");
-                    prepareSystemServerProfile(systemServerClasspath);
+                    final String standaloneSystemServerJars =
+                            Os.getenv("STANDALONE_SYSTEMSERVER_JARS");
+                    final String systemServerPaths = standaloneSystemServerJars != null
+                            ? String.join(":", systemServerClasspath, standaloneSystemServerJars)
+                            : systemServerClasspath;
+                    prepareSystemServerProfile(systemServerPaths);
                 } catch (Exception e) {
                     Log.wtf(TAG, "Failed to set up system server profile", e);
                 }
@@ -544,10 +570,8 @@ public class ZygoteInit {
 
             throw new IllegalStateException("Unexpected return from WrapperInit.execApplication");
         } else {
-            ClassLoader cl = null;
-            if (systemServerClasspath != null) {
-                cl = createPathClassLoader(systemServerClasspath, parsedArgs.mTargetSdkVersion);
-
+            ClassLoader cl = getOrCreateSystemServerClassLoader();
+            if (cl != null) {
                 Thread.currentThread().setContextClassLoader(cl);
             }
 
@@ -563,16 +587,62 @@ public class ZygoteInit {
     }
 
     /**
+     * Create the classloader for the system server and store it in
+     * {@link sCachedSystemServerClassLoader}. This function is called through JNI in the forked
+     * system server process in the zygote SELinux domain.
+     */
+    private static ClassLoader getOrCreateSystemServerClassLoader() {
+        if (sCachedSystemServerClassLoader == null) {
+            final String systemServerClasspath = Os.getenv("SYSTEMSERVERCLASSPATH");
+            if (systemServerClasspath != null) {
+                sCachedSystemServerClassLoader = createPathClassLoader(systemServerClasspath,
+                        VMRuntime.SDK_VERSION_CUR_DEVELOPMENT);
+            }
+        }
+        return sCachedSystemServerClassLoader;
+    }
+
+    /**
+     * Creates class loaders for standalone system server jars. This function is called through JNI
+     * in the forked system server process in the zygote SELinux domain.
+     */
+    private static void prefetchStandaloneSystemServerJars() {
+        if (shouldProfileSystemServer()) {
+            // We don't prefetch AOT artifacts if we are profiling system server, as we are going to
+            // JIT it.
+            // This method only gets called from native and should already be skipped if we profile
+            // system server. Still, be robust and check it again.
+            return;
+        }
+        String envStr = Os.getenv("STANDALONE_SYSTEMSERVER_JARS");
+        if (TextUtils.isEmpty(envStr)) {
+            return;
+        }
+        for (String jar : envStr.split(":")) {
+            try {
+                SystemServerClassLoaderFactory.createClassLoader(
+                        jar, getOrCreateSystemServerClassLoader());
+            } catch (Error e) {
+                // We don't want the process to crash for this error because prefetching is just an
+                // optimization.
+                Log.e(TAG,
+                        String.format("Failed to prefetch standalone system server jar \"%s\": %s",
+                                jar, e.toString()));
+            }
+        }
+    }
+
+    /**
      * Note that preparing the profiles for system server does not require special selinux
      * permissions. From the installer perspective the system server is a regular package which can
      * capture profile information.
      */
-    private static void prepareSystemServerProfile(String systemServerClasspath)
+    private static void prepareSystemServerProfile(String systemServerPaths)
             throws RemoteException {
-        if (systemServerClasspath.isEmpty()) {
+        if (systemServerPaths.isEmpty()) {
             return;
         }
-        String[] codePaths = systemServerClasspath.split(":");
+        String[] codePaths = systemServerPaths.split(":");
 
         final IInstalld installd = IInstalld.Stub
                 .asInterface(ServiceManager.getService("installd"));
@@ -587,10 +657,18 @@ public class ZygoteInit {
                 codePaths[0],
                 /*dexMetadata*/ null);
 
-        File profileDir = Environment.getDataProfilesDePackageDirectory(
+        File curProfileDir = Environment.getDataProfilesDePackageDirectory(
                 UserHandle.USER_SYSTEM, systemServerPackageName);
-        String profilePath = new File(profileDir, systemServerProfileName).getAbsolutePath();
-        VMRuntime.registerAppInfo(profilePath, codePaths);
+        String curProfilePath = new File(curProfileDir, systemServerProfileName).getAbsolutePath();
+        File refProfileDir = Environment.getDataProfilesDePackageDirectory(
+                UserHandle.USER_SYSTEM, systemServerPackageName);
+        String refProfilePath = new File(refProfileDir, systemServerProfileName).getAbsolutePath();
+        VMRuntime.registerAppInfo(
+                systemServerPackageName,
+                curProfilePath,
+                refProfilePath,
+                codePaths,
+                VMRuntime.CODE_PATH_TYPE_PRIMARY_APK);
     }
 
     /**
@@ -631,95 +709,6 @@ public class ZygoteInit {
     }
 
     /**
-     * Performs dex-opt on the elements of {@code classPath}, if needed. We choose the instruction
-     * set of the current runtime.
-     */
-    private static void performSystemServerDexOpt(String classPath) {
-        final String[] classPathElements = classPath.split(":");
-        final String instructionSet = VMRuntime.getRuntime().vmInstructionSet();
-
-        String classPathForElement = "";
-        for (String classPathElement : classPathElements) {
-            // We default to the verify filter because the compilation will happen on /data and
-            // system server cannot load executable code outside /system.
-            String systemServerFilter = SystemProperties.get(
-                    "dalvik.vm.systemservercompilerfilter", "verify");
-
-            String classLoaderContext =
-                        getSystemServerClassLoaderContext(classPathForElement);
-            int dexoptNeeded;
-            try {
-                dexoptNeeded = DexFile.getDexOptNeeded(
-                        classPathElement, instructionSet, systemServerFilter,
-                        classLoaderContext, false /* newProfile */, false /* downgrade */);
-            } catch (FileNotFoundException ignored) {
-                // Do not add to the classpath.
-                Log.w(TAG, "Missing classpath element for system server: " + classPathElement);
-                continue;
-            } catch (IOException e) {
-                // Not fully clear what to do here as we don't know the cause of the
-                // IO exception. Add to the classpath to be conservative, but don't
-                // attempt to compile it.
-                Log.w(TAG, "Error checking classpath element for system server: "
-                        + classPathElement, e);
-                dexoptNeeded = DexFile.NO_DEXOPT_NEEDED;
-            }
-
-            if (dexoptNeeded != DexFile.NO_DEXOPT_NEEDED) {
-                final String packageName = "*";
-                final String outputPath = null;
-                final int dexFlags = 0;
-                final String uuid = StorageManager.UUID_PRIVATE_INTERNAL;
-                final String seInfo = null;
-                final int targetSdkVersion = 0;  // SystemServer targets the system's SDK version
-                // Wait for installd to be made available
-                IInstalld installd = IInstalld.Stub.asInterface(
-                        ServiceManager.waitForService("installd"));
-
-                try {
-                    installd.dexopt(classPathElement, Process.SYSTEM_UID, packageName,
-                            instructionSet, dexoptNeeded, outputPath, dexFlags, systemServerFilter,
-                            uuid, classLoaderContext, seInfo, false /* downgrade */,
-                            targetSdkVersion, /*profileName*/ null, /*dexMetadataPath*/ null,
-                            "server-dexopt");
-                } catch (RemoteException | ServiceSpecificException e) {
-                    // Ignore (but log), we need this on the classpath for fallback mode.
-                    Log.w(TAG, "Failed compiling classpath element for system server: "
-                            + classPathElement, e);
-                }
-            }
-
-            classPathForElement = encodeSystemServerClassPath(
-                    classPathForElement, classPathElement);
-        }
-    }
-
-    /**
-     * Encodes the system server class loader context in a format that is accepted by dexopt. This
-     * assumes the system server is always loaded with a {@link dalvik.system.PathClassLoader}.
-     *
-     * Note that ideally we would use the {@code DexoptUtils} to compute this. However we have no
-     * dependency here on the server so we hard code the logic again.
-     */
-    private static String getSystemServerClassLoaderContext(String classPath) {
-        return classPath == null ? "PCL[]" : "PCL[" + classPath + "]";
-    }
-
-    /**
-     * Encodes the class path in a format accepted by dexopt.
-     *
-     * @param classPath  The old class path (may be empty).
-     * @param newElement  The new class path elements
-     * @return The class path encoding resulted from appending {@code newElement} to {@code
-     * classPath}.
-     */
-    private static String encodeSystemServerClassPath(String classPath, String newElement) {
-        return (classPath == null || classPath.isEmpty())
-                ? newElement
-                : classPath + ":" + newElement;
-    }
-
-    /**
      * Prepare the arguments and forks for the system server process.
      *
      * @return A {@code Runnable} that provides an entrypoint into system_server code in the child
@@ -751,14 +740,15 @@ public class ZygoteInit {
         } catch (ErrnoException ex) {
             throw new RuntimeException("Failed to capget()", ex);
         }
-        capabilities &= ((long) data[0].effective) | (((long) data[1].effective) << 32);
+        capabilities &= Integer.toUnsignedLong(data[0].effective) |
+                (Integer.toUnsignedLong(data[1].effective) << 32);
 
         /* Hardcoded command line to start the system server */
         String[] args = {
                 "--setuid=1000",
                 "--setgid=1000",
                 "--setgroups=1001,1002,1003,1004,1005,1006,1007,1008,1009,1010,1018,1021,1023,"
-                        + "1024,1032,1065,3001,3002,3003,3006,3007,3009,3010,3011",
+                        + "1024,1032,1065,3001,3002,3003,3005,3006,3007,3009,3010,3011,3012",
                 "--capabilities=" + capabilities + "," + capabilities,
                 "--nice-name=system_server",
                 "--runtime-args",
@@ -781,10 +771,13 @@ public class ZygoteInit {
             Zygote.applyInvokeWithSystemProperty(parsedArgs);
 
             if (Zygote.nativeSupportsMemoryTagging()) {
-                /* The system server has ASYNC MTE by default, in order to allow
-                 * system services to specify their own MTE level later, as you
-                 * can't re-enable MTE once it's disabled. */
-                String mode = SystemProperties.get("arm64.memtag.process.system_server", "async");
+                String mode = SystemProperties.get("persist.arm64.memtag.system_server", "");
+                if (mode.isEmpty()) {
+                  /* The system server has ASYNC MTE by default, in order to allow
+                   * system services to specify their own MTE level later, as you
+                   * can't re-enable MTE once it's disabled. */
+                  mode = SystemProperties.get("persist.arm64.memtag.default", "async");
+                }
                 if (mode.equals("async")) {
                     parsedArgs.mRuntimeFlags |= Zygote.MEMORY_TAG_LEVEL_ASYNC;
                 } else if (mode.equals("sync")) {
@@ -964,7 +957,7 @@ public class ZygoteInit {
             // loops forever in the zygote.
             caller = zygoteServer.runSelectLoop(abiList);
         } catch (Throwable ex) {
-            Log.e(TAG, "System zygote died with exception", ex);
+            Log.e(TAG, "System zygote died with fatal exception", ex);
             throw ex;
         } finally {
             if (zygoteServer != null) {

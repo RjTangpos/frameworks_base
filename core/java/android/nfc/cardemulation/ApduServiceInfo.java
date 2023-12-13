@@ -16,6 +16,7 @@
 
 package android.nfc.cardemulation;
 
+import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.pm.PackageManager;
@@ -527,6 +528,7 @@ public final class ApduServiceInfo implements Parcelable {
     public String toString() {
         StringBuilder out = new StringBuilder("ApduService: ");
         out.append(getComponent());
+        out.append(", UID: " + mUid);
         out.append(", description: " + mDescription);
         out.append(", Static AID Groups: ");
         for (AidGroup aidGroup : mStaticAidGroups.values()) {
@@ -540,12 +542,13 @@ public final class ApduServiceInfo implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) return true;
         if (!(o instanceof ApduServiceInfo)) return false;
         ApduServiceInfo thatService = (ApduServiceInfo) o;
 
-        return thatService.getComponent().equals(this.getComponent());
+        return thatService.getComponent().equals(this.getComponent())
+                && thatService.getUid() == this.getUid();
     }
 
     @Override
@@ -618,8 +621,9 @@ public final class ApduServiceInfo implements Parcelable {
     };
 
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
-        pw.println("    " + getComponent() +
-                " (Description: " + getDescription() + ")");
+        pw.println("    " + getComponent()
+                + " (Description: " + getDescription() + ")"
+                + " (UID: " + getUid() + ")");
         if (mOnHost) {
             pw.println("    On Host Service");
         } else {
@@ -656,7 +660,7 @@ public final class ApduServiceInfo implements Parcelable {
      * @param proto the ProtoOutputStream to write to
      */
     public void dumpDebug(ProtoOutputStream proto) {
-        getComponent().dumpDebug(proto, ApduServiceInfoProto.COMPONENT_NAME);
+        Utils.dumpDebugComponentName(getComponent(), proto, ApduServiceInfoProto.COMPONENT_NAME);
         proto.write(ApduServiceInfoProto.DESCRIPTION, getDescription());
         proto.write(ApduServiceInfoProto.ON_HOST, mOnHost);
         if (!mOnHost) {

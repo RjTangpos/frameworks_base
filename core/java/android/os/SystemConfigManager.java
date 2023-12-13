@@ -20,6 +20,7 @@ import android.annotation.NonNull;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
+import android.content.ComponentName;
 import android.content.Context;
 import android.util.ArraySet;
 import android.util.Log;
@@ -128,5 +129,36 @@ public class SystemConfigManager {
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * Get enabled component for a specific package
+     *
+     * @param packageName The target package.
+     * @return The enabled component
+     * {@hide}
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @NonNull
+    public List<ComponentName> getEnabledComponentOverrides(@NonNull String packageName) {
+        try {
+            return mInterface.getEnabledComponentOverrides(packageName);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Return the components that are enabled by default as VR mode listener services.
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.QUERY_ALL_PACKAGES)
+    public List<ComponentName> getDefaultVrComponents() {
+        try {
+            return mInterface.getDefaultVrComponents();
+        } catch (RemoteException e) {
+            e.rethrowFromSystemServer();
+        }
+        return Collections.emptyList();
     }
 }

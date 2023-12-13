@@ -48,7 +48,8 @@ public class SuggestionTest {
     public void setUp() {
         final Context context = InstrumentationRegistry.getContext();
         mTestIntent = PendingIntent.getActivity(context, 0 /* requestCode */,
-                new Intent(), 0 /* flags */);
+                new Intent().setPackage(context.getPackageName()),
+                PendingIntent.FLAG_MUTABLE /* flags */);
         mIcon = Icon.createWithBitmap(Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888));
     }
 

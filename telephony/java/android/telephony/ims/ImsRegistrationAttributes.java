@@ -16,6 +16,7 @@
 
 package android.telephony.ims;
 
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
@@ -25,6 +26,8 @@ import android.telephony.AccessNetworkConstants;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
 import android.util.ArraySet;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Objects;
@@ -36,6 +39,25 @@ import java.util.Set;
 public final class ImsRegistrationAttributes implements Parcelable {
 
     /**
+     * Attribute to specify if an EPDG tunnel is setup over the cellular internet APN.
+     * <p>
+     * If IMS is registered through an EPDG tunnel is setup over the cellular internet APN then this
+     * bit will be set. If IMS is registered through the IMS APN, then this bit will not be set.
+     *
+     */
+    public static final int ATTR_EPDG_OVER_CELL_INTERNET = 1 << 0;
+
+    /** @hide */
+    // Defines the underlying radio technology type that we have registered for IMS over.
+    @IntDef(prefix = "ATTR_",
+            value = {
+                    ATTR_EPDG_OVER_CELL_INTERNET,
+            },
+            flag = true)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ImsAttributeFlag {}
+
+    /**
      * Builder for creating {@link ImsRegistrationAttributes} instances.
      * @hide
      */
@@ -43,6 +65,7 @@ public final class ImsRegistrationAttributes implements Parcelable {
     public static final class Builder {
         private final int mRegistrationTech;
         private Set<String> mFeatureTags = Collections.emptySet();
+        private @Nullable SipDetails mSipDetails;
 
         /**
          * Build a new instance of {@link ImsRegistrationAttributes}.
@@ -78,20 +101,62 @@ public final class ImsRegistrationAttributes implements Parcelable {
         }
 
         /**
+         * Set the SIP information.
+         * @param details The SIP information related to this IMS registration.
+         */
+        public @NonNull Builder setSipDetails(@NonNull SipDetails details) {
+            mSipDetails = details;
+            return this;
+        }
+
+        /**
          * @return A new instance created from this builder.
          */
         public @NonNull ImsRegistrationAttributes build() {
             return new ImsRegistrationAttributes(mRegistrationTech,
                     RegistrationManager.getAccessType(mRegistrationTech),
-                    0 /* No attributes in AOSP */, mFeatureTags);
+                    getAttributeFlags(mRegistrationTech),
+                    mFeatureTags, mSipDetails);
         }
 
+        /**
+         * @return attribute flags from the registration technology.
+         */
+        private static int getAttributeFlags(int imsRadioTech) {
+            int attributes = 0;
+            if (imsRadioTech == ImsRegistrationImplBase.REGISTRATION_TECH_CROSS_SIM) {
+                attributes |= ATTR_EPDG_OVER_CELL_INTERNET;
+            }
+            return attributes;
+        }
     }
 
     private final int mRegistrationTech;
     private final int mTransportType;
     private final int mImsAttributeFlags;
     private final ArrayList<String> mFeatureTags;
+    private final @Nullable SipDetails mSipDetails;
+    /**
+     * Create a new {@link ImsRegistrationAttributes} instance.
+     * This is for backward compatibility.
+     *
+     * @param registrationTech The technology that IMS has been registered on.
+     * @param transportType The transport type that IMS has been registered on.
+     * @param imsAttributeFlags The attributes associated with the IMS registration.
+     * @param featureTags The feature tags included in the IMS registration.
+     * @hide
+     */
+    public ImsRegistrationAttributes(
+            @ImsRegistrationImplBase.ImsRegistrationTech int registrationTech,
+            @AccessNetworkConstants.TransportType int transportType,
+            @ImsAttributeFlag int imsAttributeFlags,
+            @Nullable Set<String> featureTags) {
+        mRegistrationTech = registrationTech;
+        mTransportType = transportType;
+        mImsAttributeFlags = imsAttributeFlags;
+        mFeatureTags = new ArrayList<>(featureTags);
+        mSipDetails = null;
+    }
 
     /**
      * Create a new {@link ImsRegistrationAttributes} instance.
@@ -100,18 +165,21 @@ public final class ImsRegistrationAttributes implements Parcelable {
      * @param transportType The transport type that IMS has been registered on.
      * @param imsAttributeFlags The attributes associated with the IMS registration.
      * @param featureTags The feature tags included in the IMS registration.
+     * @param details The SIP information associated with the IMS registration.
      * @see Builder
      * @hide
      */
     public ImsRegistrationAttributes(
             @ImsRegistrationImplBase.ImsRegistrationTech int registrationTech,
             @AccessNetworkConstants.TransportType int transportType,
-            int imsAttributeFlags,
-            @Nullable Set<String> featureTags) {
+            @ImsAttributeFlag int imsAttributeFlags,
+            @Nullable Set<String> featureTags,
+            @Nullable SipDetails details) {
         mRegistrationTech = registrationTech;
         mTransportType = transportType;
         mImsAttributeFlags = imsAttributeFlags;
         mFeatureTags = new ArrayList<>(featureTags);
+        mSipDetails = details;
     }
 
     /**@hide*/
@@ -120,7 +188,9 @@ public final class ImsRegistrationAttributes implements Parcelable {
         mTransportType = source.readInt();
         mImsAttributeFlags = source.readInt();
         mFeatureTags = new ArrayList<>();
-        source.readList(mFeatureTags, null /*classloader*/);
+        source.readList(mFeatureTags, null /*classloader*/, java.lang.String.class);
+        mSipDetails = source.readParcelable(null /*loader*/,
+                android.telephony.ims.SipDetails.class);
     }
 
     /**
@@ -142,7 +212,7 @@ public final class ImsRegistrationAttributes implements Parcelable {
     /**
      * @return A bit-mask containing attributes associated with the IMS registration.
      */
-    public int getAttributeFlags() {
+    public @ImsAttributeFlag int getAttributeFlags() {
         return mImsAttributeFlags;
     }
 
@@ -169,6 +239,13 @@ public final class ImsRegistrationAttributes implements Parcelable {
         return new ArraySet<>(mFeatureTags);
     }
 
+    /**
+     * @return The SIP information associated with the IMS registration.
+     */
+    public @Nullable SipDetails getSipDetails() {
+        return mSipDetails;
+    }
+
     @Override
     public int describeContents() {
         return 0;
@@ -180,6 +257,7 @@ public final class ImsRegistrationAttributes implements Parcelable {
         dest.writeInt(mTransportType);
         dest.writeInt(mImsAttributeFlags);
         dest.writeList(mFeatureTags);
+        dest.writeParcelable(mSipDetails, flags);
     }
 
     public static final @NonNull Creator<ImsRegistrationAttributes> CREATOR =
@@ -203,17 +281,20 @@ public final class ImsRegistrationAttributes implements Parcelable {
         return mRegistrationTech == that.mRegistrationTech
                 && mTransportType == that.mTransportType
                 && mImsAttributeFlags == that.mImsAttributeFlags
-                && Objects.equals(mFeatureTags, that.mFeatureTags);
+                && Objects.equals(mFeatureTags, that.mFeatureTags)
+                && Objects.equals(mSipDetails, that.mSipDetails);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(mRegistrationTech, mTransportType, mImsAttributeFlags, mFeatureTags);
+        return Objects.hash(mRegistrationTech, mTransportType, mImsAttributeFlags, mFeatureTags,
+                mSipDetails);
     }
 
     @Override
     public String toString() {
         return "ImsRegistrationAttributes { transportType= " + mTransportType + ", attributeFlags="
-                + mImsAttributeFlags + ", featureTags=[" + mFeatureTags + "]}";
+                + mImsAttributeFlags + ", featureTags=[" + mFeatureTags + "]"
+                + ",SipDetails=" + mSipDetails + "}";
     }
 }

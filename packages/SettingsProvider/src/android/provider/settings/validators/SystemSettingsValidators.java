@@ -16,9 +16,10 @@
 
 package android.provider.settings.validators;
 
+import static android.provider.settings.validators.SettingsValidators.ANY_INTEGER_VALIDATOR;
+import static android.provider.settings.validators.SettingsValidators.ANY_STRING_VALIDATOR;
 import static android.provider.settings.validators.SettingsValidators.BOOLEAN_VALIDATOR;
 import static android.provider.settings.validators.SettingsValidators.COMPONENT_NAME_VALIDATOR;
-import static android.provider.settings.validators.SettingsValidators.DATE_FORMAT_VALIDATOR;
 import static android.provider.settings.validators.SettingsValidators.LENIENT_IP_ADDRESS_VALIDATOR;
 import static android.provider.settings.validators.SettingsValidators.NON_NEGATIVE_INTEGER_VALIDATOR;
 import static android.provider.settings.validators.SettingsValidators.URI_VALIDATOR;
@@ -38,12 +39,6 @@ import java.util.Map;
  * Validators for System settings
  */
 public class SystemSettingsValidators {
-    /**
-     * These are all public system settings
-     *
-     * <p>All settings in {@link System.SETTINGS_TO_BACKUP} array *must* have a non-null validator,
-     * otherwise they won't be restored.
-     */
     @UnsupportedAppUsage
     public static final Map<String, Validator> VALIDATORS = new ArrayMap<>();
 
@@ -57,6 +52,7 @@ public class SystemSettingsValidators {
                                 || (val == BatteryManager.BATTERY_PLUGGED_AC)
                                 || (val == BatteryManager.BATTERY_PLUGGED_USB)
                                 || (val == BatteryManager.BATTERY_PLUGGED_WIRELESS)
+                                || (val == BatteryManager.BATTERY_PLUGGED_DOCK)
                                 || (val
                                         == (BatteryManager.BATTERY_PLUGGED_AC
                                                 | BatteryManager.BATTERY_PLUGGED_USB))
@@ -69,7 +65,13 @@ public class SystemSettingsValidators {
                                 || (val
                                         == (BatteryManager.BATTERY_PLUGGED_AC
                                                 | BatteryManager.BATTERY_PLUGGED_USB
-                                                | BatteryManager.BATTERY_PLUGGED_WIRELESS));
+                                                | BatteryManager.BATTERY_PLUGGED_WIRELESS))
+                                || (val
+                                        == (BatteryManager.BATTERY_PLUGGED_AC
+                                                | BatteryManager.BATTERY_PLUGGED_DOCK))
+                                || (val
+                                        == (BatteryManager.BATTERY_PLUGGED_USB
+                                                | BatteryManager.BATTERY_PLUGGED_DOCK));
                     } catch (NumberFormatException e) {
                         return false;
                     }
@@ -89,7 +91,7 @@ public class SystemSettingsValidators {
                         return value == null || value.length() < MAX_LENGTH;
                     }
                 });
-        VALIDATORS.put(System.FONT_SCALE, new InclusiveFloatRangeValidator(0.85f, 1.3f));
+        VALIDATORS.put(System.FONT_SCALE, new InclusiveFloatRangeValidator(0.25f, 5.0f));
         VALIDATORS.put(System.DIM_SCREEN, BOOLEAN_VALIDATOR);
         VALIDATORS.put(
                 System.DISPLAY_COLOR_MODE,
@@ -115,18 +117,24 @@ public class SystemSettingsValidators {
                         }
                     }
                 });
+        VALIDATORS.put(System.DISPLAY_COLOR_MODE_VENDOR_HINT, ANY_STRING_VALIDATOR);
         VALIDATORS.put(System.SCREEN_OFF_TIMEOUT, NON_NEGATIVE_INTEGER_VALIDATOR);
-        VALIDATORS.put(System.SCREEN_BRIGHTNESS_FOR_VR, new InclusiveIntegerRangeValidator(0, 255));
         VALIDATORS.put(System.SCREEN_BRIGHTNESS_MODE, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.ADAPTIVE_SLEEP, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.MODE_RINGER_STREAMS_AFFECTED, NON_NEGATIVE_INTEGER_VALIDATOR);
         VALIDATORS.put(System.MUTE_STREAMS_AFFECTED, NON_NEGATIVE_INTEGER_VALIDATOR);
         VALIDATORS.put(System.VIBRATE_ON, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.APPLY_RAMPING_RINGER, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.ALARM_VIBRATION_INTENSITY, VIBRATION_INTENSITY_VALIDATOR);
+        VALIDATORS.put(System.MEDIA_VIBRATION_INTENSITY, VIBRATION_INTENSITY_VALIDATOR);
         VALIDATORS.put(System.NOTIFICATION_VIBRATION_INTENSITY, VIBRATION_INTENSITY_VALIDATOR);
         VALIDATORS.put(System.RING_VIBRATION_INTENSITY, VIBRATION_INTENSITY_VALIDATOR);
         VALIDATORS.put(System.HAPTIC_FEEDBACK_INTENSITY, VIBRATION_INTENSITY_VALIDATOR);
+        VALIDATORS.put(System.HARDWARE_HAPTIC_FEEDBACK_INTENSITY, VIBRATION_INTENSITY_VALIDATOR);
+        VALIDATORS.put(System.HAPTIC_FEEDBACK_ENABLED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.RINGTONE, URI_VALIDATOR);
         VALIDATORS.put(System.NOTIFICATION_SOUND, URI_VALIDATOR);
+        VALIDATORS.put(System.FOLD_LOCK_BEHAVIOR, ANY_STRING_VALIDATOR);
         VALIDATORS.put(System.ALARM_ALERT, URI_VALIDATOR);
         VALIDATORS.put(System.TEXT_AUTO_REPLACE, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.TEXT_AUTO_CAPS, BOOLEAN_VALIDATOR);
@@ -150,7 +158,6 @@ public class SystemSettingsValidators {
                 });
         VALIDATORS.put(
                 System.TIME_12_24, new DiscreteValueValidator(new String[] {"12", "24", null}));
-        VALIDATORS.put(System.DATE_FORMAT, DATE_FORMAT_VALIDATOR);
         VALIDATORS.put(System.SETUP_WIZARD_HAS_RUN, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.ACCELEROMETER_ROTATION, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.USER_ROTATION, new InclusiveIntegerRangeValidator(0, 3));
@@ -177,6 +184,7 @@ public class SystemSettingsValidators {
         VALIDATORS.put(System.NOTIFICATION_LIGHT_PULSE, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.POINTER_LOCATION, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.SHOW_TOUCHES, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.SHOW_KEY_PRESSES, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.WINDOW_ORIENTATION_LISTENER_LOG, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.LOCKSCREEN_SOUNDS_ENABLED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.LOCKSCREEN_DISABLED, BOOLEAN_VALIDATOR);
@@ -188,6 +196,10 @@ public class SystemSettingsValidators {
         VALIDATORS.put(System.SIP_ADDRESS_ONLY, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.SIP_ASK_ME_EACH_TIME, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.POINTER_SPEED, new InclusiveFloatRangeValidator(-7, 7));
+        VALIDATORS.put(System.TOUCHPAD_POINTER_SPEED, new InclusiveIntegerRangeValidator(-7, 7));
+        VALIDATORS.put(System.TOUCHPAD_NATURAL_SCROLLING, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.TOUCHPAD_TAP_TO_CLICK, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.TOUCHPAD_RIGHT_CLICK_ZONE, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.LOCK_TO_APP_ENABLED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(
                 System.EGG_MODE,
@@ -208,5 +220,13 @@ public class SystemSettingsValidators {
         VALIDATORS.put(System.WIFI_STATIC_DNS2, LENIENT_IP_ADDRESS_VALIDATOR);
         VALIDATORS.put(System.SHOW_BATTERY_PERCENT, BOOLEAN_VALIDATOR);
         VALIDATORS.put(System.NOTIFICATION_LIGHT_PULSE, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.WEAR_ACCESSIBILITY_GESTURE_ENABLED, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.CLOCKWORK_BLUETOOTH_SETTINGS_PREF, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.UNREAD_NOTIFICATION_DOT_INDICATOR, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.AUTO_LAUNCH_MEDIA_CONTROLS, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.LOCALE_PREFERENCES, ANY_STRING_VALIDATOR);
+        VALIDATORS.put(System.CAMERA_FLASH_NOTIFICATION, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.SCREEN_FLASH_NOTIFICATION, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(System.SCREEN_FLASH_NOTIFICATION_COLOR, ANY_INTEGER_VALIDATOR);
     }
 }

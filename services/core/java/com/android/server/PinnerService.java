@@ -18,14 +18,16 @@ package com.android.server;
 
 import static android.app.ActivityManager.UID_OBSERVER_ACTIVE;
 import static android.app.ActivityManager.UID_OBSERVER_GONE;
+import static android.os.Process.SYSTEM_UID;
 
 import android.annotation.IntDef;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.app.ActivityManagerInternal;
 import android.app.IActivityManager;
-import android.app.IUidObserver;
 import android.app.SearchManager;
+import android.app.UidObserver;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -42,6 +44,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.UserManager;
@@ -68,15 +72,19 @@ import dalvik.system.VMRuntime;
 import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+
+import sun.misc.Unsafe;
 
 /**
  * <p>PinnerService pins important files for key processes in memory.</p>
@@ -98,12 +106,6 @@ public final class PinnerService extends SystemService {
     private static final int KEY_HOME = 1;
     private static final int KEY_ASSISTANT = 2;
 
-    // Pin the camera application. Default to the system property only if the experiment phenotype
-    // property is not set.
-    private static boolean PROP_PIN_CAMERA =
-            DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_RUNTIME_NATIVE_BOOT,
-                                    "pin_camera",
-                                    SystemProperties.getBoolean("pinner.pin_camera", false));
     // Pin using pinlist.meta when pinning apps.
     private static boolean PROP_PIN_PINLIST = SystemProperties.getBoolean(
             "pinner.use_pinlist", true);
@@ -148,7 +150,18 @@ public final class PinnerService extends SystemService {
     /**
      * A set of {@link AppKey} that are configured to be pinned.
      */
-    private final ArraySet<Integer> mPinKeys = new ArraySet<>();
+    @GuardedBy("this")
+    private ArraySet<Integer> mPinKeys;
+
+    private static final long MAX_ANON_SIZE = 2L * (1L << 30); // 2GB
+    private long mPinAnonSize;
+    private long mPinAnonAddress;
+    private long mCurrentlyPinnedAnonSize;
+
+    // Resource-configured pinner flags;
+    private final boolean mConfiguredToPinCamera;
+    private final boolean mConfiguredToPinHome;
+    private final boolean mConfiguredToPinAssistant;
 
     private BinderService mBinderService;
     private PinnerHandler mPinnerHandler = null;
@@ -171,25 +184,13 @@ public final class PinnerService extends SystemService {
         super(context);
 
         mContext = context;
-        boolean shouldPinCamera = context.getResources().getBoolean(
+        mConfiguredToPinCamera = context.getResources().getBoolean(
                 com.android.internal.R.bool.config_pinnerCameraApp);
-        boolean shouldPinHome = context.getResources().getBoolean(
+        mConfiguredToPinHome = context.getResources().getBoolean(
                 com.android.internal.R.bool.config_pinnerHomeApp);
-        boolean shouldPinAssistant = context.getResources().getBoolean(
+        mConfiguredToPinAssistant = context.getResources().getBoolean(
                 com.android.internal.R.bool.config_pinnerAssistantApp);
-        if (shouldPinCamera) {
-            if (PROP_PIN_CAMERA) {
-                mPinKeys.add(KEY_CAMERA);
-            } else if (DEBUG) {
-                Slog.i(TAG, "Pinner - skip pinning camera app");
-            }
-        }
-        if (shouldPinHome) {
-            mPinKeys.add(KEY_HOME);
-        }
-        if (shouldPinAssistant) {
-            mPinKeys.add(KEY_ASSISTANT);
-        }
+        mPinKeys = createPinKeys();
         mPinnerHandler = new PinnerHandler(BackgroundThread.get().getLooper());
 
         mAtmInternal = LocalServices.getService(ActivityTaskManagerInternal.class);
@@ -236,16 +237,18 @@ public final class PinnerService extends SystemService {
      * individual apps. Make sure that user's preference is pinned into memory.
      */
     @Override
-    public void onSwitchUser(int userHandle) {
-        if (!mUserManager.isManagedProfile(userHandle)) {
-            sendPinAppsMessage(userHandle);
+    public void onUserSwitching(@Nullable TargetUser from, @NonNull TargetUser to) {
+        int userId = to.getUserIdentifier();
+        if (!mUserManager.isManagedProfile(userId)) {
+            sendPinAppsMessage(userId);
         }
     }
 
     @Override
-    public void onUnlockUser(int userHandle) {
-        if (!mUserManager.isManagedProfile(userHandle)) {
-            sendPinAppsMessage(userHandle);
+    public void onUserUnlocking(@NonNull TargetUser user) {
+        int userId = user.getUserIdentifier();
+        if (!mUserManager.isManagedProfile(userId)) {
+            sendPinAppsMessage(userId);
         }
     }
 
@@ -255,14 +258,46 @@ public final class PinnerService extends SystemService {
      * The other files pinned in onStart will not need to be updated.
      */
     public void update(ArraySet<String> updatedPackages, boolean force) {
+        ArraySet<Integer> pinKeys = getPinKeys();
         int currentUser = ActivityManager.getCurrentUser();
-        for (int i = mPinKeys.size() - 1; i >= 0; i--) {
-            int key = mPinKeys.valueAt(i);
+        for (int i = pinKeys.size() - 1; i >= 0; i--) {
+            int key = pinKeys.valueAt(i);
             ApplicationInfo info = getInfoForKey(key, currentUser);
             if (info != null && updatedPackages.contains(info.packageName)) {
                 Slog.i(TAG, "Updating pinned files for " + info.packageName + " force=" + force);
                 sendPinAppMessage(key, currentUser, force);
             }
+        }
+    }
+
+    /** Returns information about pinned files and sizes for StatsPullAtomService. */
+    public List<PinnedFileStats> dumpDataForStatsd() {
+        List<PinnedFileStats> pinnedFileStats = new ArrayList<>();
+        synchronized (PinnerService.this) {
+            for (PinnedFile pinnedFile : mPinnedFiles) {
+                pinnedFileStats.add(new PinnedFileStats(SYSTEM_UID, pinnedFile));
+            }
+
+            for (int key : mPinnedApps.keySet()) {
+                PinnedApp app = mPinnedApps.get(key);
+                for (PinnedFile pinnedFile : mPinnedApps.get(key).mFiles) {
+                    pinnedFileStats.add(new PinnedFileStats(app.uid, pinnedFile));
+                }
+            }
+        }
+        return pinnedFileStats;
+    }
+
+    /** Wrapper class for statistics for a pinned file. */
+    public static class PinnedFileStats {
+        public final int uid;
+        public final String filename;
+        public final int sizeKb;
+
+        protected PinnedFileStats(int uid, PinnedFile file) {
+            this.uid = uid;
+            this.filename = file.fileName.substring(file.fileName.lastIndexOf('/') + 1);
+            this.sizeKb = file.bytesPinned / 1024;
         }
     }
 
@@ -333,30 +368,17 @@ public final class PinnerService extends SystemService {
 
     private void registerUidListener() {
         try {
-            mAm.registerUidObserver(new IUidObserver.Stub() {
+            mAm.registerUidObserver(new UidObserver() {
                 @Override
-                public void onUidGone(int uid, boolean disabled) throws RemoteException {
+                public void onUidGone(int uid, boolean disabled) {
                     mPinnerHandler.sendMessage(PooledLambda.obtainMessage(
                             PinnerService::handleUidGone, PinnerService.this, uid));
                 }
 
                 @Override
-                public void onUidActive(int uid) throws RemoteException {
+                public void onUidActive(int uid)  {
                     mPinnerHandler.sendMessage(PooledLambda.obtainMessage(
                             PinnerService::handleUidActive, PinnerService.this, uid));
-                }
-
-                @Override
-                public void onUidIdle(int uid, boolean disabled) throws RemoteException {
-                }
-
-                @Override
-                public void onUidStateChanged(int uid, int procState, long procStateSeq,
-                        int capability) throws RemoteException {
-                }
-
-                @Override
-                public void onUidCachedChanged(int uid, boolean cached) throws RemoteException {
                 }
             }, UID_OBSERVER_GONE | UID_OBSERVER_ACTIVE, 0, null);
         } catch (RemoteException e) {
@@ -391,6 +413,14 @@ public final class PinnerService extends SystemService {
                     app.active = active;
                 }
             }
+        }
+    }
+
+    private void unpinApps() {
+        ArraySet<Integer> pinKeys = getPinKeys();
+        for (int i = pinKeys.size() - 1; i >= 0; i--) {
+            int key = pinKeys.valueAt(i);
+            unpinApp(key);
         }
     }
 
@@ -499,11 +529,80 @@ public final class PinnerService extends SystemService {
                 userHandle));
     }
 
+    private void sendPinAppsWithUpdatedKeysMessage(int userHandle) {
+        mPinnerHandler.sendMessage(PooledLambda.obtainMessage(PinnerService::pinAppsWithUpdatedKeys,
+                this, userHandle));
+    }
+    private void sendUnpinAppsMessage() {
+        mPinnerHandler.sendMessage(PooledLambda.obtainMessage(PinnerService::unpinApps, this));
+    }
+
+    private ArraySet<Integer> createPinKeys() {
+        ArraySet<Integer> pinKeys = new ArraySet<>();
+        // Pin the camera application. Default to the system property only if the experiment
+        // phenotype property is not set.
+        boolean shouldPinCamera = mConfiguredToPinCamera
+                && DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_RUNTIME_NATIVE_BOOT,
+                        "pin_camera",
+                        SystemProperties.getBoolean("pinner.pin_camera", true));
+        if (shouldPinCamera) {
+            pinKeys.add(KEY_CAMERA);
+        } else if (DEBUG) {
+            Slog.i(TAG, "Pinner - skip pinning camera app");
+        }
+
+        if (mConfiguredToPinHome) {
+            pinKeys.add(KEY_HOME);
+        }
+        if (mConfiguredToPinAssistant) {
+            pinKeys.add(KEY_ASSISTANT);
+        }
+
+        mPinAnonSize = DeviceConfig.getLong(DeviceConfig.NAMESPACE_RUNTIME_NATIVE_BOOT,
+                "pin_anon_size",
+                SystemProperties.getLong("pinner.pin_anon_size", 0));
+        mPinAnonSize = Math.max(0, Math.min(mPinAnonSize, MAX_ANON_SIZE));
+
+        return pinKeys;
+    }
+
+    private synchronized ArraySet<Integer> getPinKeys() {
+        return mPinKeys;
+    }
+
     private void pinApps(int userHandle) {
-        for (int i = mPinKeys.size() - 1; i >= 0; i--) {
-            int key = mPinKeys.valueAt(i);
+        pinAppsInternal(userHandle, false);
+    }
+
+    private void pinAppsWithUpdatedKeys(int userHandle) {
+        pinAppsInternal(userHandle, true);
+    }
+
+    /**
+     * @param updateKeys True if the pinned app list has to be updated. This is true only when
+     *                   "pinner repin" shell command is requested.
+     */
+    private void pinAppsInternal(int userHandle, boolean updateKeys) {
+        if (updateKeys) {
+            ArraySet<Integer> newKeys = createPinKeys();
+            synchronized (this) {
+                // This code path demands preceding unpinApps() call.
+                if (!mPinnedApps.isEmpty()) {
+                    Slog.e(TAG, "Attempted to update a list of apps, "
+                            + "but apps were already pinned. Skipping.");
+                    return;
+                }
+
+                mPinKeys = newKeys;
+            }
+        }
+
+        ArraySet<Integer> currentPinKeys = getPinKeys();
+        for (int i = currentPinKeys.size() - 1; i >= 0; i--) {
+            int key = currentPinKeys.valueAt(i);
             pinApp(key, userHandle, true /* force */);
         }
+        pinAnonRegion();
     }
 
     /**
@@ -588,6 +687,64 @@ public final class PinnerService extends SystemService {
     }
 
     /**
+     * Pin an empty anonymous region. This should only be used for ablation experiments.
+     */
+    private void pinAnonRegion() {
+        if (mPinAnonSize == 0) {
+            return;
+        }
+        long alignedPinSize = mPinAnonSize;
+        if (alignedPinSize % PAGE_SIZE != 0) {
+            alignedPinSize -= alignedPinSize % PAGE_SIZE;
+            Slog.e(TAG, "pinAnonRegion: aligning size to " + alignedPinSize);
+        }
+        if (mPinAnonAddress != 0
+                && mCurrentlyPinnedAnonSize != alignedPinSize) {
+            unpinAnonRegion();
+        }
+        long address = 0;
+        try {
+            address = Os.mmap(0, alignedPinSize,
+                    OsConstants.PROT_READ | OsConstants.PROT_WRITE,
+                    OsConstants.MAP_PRIVATE | OsConstants.MAP_ANONYMOUS,
+                    new FileDescriptor(), /*offset=*/0);
+
+            Unsafe tempUnsafe = null;
+            Class<sun.misc.Unsafe> clazz = sun.misc.Unsafe.class;
+            for (java.lang.reflect.Field f : clazz.getDeclaredFields()) {
+                f.setAccessible(true);
+                Object obj = f.get(null);
+                if (clazz.isInstance(obj)) {
+                    tempUnsafe = clazz.cast(obj);
+                }
+            }
+            if (tempUnsafe == null) {
+                throw new Exception("Couldn't get Unsafe");
+            }
+            Method setMemory = clazz.getMethod("setMemory", long.class, long.class, byte.class);
+            setMemory.invoke(tempUnsafe, address, alignedPinSize, (byte) 1);
+            Os.mlock(address, alignedPinSize);
+            mCurrentlyPinnedAnonSize = alignedPinSize;
+            mPinAnonAddress = address;
+            address = -1;
+            Slog.e(TAG, "pinAnonRegion success, size=" + mCurrentlyPinnedAnonSize);
+        } catch (Exception ex) {
+            Slog.e(TAG, "Could not pin anon region of size " + alignedPinSize, ex);
+            return;
+        } finally {
+            if (address >= 0) {
+                safeMunmap(address, alignedPinSize);
+            }
+        }
+    }
+
+    private void unpinAnonRegion() {
+        if (mPinAnonAddress != 0) {
+            safeMunmap(mPinAnonAddress, mCurrentlyPinnedAnonSize);
+        }
+    }
+
+    /**
      * @return The maximum amount of bytes to be pinned for an app of type {@code key}.
      */
     private int getSizeLimitForKey(@AppKey int key) {
@@ -619,19 +776,40 @@ public final class PinnerService extends SystemService {
             mPinnedApps.put(key, pinnedApp);
         }
 
+
         // pin APK
-        int pinSizeLimit = getSizeLimitForKey(key);
-        String apk = appInfo.sourceDir;
-        PinnedFile pf = pinFile(apk, pinSizeLimit, /*attemptPinIntrospection=*/true);
-        if (pf == null) {
-            Slog.e(TAG, "Failed to pin " + apk);
-            return;
+        final int pinSizeLimit = getSizeLimitForKey(key);
+        List<String> apks = new ArrayList<>();
+        apks.add(appInfo.sourceDir);
+
+        if (appInfo.splitSourceDirs != null) {
+            for (String splitApk : appInfo.splitSourceDirs) {
+                apks.add(splitApk);
+            }
         }
-        if (DEBUG) {
-            Slog.i(TAG, "Pinned " + pf.fileName);
-        }
-        synchronized (this) {
-            pinnedApp.mFiles.add(pf);
+
+        int apkPinSizeLimit = pinSizeLimit;
+        for (String apk: apks) {
+            if (apkPinSizeLimit <= 0) {
+                Slog.w(TAG, "Reached to the pin size limit. Skipping: " + apk);
+                // Continue instead of break to print all skipped APK names.
+                continue;
+            }
+
+            PinnedFile pf = pinFile(apk, apkPinSizeLimit, /*attemptPinIntrospection=*/true);
+            if (pf == null) {
+                Slog.e(TAG, "Failed to pin " + apk);
+                continue;
+            }
+
+            if (DEBUG) {
+                Slog.i(TAG, "Pinned " + pf.fileName);
+            }
+            synchronized (this) {
+                pinnedApp.mFiles.add(pf);
+            }
+
+            apkPinSizeLimit -= pf.bytesPinned;
         }
 
         // determine the ABI from either ApplicationInfo or Build
@@ -650,7 +828,7 @@ public final class PinnerService extends SystemService {
 
         //not pinning the oat/odex is not a fatal error
         for (String file : files) {
-            pf = pinFile(file, pinSizeLimit, /*attemptPinIntrospection=*/false);
+            PinnedFile pf = pinFile(file, pinSizeLimit, /*attemptPinIntrospection=*/false);
             if (pf != null) {
                 synchronized (this) {
                     if (PROP_PIN_ODEX) {
@@ -848,9 +1026,7 @@ public final class PinnerService extends SystemService {
         int mapSize = 0;
 
         try {
-            int openFlags = (OsConstants.O_RDONLY |
-                             OsConstants.O_CLOEXEC |
-                             OsConstants.O_NOFOLLOW);
+            int openFlags = (OsConstants.O_RDONLY | OsConstants.O_CLOEXEC);
             fd = Os.open(fileToPin, openFlags, 0);
             mapSize = (int) Math.min(Os.fstat(fd).st_size, Integer.MAX_VALUE);
             address = Os.mmap(0, mapSize,
@@ -979,6 +1155,9 @@ public final class PinnerService extends SystemService {
                         totalSize += pf.bytesPinned;
                     }
                 }
+                if (mPinAnonAddress != 0) {
+                    pw.format("Pinned anon region: %s\n", mCurrentlyPinnedAnonSize);
+                }
                 pw.format("Total size: %s\n", totalSize);
                 pw.println();
                 if (!mPendingRepin.isEmpty()) {
@@ -989,6 +1168,42 @@ public final class PinnerService extends SystemService {
                     pw.println();
                 }
             }
+        }
+
+        private void repin() {
+            sendUnpinAppsMessage();
+            // TODO(morrita): Consider supporting non-system user.
+            sendPinAppsWithUpdatedKeysMessage(UserHandle.USER_SYSTEM);
+        }
+
+        private void printError(FileDescriptor out, String message) {
+            PrintWriter writer = new PrintWriter(new FileOutputStream(out));
+            writer.println(message);
+            writer.flush();
+        }
+
+        @Override
+        public void onShellCommand(FileDescriptor in, FileDescriptor out, FileDescriptor err,
+                String[] args, ShellCallback callback, ResultReceiver resultReceiver) {
+            if (args.length < 1) {
+                printError(out, "Command is not given.");
+                resultReceiver.send(-1, null);
+                return;
+            }
+
+            String command = args[0];
+            switch (command) {
+                case "repin":
+                    repin();
+                    break;
+                default:
+                    printError(out, String.format(
+                            "Unknown pinner command: %s. Supported commands: repin", command));
+                    resultReceiver.send(-1, null);
+                    return;
+            }
+
+            resultReceiver.send(0, null);
         }
     }
 

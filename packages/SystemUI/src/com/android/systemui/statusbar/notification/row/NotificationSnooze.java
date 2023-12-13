@@ -16,6 +16,8 @@
 
 package com.android.systemui.statusbar.notification.row;
 
+import static com.android.systemui.util.PluralMessageFormaterKt.icuMessageFormat;
+
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
@@ -43,10 +45,10 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.android.app.animation.Interpolators;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
-import com.android.systemui.Interpolators;
 import com.android.systemui.R;
 import com.android.systemui.plugins.statusbar.NotificationSwipeActionHelper;
 import com.android.systemui.plugins.statusbar.NotificationSwipeActionHelper.SnoozeOption;
@@ -146,6 +148,7 @@ public class NotificationSnooze extends LinearLayout
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         logOptionSelection(MetricsEvent.NOTIFICATION_SNOOZE_CLICKED, mDefaultOption);
+        dispatchConfigurationChanged(getResources().getConfiguration());
     }
 
     @Override
@@ -242,11 +245,11 @@ public class NotificationSnooze extends LinearLayout
     private SnoozeOption createOption(int minutes, int accessibilityActionId) {
         Resources res = getResources();
         boolean showInHours = minutes >= 60;
-        int pluralResId = showInHours
-                ? R.plurals.snoozeHourOptions
-                : R.plurals.snoozeMinuteOptions;
+        int stringResId = showInHours
+                ? R.string.snoozeHourOptions
+                : R.string.snoozeMinuteOptions;
         int count = showInHours ? (minutes / 60) : minutes;
-        String description = res.getQuantityString(pluralResId, count, count);
+        String description = icuMessageFormat(res, stringResId, count);
         String resultText = String.format(res.getString(R.string.snoozed_for_time), description);
         AccessibilityAction action = new AccessibilityAction(accessibilityActionId, description);
         final int index = resultText.indexOf(description);
@@ -254,7 +257,7 @@ public class NotificationSnooze extends LinearLayout
             return new NotificationSnoozeOption(null, minutes, description, resultText, action);
         }
         SpannableString string = new SpannableString(resultText);
-        string.setSpan(new StyleSpan(Typeface.BOLD),
+        string.setSpan(new StyleSpan(Typeface.BOLD, res.getConfiguration().fontWeightAdjustment),
                 index, index + description.length(), 0 /* flags */);
         return new NotificationSnoozeOption(null, minutes, description, string,
                 action);
@@ -287,6 +290,9 @@ public class NotificationSnooze extends LinearLayout
         int drawableId = show ? com.android.internal.R.drawable.ic_collapse_notification
                 : com.android.internal.R.drawable.ic_expand_notification;
         mExpandButton.setImageResource(drawableId);
+        mExpandButton.setContentDescription(mContext.getString(show
+                ? com.android.internal.R.string.expand_button_content_description_expanded
+                : com.android.internal.R.string.expand_button_content_description_collapsed));
         if (mExpanded != show) {
             mExpanded = show;
             animateSnoozeOptions(show);
@@ -370,6 +376,7 @@ public class NotificationSnooze extends LinearLayout
         } else if (id == R.id.notification_snooze) {
             // Toggle snooze options
             showSnoozeOptions(!mExpanded);
+            mSnoozeView.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
             mMetricsLogger.write(!mExpanded ? OPTIONS_OPEN_LOG : OPTIONS_CLOSE_LOG);
         } else {
             // Undo snooze was selected
@@ -381,7 +388,7 @@ public class NotificationSnooze extends LinearLayout
     private void undoSnooze(View v) {
         mSelectedOption = null;
         showSnoozeOptions(false);
-        mGutsContainer.closeControls(v, false);
+        mGutsContainer.closeControls(v, /* save= */ false);
     }
 
     @Override
@@ -398,6 +405,7 @@ public class NotificationSnooze extends LinearLayout
     public View getContentView() {
         // Reset the view before use
         setSelected(mDefaultOption, false);
+        showSnoozeOptions(false);
         return this;
     }
 
@@ -430,7 +438,7 @@ public class NotificationSnooze extends LinearLayout
     }
 
     @Override
-    public boolean shouldBeSaved() {
+    public boolean shouldBeSavedOnClose() {
         return true;
     }
 

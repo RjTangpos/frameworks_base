@@ -19,8 +19,11 @@ package com.android.server.pm.dex;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 
+import static org.junit.Assume.assumeFalse;
+
 import android.app.UiAutomation;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
@@ -84,7 +87,7 @@ public final class DynamicCodeLoggerIntegrationTests {
     // avoid flakiness we run these tests multiple times, allowing progressively longer between
     // code loading and checking the logs on each try.)
     private static final int AUDIT_LOG_RETRIES = 10;
-    private static final int RETRY_DELAY_MS = 2_000;
+    private static final int RETRY_DELAY_MS = 500;
 
     private static Context sContext;
     private static int sMyUid;
@@ -96,7 +99,12 @@ public final class DynamicCodeLoggerIntegrationTests {
     }
 
     @Before
-    public void primeEventLog() {
+    public void setup() {
+        assumeFalse(sContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_WATCH));
+        primeEventLog();
+    }
+
+    private void primeEventLog() {
         // Force a round trip to logd to make sure everything is up to date.
         // Without this the first test passes and others don't - we don't see new events in the
         // log. The exact reason is unclear.
@@ -114,7 +122,8 @@ public final class DynamicCodeLoggerIntegrationTests {
         // Obtained via "echo -n copied.jar | sha256sum"
         String expectedNameHash =
                 "1B6C71DB26F36582867432CCA12FB6A517470C9F9AABE9198DD4C5C030D6DC0C";
-        String expectedContentHash = copyAndHashResource("/javalib.jar", privateCopyFile);
+        String expectedContentHash = copyAndHashResource(
+                "/DynamicCodeLoggerTestLibrary.jar", privateCopyFile);
 
         // Feed the jar to a class loader and make sure it contains what we expect.
         ClassLoader parentClassLoader = sContext.getClass().getClassLoader();
@@ -135,7 +144,8 @@ public final class DynamicCodeLoggerIntegrationTests {
         File privateCopyFile = privateFile("copied2.jar");
         String expectedNameHash =
                 "202158B6A3169D78F1722487205A6B036B3F2F5653FDCFB4E74710611AC7EB93";
-        String expectedContentHash = copyAndHashResource("/javalib.jar", privateCopyFile);
+        String expectedContentHash = copyAndHashResource(
+                "/DynamicCodeLoggerTestLibrary.jar", privateCopyFile);
 
         // This time make sure an unknown class loader is an ancestor of the class loader we use.
         ClassLoader knownClassLoader = sContext.getClass().getClassLoader();
@@ -243,7 +253,7 @@ public final class DynamicCodeLoggerIntegrationTests {
                 "/DynamicCodeLoggerNativeExecutable", privateCopyFile);
 
         EventLog.writeEvent(EventLog.getTagCode("auditd"),
-                "type=1400 avc: granted { execute_no_trans } "
+                "type=1400 avc:  granted  { execute_no_trans } "
                         + "path=\"" + privateCopyFile + "\" "
                         + "scontext=u:r:untrusted_app: "
                         + "tcontext=u:object_r:app_data_file: "

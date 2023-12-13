@@ -15,9 +15,14 @@ android_library {
 
     static_libs: [
           "androidx.preference_preference",
+          "SettingsLibSelectorWithWidgetPreference",
           "SettingsLibSettingsTheme",
     ],
 
     sdk_version: "system_current",
     min_sdk_version: "21",
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.permission",
+    ],
 }

@@ -16,42 +16,86 @@
 
 package com.android.systemui.qs;
 
-import com.android.systemui.R;
+import static com.android.systemui.classifier.Classifier.QS_SWIPE_NESTED;
+
+import android.content.res.Configuration;
+import android.view.MotionEvent;
+import android.view.View;
+
+import com.android.systemui.plugins.FalsingManager;
+import com.android.systemui.qs.dagger.QSScope;
+import com.android.systemui.statusbar.policy.ConfigurationController;
+import com.android.systemui.util.ViewController;
 
 import javax.inject.Inject;
 
-public class QSContainerImplController {
-    private final QSContainerImpl mView;
+/** */
+@QSScope
+public class QSContainerImplController extends ViewController<QSContainerImpl> {
+    private final QSPanelController mQsPanelController;
     private final QuickStatusBarHeaderController mQuickStatusBarHeaderController;
+    private final ConfigurationController mConfigurationController;
+    private final FalsingManager mFalsingManager;
+    private final NonInterceptingScrollView mQSPanelContainer;
+    private final ConfigurationController.ConfigurationListener mConfigurationListener =
+            new ConfigurationController.ConfigurationListener() {
+        @Override
+        public void onConfigChanged(Configuration newConfig) {
+            mView.updateResources(mQsPanelController, mQuickStatusBarHeaderController);
+        }
+    };
 
-    private QSContainerImplController(QSContainerImpl view,
-            QuickStatusBarHeaderController.Builder quickStatusBarHeaderControllerBuilder) {
-        mView = view;
-        mQuickStatusBarHeaderController = quickStatusBarHeaderControllerBuilder
-                .setQuickStatusBarHeader(mView.findViewById(R.id.header)).build();
+    private final View.OnTouchListener mContainerTouchHandler = new View.OnTouchListener() {
+        @Override
+        public boolean onTouch(View v, MotionEvent event) {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                if (mQSPanelContainer.isPreventingIntercept()) {
+                    // There's really no action here to take, but we need to tell the FalsingManager
+                    mFalsingManager.isFalseTouch(QS_SWIPE_NESTED);
+                }
+            }
+            return false;
+        }
+    };
+
+    @Inject
+    QSContainerImplController(
+            QSContainerImpl view,
+            QSPanelController qsPanelController,
+            QuickStatusBarHeaderController quickStatusBarHeaderController,
+            ConfigurationController configurationController,
+            FalsingManager falsingManager) {
+        super(view);
+        mQsPanelController = qsPanelController;
+        mQuickStatusBarHeaderController = quickStatusBarHeaderController;
+        mConfigurationController = configurationController;
+        mFalsingManager = falsingManager;
+        mQSPanelContainer = mView.getQSPanelContainer();
+    }
+
+    @Override
+    public void onInit() {
+        mQuickStatusBarHeaderController.init();
     }
 
     public void setListening(boolean listening) {
         mQuickStatusBarHeaderController.setListening(listening);
     }
 
-    public static class Builder {
-        private final QuickStatusBarHeaderController.Builder mQuickStatusBarHeaderControllerBuilder;
-        private QSContainerImpl mView;
+    @Override
+    protected void onViewAttached() {
+        mView.updateResources(mQsPanelController, mQuickStatusBarHeaderController);
+        mConfigurationController.addCallback(mConfigurationListener);
+        mQSPanelContainer.setOnTouchListener(mContainerTouchHandler);
+    }
 
-        @Inject
-        public Builder(
-                QuickStatusBarHeaderController.Builder quickStatusBarHeaderControllerBuilder) {
-            mQuickStatusBarHeaderControllerBuilder = quickStatusBarHeaderControllerBuilder;
-        }
+    @Override
+    protected void onViewDetached() {
+        mConfigurationController.removeCallback(mConfigurationListener);
+        mQSPanelContainer.setOnTouchListener(null);
+    }
 
-        public Builder setQSContainerImpl(QSContainerImpl view) {
-            mView = view;
-            return this;
-        }
-
-        public QSContainerImplController build() {
-            return new QSContainerImplController(mView, mQuickStatusBarHeaderControllerBuilder);
-        }
+    public QSContainerImpl getView() {
+        return mView;
     }
 }

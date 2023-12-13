@@ -32,7 +32,7 @@ namespace aapt {
 class TestDirectoryFixture : public ::testing::Test {
  public:
   TestDirectoryFixture() = default;
-  virtual ~TestDirectoryFixture() = default;
+  ~TestDirectoryFixture() override = default;
 
   // Creates the test directory or clears its contents if it contains previously created files.
   void SetUp() override;
@@ -41,14 +41,14 @@ class TestDirectoryFixture : public ::testing::Test {
   void TearDown() override;
 
   // Retrieve the test directory of the fixture.
-  const android::StringPiece GetTestDirectory() {
+  android::StringPiece GetTestDirectory() {
     return temp_dir_;
   }
 
   // Retrieves the absolute path of the specified relative path in the test directory. Directories
   // should be separated using forward slashes ('/'), and these slashes will be translated to
   // backslashes when running Windows tests.
-  const std::string GetTestPath(const android::StringPiece& path) {
+  std::string GetTestPath(android::StringPiece path) {
     std::string base = temp_dir_;
     for (android::StringPiece part : util::Split(path, '/')) {
       file::AppendPath(&base, part);
@@ -68,27 +68,26 @@ class TestDirectoryFixture : public ::testing::Test {
 class CommandTestFixture : public TestDirectoryFixture {
  public:
   CommandTestFixture() = default;
-  virtual ~CommandTestFixture() = default;
+  ~CommandTestFixture() override = default;
 
   // Wries the contents of the file to the specified path. The file is compiled and the flattened
   // file is written to the out directory.
   bool CompileFile(const std::string& path, const std::string& contents,
-                   const android::StringPiece& flat_out_dir, IDiagnostics* diag);
+                   android::StringPiece flat_out_dir, android::IDiagnostics* diag);
 
   // Executes the link command with the specified arguments.
-  bool Link(const std::vector<std::string>& args, IDiagnostics* diag);
+  bool Link(const std::vector<std::string>& args, android::IDiagnostics* diag);
 
   // Executes the link command with the specified arguments. The flattened files residing in the
   // flat directory will be added to the link command as file arguments.
-  bool Link(const std::vector<std::string>& args, const android::StringPiece& flat_dir,
-            IDiagnostics* diag);
+  bool Link(const std::vector<std::string>& args, android::StringPiece flat_dir,
+            android::IDiagnostics* diag);
 
   // Creates a minimal android manifest within the test directory and returns the file path.
   std::string GetDefaultManifest(const char* package_name = kDefaultPackageName);
 
   // Returns pointer to data inside APK files
-  std::unique_ptr<io::IData> OpenFileAsData(LoadedApk* apk,
-                                            const android::StringPiece& path);
+  std::unique_ptr<io::IData> OpenFileAsData(LoadedApk* apk, android::StringPiece path);
 
   // Asserts that loading the tree from the specified file in the apk succeeds.
   void AssertLoadXml(LoadedApk* apk, const io::IData* data,
@@ -97,6 +96,33 @@ class CommandTestFixture : public TestDirectoryFixture {
   static const char* kDefaultPackageName;
  private:
   DISALLOW_COPY_AND_ASSIGN(CommandTestFixture);
+};
+
+struct ManifestBuilder {
+  explicit ManifestBuilder(CommandTestFixture* fixture);
+  ManifestBuilder& AddContents(const std::string& contents);
+  ManifestBuilder& SetPackageName(const std::string& package_name);
+  std::string Build(const std::string& file_path);
+  std::string Build();
+
+ private:
+  CommandTestFixture* fixture_;
+  std::string package_name_ = CommandTestFixture::kDefaultPackageName;
+  std::string contents_;
+};
+
+struct LinkCommandBuilder {
+  explicit LinkCommandBuilder(CommandTestFixture* fixture);
+  LinkCommandBuilder& AddCompiledResDir(const std::string& dir, android::IDiagnostics* diag);
+  LinkCommandBuilder& AddFlag(const std::string& flag);
+  LinkCommandBuilder& AddParameter(const std::string& param, const std::string& value);
+  LinkCommandBuilder& SetManifestFile(const std::string& manifest_path);
+  std::vector<std::string> Build(const std::string& out_apk_path);
+
+ private:
+  CommandTestFixture* fixture_;
+  std::vector<std::string> args_;
+  bool manifest_supplied_ = false;
 };
 
 } // namespace aapt

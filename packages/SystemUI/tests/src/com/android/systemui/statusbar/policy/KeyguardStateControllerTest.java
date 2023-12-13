@@ -24,6 +24,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.hardware.biometrics.BiometricSourceType;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 
@@ -31,13 +32,25 @@ import androidx.test.filters.SmallTest;
 
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardUpdateMonitor;
+import com.android.keyguard.KeyguardUpdateMonitorCallback;
+import com.android.keyguard.logging.KeyguardUpdateMonitorLogger;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FeatureFlags;
+import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
+
+import dagger.Lazy;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+
+import java.util.Random;
+
 
 @SmallTest
 @TestableLooper.RunWithLooper
@@ -49,17 +62,51 @@ public class KeyguardStateControllerTest extends SysuiTestCase {
     @Mock
     private LockPatternUtils mLockPatternUtils;
     private KeyguardStateController mKeyguardStateController;
+    @Mock
+    private DumpManager mDumpManager;
+    @Mock
+    private Lazy<KeyguardUnlockAnimationController> mKeyguardUnlockAnimationControllerLazy;
+    @Mock
+    private KeyguardUpdateMonitorLogger mLogger;
+    @Mock
+    private FeatureFlags mFeatureFlags;
+
+    @Captor
+    private ArgumentCaptor<KeyguardUpdateMonitorCallback> mUpdateCallbackCaptor;
 
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        mKeyguardStateController = new KeyguardStateControllerImpl(mContext,
-                mKeyguardUpdateMonitor, mLockPatternUtils);
+        mKeyguardStateController = new KeyguardStateControllerImpl(
+                mContext,
+                mKeyguardUpdateMonitor,
+                mLockPatternUtils,
+                mKeyguardUnlockAnimationControllerLazy,
+                mLogger,
+                mDumpManager,
+                mFeatureFlags);
     }
 
     @Test
     public void testAddCallback_registersListener() {
         verify(mKeyguardUpdateMonitor).registerCallback(any());
+    }
+
+    @Test
+    public void testFaceAuthEnabledChanged_calledWhenFaceEnrollmentStateChanges() {
+        KeyguardStateController.Callback callback = mock(KeyguardStateController.Callback.class);
+
+        when(mKeyguardUpdateMonitor.isFaceAuthEnabledForUser(anyInt())).thenReturn(false);
+        verify(mKeyguardUpdateMonitor).registerCallback(mUpdateCallbackCaptor.capture());
+        mKeyguardStateController.addCallback(callback);
+        assertThat(mKeyguardStateController.isFaceAuthEnabled()).isFalse();
+
+        when(mKeyguardUpdateMonitor.isFaceAuthEnabledForUser(anyInt())).thenReturn(true);
+        mUpdateCallbackCaptor.getValue().onBiometricEnrollmentStateChanged(
+                BiometricSourceType.FACE);
+
+        assertThat(mKeyguardStateController.isFaceAuthEnabled()).isTrue();
+        verify(callback).onFaceAuthEnabledChanged();
     }
 
     @Test
@@ -143,4 +190,27 @@ public class KeyguardStateControllerTest extends SysuiTestCase {
         verify(callback).onUnlockedChanged();
     }
 
+    @Test
+    public void testKeyguardDismissAmountCallbackInvoked() {
+        KeyguardStateController.Callback callback = mock(KeyguardStateController.Callback.class);
+        mKeyguardStateController.addCallback(callback);
+
+        mKeyguardStateController.notifyKeyguardDismissAmountChanged(100f, false);
+
+        verify(callback).onKeyguardDismissAmountChanged();
+    }
+
+    @Test
+    public void testOnEnabledTrustAgentsChangedCallback() {
+        final Random random = new Random();
+
+        verify(mKeyguardUpdateMonitor).registerCallback(mUpdateCallbackCaptor.capture());
+        final KeyguardStateController.Callback stateCallback =
+                mock(KeyguardStateController.Callback.class);
+        mKeyguardStateController.addCallback(stateCallback);
+
+        when(mLockPatternUtils.isSecure(anyInt())).thenReturn(true);
+        mUpdateCallbackCaptor.getValue().onEnabledTrustAgentsChanged(random.nextInt());
+        verify(stateCallback).onUnlockedChanged();
+    }
 }

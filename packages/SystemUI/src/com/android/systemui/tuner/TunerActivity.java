@@ -31,7 +31,9 @@ import androidx.preference.PreferenceScreen;
 
 import com.android.systemui.Dependency;
 import com.android.systemui.R;
+import com.android.systemui.demomode.DemoModeController;
 import com.android.systemui.fragments.FragmentService;
+import com.android.systemui.util.settings.GlobalSettings;
 
 import javax.inject.Inject;
 
@@ -41,13 +43,25 @@ public class TunerActivity extends Activity implements
 
     private static final String TAG_TUNER = "tuner";
 
+    private final DemoModeController mDemoModeController;
+    private final TunerService mTunerService;
+    private final GlobalSettings mGlobalSettings;
+
     @Inject
-    TunerActivity() {
+    TunerActivity(
+            DemoModeController demoModeController,
+            TunerService tunerService,
+            GlobalSettings globalSettings
+    ) {
         super();
+        mDemoModeController = demoModeController;
+        mTunerService = tunerService;
+        mGlobalSettings = globalSettings;
     }
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setTheme(R.style.Theme_AppCompat_DayNight);
 
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -61,8 +75,9 @@ public class TunerActivity extends Activity implements
             final String action = getIntent().getAction();
             boolean showDemoMode = action != null && action.equals(
                     "com.android.settings.action.DEMO_MODE");
-            final PreferenceFragment fragment = showDemoMode ? new DemoModeFragment()
-                    : new TunerFragment();
+            final PreferenceFragment fragment = showDemoMode
+                    ? new DemoModeFragment(mDemoModeController, mGlobalSettings)
+                    : new TunerFragment(mTunerService);
             getFragmentManager().beginTransaction().replace(R.id.content_frame,
                     fragment, TAG_TUNER).commit();
         }

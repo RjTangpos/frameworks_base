@@ -236,7 +236,7 @@ public class ThumbnailUtils {
      * which enables remote providers to efficiently cache and invalidate
      * thumbnails.
      *
-     * @param file The audio file.
+     * @param file The image file.
      * @param size The desired thumbnail size.
      * @throws IOException If any trouble was encountered while generating or
      *             loading the thumbnail, or if
@@ -272,7 +272,8 @@ public class ThumbnailUtils {
         if (mimeType.equals("image/heif")
                 || mimeType.equals("image/heif-sequence")
                 || mimeType.equals("image/heic")
-                || mimeType.equals("image/heic-sequence")) {
+                || mimeType.equals("image/heic-sequence")
+                || mimeType.equals("image/avif")) {
             try (MediaMetadataRetriever retriever = new MediaMetadataRetriever()) {
                 retriever.setDataSource(file.getAbsolutePath());
                 bitmap = retriever.getThumbnailImageAtIndex(-1,

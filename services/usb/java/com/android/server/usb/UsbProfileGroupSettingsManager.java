@@ -58,9 +58,11 @@ import android.util.Xml;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.Immutable;
 import com.android.internal.content.PackageMonitor;
-import com.android.internal.util.FastXmlSerializer;
 import com.android.internal.util.XmlUtils;
 import com.android.internal.util.dump.DualDumpOutputStream;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
+import com.android.server.utils.EventLogger;
 
 import libcore.io.IoUtils;
 
@@ -73,7 +75,6 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.ProtocolException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -83,6 +84,8 @@ import java.util.Map;
 class UsbProfileGroupSettingsManager {
     private static final String TAG = UsbProfileGroupSettingsManager.class.getSimpleName();
     private static final boolean DEBUG = false;
+
+    private static final int DUMPSYS_LOG_BUFFER = 200;
 
     /** Legacy settings file, before multi-user */
     private static final File sSingleUserSettingsFile = new File(
@@ -127,6 +130,8 @@ class UsbProfileGroupSettingsManager {
      */
     @GuardedBy("mLock")
     private boolean mIsWriteSettingsScheduled;
+
+    private static EventLogger sEventLogger;
 
     /**
      * A package of a user.
@@ -258,6 +263,9 @@ class UsbProfileGroupSettingsManager {
                         device, false /* showMtpNotification */));
 
         mUsbHandlerManager = usbResolveActivityManager;
+
+        sEventLogger = new EventLogger(DUMPSYS_LOG_BUFFER,
+                "UsbProfileGroupSettingsManager activity");
     }
 
     /**
@@ -435,8 +443,7 @@ class UsbProfileGroupSettingsManager {
             FileInputStream fis = null;
             try {
                 fis = new FileInputStream(sSingleUserSettingsFile);
-                XmlPullParser parser = Xml.newPullParser();
-                parser.setInput(fis, StandardCharsets.UTF_8.name());
+                TypedXmlPullParser parser = Xml.resolvePullParser(fis);
 
                 XmlUtils.nextElement(parser);
                 while (parser.getEventType() != XmlPullParser.END_DOCUMENT) {
@@ -470,8 +477,7 @@ class UsbProfileGroupSettingsManager {
         FileInputStream stream = null;
         try {
             stream = mSettingsFile.openRead();
-            XmlPullParser parser = Xml.newPullParser();
-            parser.setInput(stream, StandardCharsets.UTF_8.name());
+            TypedXmlPullParser parser = Xml.resolvePullParser(stream);
 
             XmlUtils.nextElement(parser);
             while (parser.getEventType() != XmlPullParser.END_DOCUMENT) {
@@ -516,8 +522,7 @@ class UsbProfileGroupSettingsManager {
                 try {
                     fos = mSettingsFile.startWrite();
 
-                    FastXmlSerializer serializer = new FastXmlSerializer();
-                    serializer.setOutput(fos, StandardCharsets.UTF_8.name());
+                    TypedXmlSerializer serializer = Xml.resolveSerializer(fos);
                     serializer.startDocument(null, true);
                     serializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output",
                                     true);
@@ -966,6 +971,7 @@ class UsbProfileGroupSettingsManager {
                     matches, mAccessoryPreferenceMap.get(new AccessoryFilter(accessory)));
         }
 
+        sEventLogger.enqueue(new EventLogger.StringEvent("accessoryAttached: " + intent));
         resolveActivity(intent, matches, defaultActivity, null, accessory);
     }
 
@@ -1519,6 +1525,8 @@ class UsbProfileGroupSettingsManager {
             }
         }
 
+        sEventLogger.dump(new DualOutputStreamDumpSink(dump,
+                UsbProfileGroupSettingsManagerProto.INTENT));
         dump.end(token);
     }
 

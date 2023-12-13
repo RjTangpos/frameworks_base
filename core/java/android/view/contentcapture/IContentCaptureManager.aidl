@@ -17,11 +17,13 @@
 package android.view.contentcapture;
 
 import android.content.ComponentName;
+import android.content.pm.ParceledListSlice;
 import android.view.contentcapture.ContentCaptureContext;
 import android.view.contentcapture.ContentCaptureEvent;
 import android.view.contentcapture.DataRemovalRequest;
 import android.view.contentcapture.DataShareRequest;
 import android.view.contentcapture.IDataShareWriteAdapter;
+import android.view.contentcapture.IContentCaptureOptionsCallback;
 import android.os.IBinder;
 import android.os.ICancellationSignal;
 
@@ -44,8 +46,9 @@ oneway interface IContentCaptureManager {
      * @param flags Meta flags that enable or disable content capture (see
      *     {@link IContentCaptureContext#flags}).
      */
-    void startSession(IBinder activityToken, in ComponentName componentName,
-                      int sessionId, int flags, in IResultReceiver result);
+    void startSession(IBinder activityToken, IBinder shareableActivityToken,
+                      in ComponentName componentName, int sessionId, int flags,
+                      in IResultReceiver result);
 
     /**
      * Marks the end of a session for the calling user identified by
@@ -85,4 +88,30 @@ oneway interface IContentCaptureManager {
      * Returns a list with the ContentCaptureConditions for the package (or null if not defined).
      */
     void getContentCaptureConditions(String packageName, in IResultReceiver result);
+
+    /**
+     * Resets the temporary service implementation to the default component.
+     */
+    void resetTemporaryService(int userId);
+
+    /**
+     * Temporarily sets the service implementation.
+     */
+    void setTemporaryService(int userId, in String serviceName, int duration);
+
+    /**
+     * Sets whether the default service should be used.
+     */
+    void setDefaultServiceEnabled(int userId, boolean enabled);
+
+    /**
+     * Registers a listener to handle updates ContentCaptureOptions from server.
+     */
+    void registerContentCaptureOptionsCallback(String packageName,
+                                               in IContentCaptureOptionsCallback callback);
+
+    /**
+     * Notifies the system server that a login was detected.
+     */
+    void onLoginDetected(in ParceledListSlice<ContentCaptureEvent> events);
 }

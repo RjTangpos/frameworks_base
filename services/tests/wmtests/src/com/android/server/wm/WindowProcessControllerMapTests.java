@@ -22,6 +22,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 import android.os.UserHandle;
 import android.platform.test.annotations.Presubmit;
@@ -31,6 +33,7 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * Tests for the {@link WindowProcessControllerMap} class.
@@ -40,7 +43,8 @@ import org.junit.Test;
  */
 @SmallTest
 @Presubmit
-public class WindowProcessControllerMapTests extends ActivityTestsBase {
+@RunWith(WindowTestRunner.class)
+public class WindowProcessControllerMapTests extends WindowTestsBase {
 
     private static final int FAKE_UID1 = 666;
     private static final int FAKE_UID2 = 667;
@@ -60,23 +64,23 @@ public class WindowProcessControllerMapTests extends ActivityTestsBase {
     public void setUp() throws Exception {
         mProcessMap = new WindowProcessControllerMap();
         pid1uid1 = new WindowProcessController(
-                mService, mService.mContext.getApplicationInfo(), "fakepid1fakeuid1", FAKE_UID1,
+                mAtm, mAtm.mContext.getApplicationInfo(), "fakepid1fakeuid1", FAKE_UID1,
                 UserHandle.getUserId(12345), mock(Object.class), mock(WindowProcessListener.class));
         pid1uid1.setPid(FAKE_PID1);
         pid1uid2 = new WindowProcessController(
-                mService, mService.mContext.getApplicationInfo(), "fakepid1fakeuid2", FAKE_UID2,
+                mAtm, mAtm.mContext.getApplicationInfo(), "fakepid1fakeuid2", FAKE_UID2,
                 UserHandle.getUserId(12345), mock(Object.class), mock(WindowProcessListener.class));
         pid1uid2.setPid(FAKE_PID1);
         pid2uid1 = new WindowProcessController(
-                mService, mService.mContext.getApplicationInfo(), "fakepid2fakeuid1", FAKE_UID1,
+                mAtm, mAtm.mContext.getApplicationInfo(), "fakepid2fakeuid1", FAKE_UID1,
                 UserHandle.getUserId(12345), mock(Object.class), mock(WindowProcessListener.class));
         pid2uid1.setPid(FAKE_PID2);
         pid3uid1 = new WindowProcessController(
-                mService, mService.mContext.getApplicationInfo(), "fakepid3fakeuid1", FAKE_UID1,
+                mAtm, mAtm.mContext.getApplicationInfo(), "fakepid3fakeuid1", FAKE_UID1,
                 UserHandle.getUserId(12345), mock(Object.class), mock(WindowProcessListener.class));
         pid3uid1.setPid(FAKE_PID3);
         pid4uid2 = new WindowProcessController(
-                mService, mService.mContext.getApplicationInfo(), "fakepid4fakeuid2", FAKE_UID2,
+                mAtm, mAtm.mContext.getApplicationInfo(), "fakepid4fakeuid2", FAKE_UID2,
                 UserHandle.getUserId(12345), mock(Object.class), mock(WindowProcessListener.class));
         pid4uid2.setPid(FAKE_PID4);
     }
@@ -126,5 +130,15 @@ public class WindowProcessControllerMapTests extends ActivityTestsBase {
         assertTrue(uid2processes.contains(pid1uid2));
         assertEquals(uid2processes.size(), 1);
         assertEquals(mProcessMap.getProcess(FAKE_PID1), pid1uid2);
+    }
+
+    @Test
+    public void testRemove_callsDestroy() {
+        var proc = spy(pid1uid1);
+        mProcessMap.put(FAKE_PID1, proc);
+
+        mProcessMap.remove(FAKE_PID1);
+
+        verify(proc).destroy();
     }
 }

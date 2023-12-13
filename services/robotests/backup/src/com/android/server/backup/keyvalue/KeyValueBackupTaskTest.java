@@ -43,23 +43,23 @@ import static com.android.server.backup.testing.Utils.transferStreamedData;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.intThat;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.intThat;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
 import static org.robolectric.shadow.api.Shadow.extract;
@@ -74,9 +74,12 @@ import android.annotation.Nullable;
 import android.app.Application;
 import android.app.IBackupAgent;
 import android.app.backup.BackupAgent;
+import android.app.backup.BackupAnnotations;
 import android.app.backup.BackupDataInput;
 import android.app.backup.BackupDataOutput;
 import android.app.backup.BackupManager;
+import android.app.backup.BackupManagerMonitor;
+import android.app.backup.BackupRestoreEventLogger;
 import android.app.backup.BackupTransport;
 import android.app.backup.IBackupCallback;
 import android.app.backup.IBackupManager;
@@ -89,6 +92,7 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.ConditionVariable;
 import android.os.DeadObjectException;
 import android.os.Handler;
@@ -100,6 +104,7 @@ import android.platform.test.annotations.Presubmit;
 import android.util.Pair;
 
 import com.android.internal.backup.IBackupTransport;
+import com.android.internal.infra.AndroidFuture;
 import com.android.server.EventLogTags;
 import com.android.server.LocalServices;
 import com.android.server.backup.BackupRestoreTask;
@@ -116,12 +121,15 @@ import com.android.server.backup.testing.TestUtils.ThrowingRunnable;
 import com.android.server.backup.testing.TransportData;
 import com.android.server.backup.testing.TransportTestUtils;
 import com.android.server.backup.testing.TransportTestUtils.TransportMock;
+import com.android.server.backup.utils.BackupEligibilityRules;
+import com.android.server.backup.utils.BackupManagerMonitorEventSender;
 import com.android.server.testing.shadows.FrameworkShadowLooper;
 import com.android.server.testing.shadows.ShadowApplicationPackageManager;
 import com.android.server.testing.shadows.ShadowBackupDataInput;
 import com.android.server.testing.shadows.ShadowBackupDataOutput;
 import com.android.server.testing.shadows.ShadowEventLog;
 import com.android.server.testing.shadows.ShadowSystemServiceRegistry;
+import com.android.server.testing.shadows.ShadowUserManager;
 
 import com.google.common.base.Charsets;
 import com.google.common.truth.IterableSubject;
@@ -130,6 +138,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
 import org.mockito.InOrder;
 import org.mockito.Mock;
@@ -168,7 +177,8 @@ import java.util.stream.Stream;
             ShadowBackupDataOutput.class,
             ShadowEventLog.class,
             ShadowQueuedWork.class,
-            ShadowSystemServiceRegistry.class
+            ShadowSystemServiceRegistry.class,
+            ShadowUserManager.class
         })
 @Presubmit
 public class KeyValueBackupTaskTest  {
@@ -177,6 +187,7 @@ public class KeyValueBackupTaskTest  {
     private static final String BACKUP_AGENT_SHARED_PREFS_SYNCHRONIZER_CLASS =
             "android.app.backup.BackupAgent$SharedPrefsSynchronizer";
     private static final int USER_ID = 10;
+    private static final int BACKUP_DESTINATION = BackupAnnotations.BackupDestination.CLOUD;
 
     @Mock private TransportManager mTransportManager;
     @Mock private DataChangedJournal mOldJournal;
@@ -184,6 +195,7 @@ public class KeyValueBackupTaskTest  {
     @Mock private IBackupManagerMonitor mMonitor;
     @Mock private OnTaskFinishedListener mListener;
     @Mock private PackageManagerInternal mPackageManagerInternal;
+
     private UserBackupManagerService mBackupManagerService;
     private TransportData mTransport;
     private ShadowLooper mShadowBackupLooper;
@@ -199,6 +211,7 @@ public class KeyValueBackupTaskTest  {
     private Looper mMainLooper;
     private FrameworkShadowLooper mShadowMainLooper;
     private Context mContext;
+    private BackupEligibilityRules mBackupEligibilityRules;
 
     @Before
     public void setUp() throws Exception {
@@ -248,12 +261,16 @@ public class KeyValueBackupTaskTest  {
         mBackupHandler = mBackupManagerService.getBackupHandler();
         mShadowBackupLooper = shadowOf(mBackupHandler.getLooper());
         ShadowEventLog.setUp();
-        mReporter = spy(new KeyValueBackupReporter(mBackupManagerService, mObserver, mMonitor));
+        mReporter = spy(new KeyValueBackupReporter(mBackupManagerService, mObserver,
+                new BackupManagerMonitorEventSender(mMonitor)));
 
         when(mPackageManagerInternal.getApplicationEnabledState(any(), anyInt()))
                 .thenReturn(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
         LocalServices.removeServiceForTest(PackageManagerInternal.class);
         LocalServices.addService(PackageManagerInternal.class, mPackageManagerInternal);
+        mBackupEligibilityRules = new BackupEligibilityRules(mPackageManager,
+                LocalServices.getService(PackageManagerInternal.class), USER_ID, mContext,
+                BACKUP_DESTINATION);
     }
 
     @After
@@ -272,7 +289,7 @@ public class KeyValueBackupTaskTest  {
 
         assertThat(mBackupManagerService.getPendingInits()).isEmpty();
         assertThat(mBackupManagerService.isBackupRunning()).isFalse();
-        assertThat(mBackupManagerService.getCurrentOperations().size()).isEqualTo(0);
+        assertThat(mBackupManagerService.getOperationStorage().numOperations()).isEqualTo(0);
         verify(mOldJournal).delete();
     }
 
@@ -443,7 +460,7 @@ public class KeyValueBackupTaskTest  {
 
         assertThat(mBackupManagerService.getPendingInits()).isEmpty();
         assertThat(mBackupManagerService.isBackupRunning()).isFalse();
-        assertThat(mBackupManagerService.getCurrentOperations().size()).isEqualTo(0);
+        assertThat(mBackupManagerService.getOperationStorage().numOperations()).isEqualTo(0);
         assertThat(mBackupManagerService.getCurrentToken()).isEqualTo(1234L);
         verify(mBackupManagerService).writeRestoreTokens();
         verify(mOldJournal).delete();
@@ -480,7 +497,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgentWithData(PACKAGE_1);
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, true, PACKAGE_1);
 
         runTask(task);
@@ -493,7 +511,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgentWithData(PACKAGE_1);
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task =
                 createKeyValueBackupTask(transportMock, true, PACKAGE_1, PM_PACKAGE);
 
@@ -507,7 +526,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgentWithData(PACKAGE_1);
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, false, PACKAGE_1);
 
         runTask(task);
@@ -743,7 +763,7 @@ public class KeyValueBackupTaskTest  {
 
         verify(mBackupManagerService).setWorkSource(null);
         verify(mObserver).onResult(PACKAGE_1.packageName, ERROR_AGENT_FAILURE);
-        verify(mObserver).backupFinished(BackupManager.SUCCESS);
+        verify(mObserver).backupFinished(SUCCESS);
         assertBackupPendingFor(PACKAGE_1);
     }
 
@@ -776,7 +796,7 @@ public class KeyValueBackupTaskTest  {
 
         verify(mBackupManagerService).setWorkSource(null);
         verify(mObserver).onResult(PACKAGE_1.packageName, ERROR_AGENT_FAILURE);
-        verify(mObserver).backupFinished(BackupManager.SUCCESS);
+        verify(mObserver).backupFinished(SUCCESS);
         assertBackupPendingFor(PACKAGE_1);
     }
 
@@ -786,14 +806,14 @@ public class KeyValueBackupTaskTest  {
         setUpAgent(PACKAGE_1);
         doThrow(SecurityException.class)
                 .when(mBackupManagerService)
-                .bindToAgentSynchronous(argThat(applicationInfo(PACKAGE_1)), anyInt());
+                .bindToAgentSynchronous(argThat(applicationInfo(PACKAGE_1)), anyInt(), anyInt());
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
 
         runTask(task);
 
         verify(mBackupManagerService).setWorkSource(null);
         verify(mObserver).onResult(PACKAGE_1.packageName, ERROR_AGENT_FAILURE);
-        verify(mObserver).backupFinished(BackupManager.SUCCESS);
+        verify(mObserver).backupFinished(SUCCESS);
         assertBackupPendingFor(PACKAGE_1);
     }
 
@@ -804,14 +824,14 @@ public class KeyValueBackupTaskTest  {
         setUpAgent(PACKAGE_1);
         doThrow(SecurityException.class)
                 .when(mBackupManagerService)
-                .bindToAgentSynchronous(argThat(applicationInfo(PACKAGE_1)), anyInt());
+                .bindToAgentSynchronous(argThat(applicationInfo(PACKAGE_1)), anyInt(), anyInt());
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, true, PACKAGE_1);
 
         runTask(task);
 
         verify(mBackupManagerService).setWorkSource(null);
         verify(mObserver).onResult(PACKAGE_1.packageName, ERROR_AGENT_FAILURE);
-        verify(mObserver).backupFinished(BackupManager.SUCCESS);
+        verify(mObserver).backupFinished(SUCCESS);
         assertBackupPendingFor(PACKAGE_1);
     }
 
@@ -1317,7 +1337,8 @@ public class KeyValueBackupTaskTest  {
                         argThat(packageInfo(PM_PACKAGE)), any(), anyInt()))
                 .then(copyBackupDataTo(backupDataPath));
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         agentOnBackupDo(
                 pmAgent,
                 (oldState, dataOutput, newState) -> {
@@ -1381,7 +1402,8 @@ public class KeyValueBackupTaskTest  {
         setUpAgent(PACKAGE_1);
         when(transportMock.transport.finishBackup()).thenReturn(BackupTransport.TRANSPORT_OK);
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         agentOnBackupDo(
                 pmAgent,
                 (oldState, dataOutput, newState) -> {
@@ -1405,7 +1427,8 @@ public class KeyValueBackupTaskTest  {
         setUpAgent(PACKAGE_1);
         when(transportMock.transport.finishBackup()).thenReturn(BackupTransport.TRANSPORT_OK);
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         agentOnBackupDo(
                 pmAgent,
                 (oldState, dataOutput, newState) -> {
@@ -1433,6 +1456,36 @@ public class KeyValueBackupTaskTest  {
 
         assertEventLogged(
                 EventLogTags.BACKUP_PACKAGE, PACKAGE_1.packageName, Files.size(backupData));
+    }
+
+    @Test
+    public void testRunTask_whenFinishBackupSucceeds_sendsAgentLogsToMonitor() throws Exception {
+        TransportMock transportMock = setUpInitializedTransport(mTransport);
+        AgentMock agentMock = setUpAgentWithData(PACKAGE_1);
+        KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
+        // Mock the agent logging and returning its logs.
+        List<BackupRestoreEventLogger.DataTypeResult> results = new ArrayList<>();
+        results.add(new BackupRestoreEventLogger.DataTypeResult("testDataTypeResult"));
+        doAnswer(
+                        invocation -> {
+                            AndroidFuture<List<BackupRestoreEventLogger.DataTypeResult>> in =
+                                    invocation.getArgument(0);
+                            in.complete(results);
+                            return null;
+                        })
+                .when(agentMock.agentBinder)
+                .getLoggerResults(any());
+
+        runTask(task);
+
+        ArgumentCaptor<Bundle> bundleCaptor = ArgumentCaptor.forClass(Bundle.class);
+        verify(mMonitor).onEvent(bundleCaptor.capture());
+        Bundle eventBundle = bundleCaptor.getValue();
+        List<BackupRestoreEventLogger.DataTypeResult> sentLoggingResults =
+                eventBundle.getParcelableArrayList(
+                        BackupManagerMonitor.EXTRA_LOG_AGENT_LOGGING_RESULTS,
+                        BackupRestoreEventLogger.DataTypeResult.class);
+        assertThat(sentLoggingResults.get(0).getDataType()).isEqualTo("testDataTypeResult");
     }
 
     @Test
@@ -1670,7 +1723,7 @@ public class KeyValueBackupTaskTest  {
 
         verify(mReporter).onPackageBackupTransportFailure(PACKAGE_1.packageName);
         verify(mReporter).onTransportNotInitialized(mTransport.transportName);
-        verify(mReporter).onBackupFinished(BackupManager.ERROR_TRANSPORT_ABORTED);
+        verify(mReporter).onBackupFinished(ERROR_TRANSPORT_ABORTED);
     }
 
     @Test
@@ -1687,7 +1740,7 @@ public class KeyValueBackupTaskTest  {
 
         verify(mReporter).onPackageBackupTransportFailure(PM_PACKAGE.packageName);
         verify(mReporter).onTransportNotInitialized(mTransport.transportName);
-        verify(mReporter).onBackupFinished(BackupManager.ERROR_TRANSPORT_ABORTED);
+        verify(mReporter).onBackupFinished(ERROR_TRANSPORT_ABORTED);
     }
 
     @Test
@@ -1984,7 +2037,8 @@ public class KeyValueBackupTaskTest  {
     public void testRunTask_whenPmAgentFails_reportsCorrectly() throws Exception {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         BackupAgent pmAgent = createThrowingPmAgent(new RuntimeException());
-        when(mBackupManagerService.makeMetadataAgent()).thenReturn(pmAgent);
+        when(mBackupManagerService.makeMetadataAgentWithEligibilityRules(
+                mBackupEligibilityRules)).thenReturn(pmAgent);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
 
         runTask(task);
@@ -2002,7 +2056,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgent(PACKAGE_1);
         BackupAgent pmAgent = createThrowingPmAgent(new RuntimeException());
-        doReturn(pmAgent).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(pmAgent).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
 
         runTask(task);
@@ -2015,7 +2070,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgent(PACKAGE_1);
         BackupAgent pmAgent = createThrowingPmAgent(new RuntimeException());
-        doReturn(pmAgent).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(pmAgent).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
 
         runTask(task);
@@ -2028,7 +2084,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgent(PACKAGE_1);
         BackupAgent pmAgent = createThrowingPmAgent(new RuntimeException());
-        doReturn(pmAgent).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(pmAgent).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
 
         runTask(task);
@@ -2041,7 +2098,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgent(PACKAGE_1);
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
         agentOnBackupDo(
                 pmAgent, (oldState, dataOutput, newState) -> runInWorkerThread(task::markCancel));
@@ -2056,7 +2114,8 @@ public class KeyValueBackupTaskTest  {
         TransportMock transportMock = setUpInitializedTransport(mTransport);
         setUpAgent(PACKAGE_1);
         BackupAgent pmAgent = spy(createPmAgent());
-        doReturn(forward(pmAgent)).when(mBackupManagerService).makeMetadataAgent();
+        doReturn(forward(pmAgent)).when(mBackupManagerService)
+                .makeMetadataAgentWithEligibilityRules(mBackupEligibilityRules);
         KeyValueBackupTask task = createKeyValueBackupTask(transportMock, PACKAGE_1);
         agentOnBackupDo(
                 pmAgent, (oldState, dataOutput, newState) -> runInWorkerThread(task::markCancel));
@@ -2167,7 +2226,7 @@ public class KeyValueBackupTaskTest  {
         task.waitCancel();
         reset(transportMock.transport);
         taskFinished.block();
-        verifyZeroInteractions(transportMock.transport);
+        verifyNoInteractions(transportMock.transport);
     }
 
     @Test
@@ -2576,11 +2635,13 @@ public class KeyValueBackupTaskTest  {
             if (packageData.available) {
                 doReturn(backupAgentBinder)
                         .when(mBackupManagerService)
-                        .bindToAgentSynchronous(argThat(applicationInfo(packageData)), anyInt());
+                        .bindToAgentSynchronous(argThat(applicationInfo(packageData)), anyInt(),
+                                anyInt());
             } else {
                 doReturn(null)
                         .when(mBackupManagerService)
-                        .bindToAgentSynchronous(argThat(applicationInfo(packageData)), anyInt());
+                        .bindToAgentSynchronous(argThat(applicationInfo(packageData)), anyInt(),
+                                anyInt());
             }
             return new AgentMock(backupAgentBinder, backupAgent);
         } catch (RemoteException e) {
@@ -2645,7 +2706,8 @@ public class KeyValueBackupTaskTest  {
         KeyValueBackupTask task =
                 new KeyValueBackupTask(
                         mBackupManagerService,
-                        transportMock.transportClient,
+                        mBackupManagerService.getOperationStorage(),
+                        transportMock.mTransportConnection,
                         transportMock.transportData.transportDirName,
                         queue,
                         mOldJournal,
@@ -2653,14 +2715,16 @@ public class KeyValueBackupTaskTest  {
                         mListener,
                         emptyList(),
                         /* userInitiated */ false,
-                        nonIncremental);
+                        nonIncremental,
+                        mBackupEligibilityRules);
         mBackupManager.setUp(mBackupHandler, task);
         return task;
     }
 
     private PackageManagerBackupAgent createPmAgent() {
         PackageManagerBackupAgent pmAgent =
-                new PackageManagerBackupAgent(mApplication.getPackageManager(), USER_ID);
+                new PackageManagerBackupAgent(mApplication.getPackageManager(), USER_ID,
+                        mBackupEligibilityRules);
         pmAgent.attach(mApplication);
         pmAgent.onCreate();
         return pmAgent;
@@ -2672,7 +2736,8 @@ public class KeyValueBackupTaskTest  {
      */
     private PackageManagerBackupAgent createThrowingPmAgent(RuntimeException exception) {
         PackageManagerBackupAgent pmAgent =
-                new ThrowingPackageManagerBackupAgent(mApplication.getPackageManager(), exception);
+                new ThrowingPackageManagerBackupAgent(mApplication.getPackageManager(), exception,
+                        mBackupEligibilityRules);
         pmAgent.attach(mApplication);
         pmAgent.onCreate();
         return pmAgent;
@@ -2703,7 +2768,7 @@ public class KeyValueBackupTaskTest  {
         // The second line will throw NPE because it will call lambda 1 with null, since argThat()
         // returns null. So we guard against that by checking for null.
         return packageInfo ->
-                packageInfo != null && packageInfo.packageName.equals(packageInfo.packageName);
+                packageInfo != null && packageInfo.packageName.equals(packageData.packageName);
     }
 
     /** Matches {@link ApplicationInfo} whose package name is {@code packageData.packageName}. */
@@ -2986,8 +3051,9 @@ public class KeyValueBackupTaskTest  {
         private final RuntimeException mException;
 
         ThrowingPackageManagerBackupAgent(
-                PackageManager packageManager, RuntimeException exception) {
-            super(packageManager, USER_ID);
+                PackageManager packageManager, RuntimeException exception,
+                BackupEligibilityRules backupEligibilityRules) {
+            super(packageManager, USER_ID, backupEligibilityRules);
             mException = exception;
         }
 

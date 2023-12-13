@@ -11,23 +11,34 @@
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
- * limitations under the License
+ * limitations under the License.
  */
 
 package com.android.server.inputmethod;
 
 import static android.view.Display.DEFAULT_DISPLAY;
 import static android.view.Display.INVALID_DISPLAY;
+import static android.view.WindowManager.DISPLAY_IME_POLICY_FALLBACK_DISPLAY;
+import static android.view.WindowManager.DISPLAY_IME_POLICY_LOCAL;
+import static android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
+import android.platform.test.annotations.Presubmit;
+
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
+
+import com.android.internal.inputmethod.SoftInputShowHideReason;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
+
+@Presubmit
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 public class InputMethodManagerServiceTests {
@@ -38,9 +49,9 @@ public class InputMethodManagerServiceTests {
             (displayId) -> {
                 switch (displayId) {
                     case SYSTEM_DECORATION_SUPPORT_DISPLAY_ID:
-                        return true;
+                        return DISPLAY_IME_POLICY_LOCAL;
                     case NO_SYSTEM_DECORATION_SUPPORT_DISPLAY_ID:
-                        return false;
+                        return DISPLAY_IME_POLICY_FALLBACK_DISPLAY;
                     default:
                         throw new IllegalArgumentException("Unknown displayId=" + displayId);
                 }
@@ -49,7 +60,7 @@ public class InputMethodManagerServiceTests {
     static InputMethodManagerService.ImeDisplayValidator sMustNotBeCalledChecker =
             (displayId) -> {
                 fail("Should not pass to display config check for this test case.");
-                return false;
+                return DISPLAY_IME_POLICY_FALLBACK_DISPLAY;
             };
 
     @Test
@@ -84,5 +95,26 @@ public class InputMethodManagerServiceTests {
         assertEquals(SYSTEM_DECORATION_SUPPORT_DISPLAY_ID,
                 InputMethodManagerService.computeImeDisplayIdForTarget(
                         SYSTEM_DECORATION_SUPPORT_DISPLAY_ID, sChecker));
+    }
+
+    @Test
+    public void testSoftInputShowHideHistoryDump_withNulls_doesntThrow() {
+        var writer = new StringWriter();
+        var history = new InputMethodManagerService.SoftInputShowHideHistory();
+        history.addEntry(new InputMethodManagerService.SoftInputShowHideHistory.Entry(
+                null,
+                null,
+                null,
+                SOFT_INPUT_STATE_UNSPECIFIED,
+                SoftInputShowHideReason.SHOW_SOFT_INPUT,
+                false,
+                null,
+                null,
+                null,
+                null));
+
+        history.dump(new PrintWriter(writer), "" /* prefix */);
+
+        // Asserts that dump doesn't throw an NPE.
     }
 }

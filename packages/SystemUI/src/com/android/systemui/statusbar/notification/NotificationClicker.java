@@ -16,16 +16,16 @@
 package com.android.systemui.statusbar.notification;
 
 import android.app.Notification;
-import android.os.SystemClock;
+import android.os.PowerManager;
 import android.service.notification.StatusBarNotification;
 import android.util.Log;
 import android.view.View;
 
 import com.android.systemui.DejankUtils;
-import com.android.systemui.bubbles.BubbleController;
+import com.android.systemui.power.domain.interactor.PowerInteractor;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
-import com.android.systemui.statusbar.phone.StatusBar;
+import com.android.wm.shell.bubbles.Bubbles;
 
 import java.util.Optional;
 
@@ -38,19 +38,27 @@ import javax.inject.Inject;
 public final class NotificationClicker implements View.OnClickListener {
     private static final String TAG = "NotificationClicker";
 
-    private final BubbleController mBubbleController;
     private final NotificationClickerLogger mLogger;
-    private final Optional<StatusBar> mStatusBar;
+    private final PowerInteractor mPowerInteractor;
+    private final Optional<Bubbles> mBubblesOptional;
     private final NotificationActivityStarter mNotificationActivityStarter;
 
+    private ExpandableNotificationRow.OnDragSuccessListener mOnDragSuccessListener =
+            new ExpandableNotificationRow.OnDragSuccessListener() {
+                @Override
+                public void onDragSuccess(NotificationEntry entry) {
+                    mNotificationActivityStarter.onDragSuccess(entry);
+                }
+            };
+
     private NotificationClicker(
-            BubbleController bubbleController,
             NotificationClickerLogger logger,
-            Optional<StatusBar> statusBar,
+            PowerInteractor powerInteractor,
+            Optional<Bubbles> bubblesOptional,
             NotificationActivityStarter notificationActivityStarter) {
-        mBubbleController = bubbleController;
         mLogger = logger;
-        mStatusBar = statusBar;
+        mPowerInteractor = powerInteractor;
+        mBubblesOptional = bubblesOptional;
         mNotificationActivityStarter = notificationActivityStarter;
     }
 
@@ -61,8 +69,7 @@ public final class NotificationClicker implements View.OnClickListener {
             return;
         }
 
-        mStatusBar.ifPresent(statusBar -> statusBar.wakeUpIfDozing(
-                SystemClock.uptimeMillis(), v, "NOTIFICATION_CLICK"));
+        mPowerInteractor.wakeUpIfDozing("NOTIFICATION_CLICK", PowerManager.WAKE_REASON_GESTURE);
 
         final ExpandableNotificationRow row = (ExpandableNotificationRow) v;
         final NotificationEntry entry = row.getEntry();
@@ -71,11 +78,11 @@ public final class NotificationClicker implements View.OnClickListener {
         // Check if the notification is displaying the menu, if so slide notification back
         if (isMenuVisible(row)) {
             mLogger.logMenuVisible(entry);
-            row.animateTranslateNotification(0);
+            row.animateResetTranslation();
             return;
         } else if (row.isChildInGroup() && isMenuVisible(row.getNotificationParent())) {
             mLogger.logParentMenuVisible(entry);
-            row.getNotificationParent().animateTranslateNotification(0);
+            row.getNotificationParent().animateResetTranslation();
             return;
         } else if (row.isSummaryWithChildren() && row.areChildrenExpanded()) {
             // We never want to open the app directly if the user clicks in between
@@ -92,11 +99,11 @@ public final class NotificationClicker implements View.OnClickListener {
         row.setJustClicked(true);
         DejankUtils.postAfterTraversal(() -> row.setJustClicked(false));
 
-        if (!row.getEntry().isBubble()) {
-            mBubbleController.collapseStack();
+        if (!row.getEntry().isBubble() && mBubblesOptional.isPresent()) {
+            mBubblesOptional.get().collapseStack();
         }
 
-        mNotificationActivityStarter.onNotificationClicked(entry.getSbn(), row);
+        mNotificationActivityStarter.onNotificationClicked(entry, row);
     }
 
     private boolean isMenuVisible(ExpandableNotificationRow row) {
@@ -111,33 +118,33 @@ public final class NotificationClicker implements View.OnClickListener {
         if (notification.contentIntent != null || notification.fullScreenIntent != null
                 || row.getEntry().isBubble()) {
             row.setOnClickListener(this);
+            row.setOnDragSuccessListener(mOnDragSuccessListener);
         } else {
             row.setOnClickListener(null);
+            row.setOnDragSuccessListener(null);
         }
     }
 
     /** Daggerized builder for NotificationClicker. */
     public static class Builder {
-        private final BubbleController mBubbleController;
         private final NotificationClickerLogger mLogger;
+        private final PowerInteractor mPowerInteractor;
 
         @Inject
-        public Builder(
-                BubbleController bubbleController,
-                NotificationClickerLogger logger) {
-            mBubbleController = bubbleController;
+        public Builder(NotificationClickerLogger logger, PowerInteractor powerInteractor) {
             mLogger = logger;
+            mPowerInteractor = powerInteractor;
         }
 
         /** Builds an instance. */
         public NotificationClicker build(
-                Optional<StatusBar> statusBar,
+                Optional<Bubbles> bubblesOptional,
                 NotificationActivityStarter notificationActivityStarter
         ) {
             return new NotificationClicker(
-                    mBubbleController,
                     mLogger,
-                    statusBar,
+                    mPowerInteractor,
+                    bubblesOptional,
                     notificationActivityStarter);
         }
     }

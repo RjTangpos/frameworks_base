@@ -22,26 +22,22 @@ import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
 import android.annotation.IdRes
 import android.content.Intent
-
 import android.transition.Transition
 import android.transition.TransitionValues
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
-
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleObserver
 import androidx.lifecycle.OnLifecycleEvent
-
-import com.android.systemui.Interpolators
 import com.android.systemui.R
-
+import com.android.app.animation.Interpolators
 import com.android.systemui.controls.ui.ControlsUiController
 
 object ControlsAnimations {
 
-    private const val ALPHA_EXIT_DURATION = 167L
+    private const val ALPHA_EXIT_DURATION = 183L
     private const val ALPHA_ENTER_DELAY = ALPHA_EXIT_DURATION
     private const val ALPHA_ENTER_DURATION = 350L - ALPHA_ENTER_DELAY
 
@@ -54,7 +50,12 @@ object ControlsAnimations {
      * Setup an activity to handle enter/exit animations. [view] should be the root of the content.
      * Fade and translate together.
      */
-    fun observerForAnimations(view: ViewGroup, window: Window, intent: Intent): LifecycleObserver {
+    fun observerForAnimations(
+            view: ViewGroup,
+            window: Window,
+            intent: Intent,
+            animateY: Boolean = true
+    ): LifecycleObserver {
         return object : LifecycleObserver {
             var showAnimation = intent.getBooleanExtra(ControlsUiController.EXTRA_ANIMATE, false)
 
@@ -65,8 +66,12 @@ object ControlsAnimations {
                 view.transitionAlpha = 0.0f
 
                 if (translationY == -1f) {
-                    translationY = view.context.resources.getDimensionPixelSize(
-                        R.dimen.global_actions_controls_y_translation).toFloat()
+                    if (animateY) {
+                        translationY = view.context.resources.getDimensionPixelSize(
+                                R.dimen.global_actions_controls_y_translation).toFloat()
+                    } else {
+                        translationY = 0f
+                    }
                 }
             }
 

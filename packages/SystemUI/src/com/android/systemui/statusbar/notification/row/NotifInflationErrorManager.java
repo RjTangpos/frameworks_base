@@ -19,6 +19,7 @@ package com.android.systemui.statusbar.notification.row;
 import androidx.annotation.NonNull;
 import androidx.collection.ArraySet;
 
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 
 import java.util.ArrayList;
@@ -26,17 +27,16 @@ import java.util.List;
 import java.util.Set;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * A manager handling the error state of a notification when it encounters an exception while
  * inflating. We don't want to show these notifications to the user but may want to keep them
  * around for logging purposes.
  */
-@Singleton
+@SysUISingleton
 public class NotifInflationErrorManager {
 
-    Set<NotificationEntry> mErroredNotifs = new ArraySet<>();
+    Set<String> mErroredNotifs = new ArraySet<>();
     List<NotifInflationErrorListener> mListeners = new ArrayList<>();
 
     @Inject
@@ -48,7 +48,7 @@ public class NotifInflationErrorManager {
      * @param e the exception encountered while inflating
      */
     public void setInflationError(NotificationEntry entry, Exception e) {
-        mErroredNotifs.add(entry);
+        mErroredNotifs.add(entry.getKey());
         for (int i = 0; i < mListeners.size(); i++) {
             mListeners.get(i).onNotifInflationError(entry, e);
         }
@@ -58,8 +58,8 @@ public class NotifInflationErrorManager {
      * Notification inflated successfully and is no longer errored out.
      */
     public void clearInflationError(NotificationEntry entry) {
-        if (mErroredNotifs.contains(entry)) {
-            mErroredNotifs.remove(entry);
+        if (mErroredNotifs.contains(entry.getKey())) {
+            mErroredNotifs.remove(entry.getKey());
             for (int i = 0; i < mListeners.size(); i++) {
                 mListeners.get(i).onNotifInflationErrorCleared(entry);
             }
@@ -70,7 +70,7 @@ public class NotifInflationErrorManager {
      * Whether or not the notification encountered an exception while inflating.
      */
     public boolean hasInflationError(@NonNull NotificationEntry entry) {
-        return mErroredNotifs.contains(entry);
+        return mErroredNotifs.contains(entry.getKey());
     }
 
     /**

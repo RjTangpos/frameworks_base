@@ -19,8 +19,7 @@ package android.security;
 import android.annotation.NonNull;
 import android.os.ServiceManager;
 import android.os.ServiceSpecificException;
-import android.security.keystore.AndroidKeyStoreProvider;
-import android.security.vpnprofilestore.IVpnProfileStore;
+import android.security.legacykeystore.ILegacyKeystore;
 import android.util.Log;
 
 /**
@@ -33,14 +32,14 @@ import android.util.Log;
 public class LegacyVpnProfileStore {
     private static final String TAG = "LegacyVpnProfileStore";
 
-    public static final int SYSTEM_ERROR = IVpnProfileStore.ERROR_SYSTEM_ERROR;
-    public static final int PROFILE_NOT_FOUND = IVpnProfileStore.ERROR_PROFILE_NOT_FOUND;
+    public static final int SYSTEM_ERROR = ILegacyKeystore.ERROR_SYSTEM_ERROR;
+    public static final int PROFILE_NOT_FOUND = ILegacyKeystore.ERROR_ENTRY_NOT_FOUND;
 
-    private static final String VPN_PROFILE_STORE_SERVICE_NAME = "android.security.vpnprofilestore";
+    private static final String LEGACY_KEYSTORE_SERVICE_NAME = "android.security.legacykeystore";
 
-    private static IVpnProfileStore getService() {
-        return IVpnProfileStore.Stub.asInterface(
-                    ServiceManager.checkService(VPN_PROFILE_STORE_SERVICE_NAME));
+    private static ILegacyKeystore getService() {
+        return ILegacyKeystore.Stub.asInterface(
+                    ServiceManager.checkService(LEGACY_KEYSTORE_SERVICE_NAME));
     }
 
     /**
@@ -53,13 +52,8 @@ public class LegacyVpnProfileStore {
      */
     public static boolean put(@NonNull String alias, @NonNull byte[] profile) {
         try {
-            if (AndroidKeyStoreProvider.isKeystore2Enabled()) {
-                getService().put(alias, profile);
-                return true;
-            } else {
-                return KeyStore.getInstance().put(
-                        alias, profile, KeyStore.UID_SELF, 0);
-            }
+            getService().put(alias, ILegacyKeystore.UID_SELF, profile);
+            return true;
         } catch (Exception e) {
             Log.e(TAG, "Failed to put vpn profile.", e);
             return false;
@@ -77,11 +71,7 @@ public class LegacyVpnProfileStore {
      */
     public static byte[] get(@NonNull String alias) {
         try {
-            if (AndroidKeyStoreProvider.isKeystore2Enabled()) {
-                return getService().get(alias);
-            } else {
-                return KeyStore.getInstance().get(alias, true /* suppressKeyNotFoundWarning */);
-            }
+            return getService().get(alias, ILegacyKeystore.UID_SELF);
         } catch (ServiceSpecificException e) {
             if (e.errorCode != PROFILE_NOT_FOUND) {
                 Log.e(TAG, "Failed to get vpn profile.", e);
@@ -100,12 +90,8 @@ public class LegacyVpnProfileStore {
      */
     public static boolean remove(@NonNull String alias) {
         try {
-            if (AndroidKeyStoreProvider.isKeystore2Enabled()) {
-                getService().remove(alias);
-                return true;
-            } else {
-                return KeyStore.getInstance().delete(alias);
-            }
+            getService().remove(alias, ILegacyKeystore.UID_SELF);
+            return true;
         } catch (ServiceSpecificException e) {
             if (e.errorCode != PROFILE_NOT_FOUND) {
                 Log.e(TAG, "Failed to remove vpn profile.", e);
@@ -124,16 +110,11 @@ public class LegacyVpnProfileStore {
      */
     public static @NonNull String[] list(@NonNull String prefix) {
         try {
-            if (AndroidKeyStoreProvider.isKeystore2Enabled()) {
-                final String[] aliases = getService().list(prefix);
-                for (int i = 0; i < aliases.length; ++i) {
-                    aliases[i] = aliases[i].substring(prefix.length());
-                }
-                return aliases;
-            } else {
-                final String[] result = KeyStore.getInstance().list(prefix);
-                return result != null ? result : new String[0];
+            final String[] aliases = getService().list(prefix, ILegacyKeystore.UID_SELF);
+            for (int i = 0; i < aliases.length; ++i) {
+                aliases[i] = aliases[i].substring(prefix.length());
             }
+            return aliases;
         } catch (Exception e) {
             Log.e(TAG, "Failed to list vpn profiles.", e);
         }

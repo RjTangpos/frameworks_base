@@ -17,9 +17,8 @@
 <!--
 This XML file declares which system packages should be initially installed for new users based on
 their user type. All system packages on the device should ideally have an entry in an xml file
-(keyed by its manifest name), except auto-generated rro packages. Auto-generated RRO packages 
-(package name ends with ".auto_generated_rro_product__" or ".auto_generated_rro_vendor__")
-will be installed for new users according to corresponding overlay target packages.
+(keyed by its manifest name), except for static overlays which are instead treated automatically
+according to the entry for their corresponding overlay target package.
 
 Base user-types (every user will be at least one of these types) are:
   SYSTEM    (user 0)
@@ -103,11 +102,29 @@ Changes to the whitelist during system updates can result in installing addition
 to pre-existing users, but cannot uninstall pre-existing system packages from pre-existing users.
 -->
 <config>
+    <!--  Bluetooth (com.android.btservices apex) - visible on the sharesheet -->
+    <install-in-user-type package="com.android.bluetooth">
+        <install-in user-type="SYSTEM" />
+        <install-in user-type="FULL" />
+        <install-in user-type="PROFILE" />
+        <do-not-install-in user-type="android.os.usertype.profile.CLONE" />
+    </install-in-user-type>
+
+    <!--  Settings (Settings app) -->
+    <install-in-user-type package="com.android.settings">
+        <install-in user-type="SYSTEM" />
+        <install-in user-type="FULL" />
+        <install-in user-type="PROFILE" />
+    </install-in-user-type>
+
+    <!-- Settings Storage (SettingsProvider)  -->
     <install-in-user-type package="com.android.providers.settings">
         <install-in user-type="SYSTEM" />
         <install-in user-type="FULL" />
         <install-in user-type="PROFILE" />
     </install-in-user-type>
+
+    <!-- WallpaperBackup (WallpaperBackup)-->
     <install-in-user-type package="com.android.wallpaperbackup">
         <install-in user-type="FULL" />
     </install-in-user-type>

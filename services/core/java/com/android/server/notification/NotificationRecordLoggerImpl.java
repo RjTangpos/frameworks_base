@@ -16,6 +16,8 @@
 
 package com.android.server.notification;
 
+import android.annotation.Nullable;
+
 import com.android.internal.logging.InstanceId;
 import com.android.internal.logging.UiEventLogger;
 import com.android.internal.logging.UiEventLoggerImpl;
@@ -25,46 +27,58 @@ import com.android.internal.util.FrameworkStatsLog;
  * Standard implementation of NotificationRecordLogger interface.
  * @hide
  */
-public class NotificationRecordLoggerImpl implements NotificationRecordLogger {
+class NotificationRecordLoggerImpl implements NotificationRecordLogger {
 
     private UiEventLogger mUiEventLogger = new UiEventLoggerImpl();
 
     @Override
-    public void maybeLogNotificationPosted(NotificationRecord r, NotificationRecord old,
+    public void logNotificationPosted(NotificationReported nr) {
+        writeNotificationReportedAtom(nr);
+    }
+
+    @Override
+    public void logNotificationAdjusted(@Nullable NotificationRecord r,
             int position, int buzzBeepBlink,
             InstanceId groupId) {
-        NotificationRecordPair p = new NotificationRecordPair(r, old);
-        if (!p.shouldLogReported(buzzBeepBlink)) {
-            return;
-        }
-        FrameworkStatsLog.write(FrameworkStatsLog.NOTIFICATION_REPORTED,
-                /* int32 event_id = 1 */ NotificationReportedEvent.fromRecordPair(p).getId(),
-                /* int32 uid = 2 */ r.getUid(),
-                /* string package_name = 3 */ r.getSbn().getPackageName(),
-                /* int32 instance_id = 4 */ p.getInstanceId(),
-                /* int32 notification_id_hash = 5 */ p.getNotificationIdHash(),
-                /* int32 channel_id_hash = 6 */ p.getChannelIdHash(),
-                /* string group_id_hash = 7 */ p.getGroupIdHash(),
-                /* int32 group_instance_id = 8 */ (groupId == null) ? 0 : groupId.getId(),
-                /* bool is_group_summary = 9 */ r.getSbn().getNotification().isGroupSummary(),
-                /* string category = 10 */ r.getSbn().getNotification().category,
-                /* int32 style = 11 */ p.getStyle(),
-                /* int32 num_people = 12 */ p.getNumPeople(),
-                /* int32 position = 13 */ position,
-                /* android.stats.sysui.NotificationImportance importance = 14 */
-                NotificationRecordLogger.getLoggingImportance(r),
-                /* int32 alerting = 15 */ buzzBeepBlink,
-                /* NotificationImportanceExplanation importance_source = 16 */
-                r.getImportanceExplanationCode(),
-                /* android.stats.sysui.NotificationImportance importance_initial = 17 */
-                r.getInitialImportance(),
-                /* NotificationImportanceExplanation importance_initial_source = 18 */
-                r.getInitialImportanceExplanationCode(),
-                /* android.stats.sysui.NotificationImportance importance_asst = 19 */
-                r.getAssistantImportance(),
-                /* int32 assistant_hash = 20 */ p.getAssistantHash(),
-                /* float assistant_ranking_score = 21 */ r.getRankingScore()
-        );
+        NotificationRecordPair p = new NotificationRecordPair(r, null);
+        writeNotificationReportedAtom(
+                new NotificationReported(p, NotificationReportedEvent.NOTIFICATION_ADJUSTED,
+                        position, buzzBeepBlink, groupId));
+    }
+
+    private void writeNotificationReportedAtom(
+            NotificationReported notificationReported) {
+        FrameworkStatsLog.write(
+                FrameworkStatsLog.NOTIFICATION_REPORTED,
+                notificationReported.event_id,
+                notificationReported.uid,
+                notificationReported.package_name,
+                notificationReported.instance_id,
+                notificationReported.notification_id_hash,
+                notificationReported.channel_id_hash,
+                notificationReported.group_id_hash,
+                notificationReported.group_instance_id,
+                notificationReported.is_group_summary,
+                notificationReported.category,
+                notificationReported.style,
+                notificationReported.num_people,
+                notificationReported.position,
+                notificationReported.importance,
+                notificationReported.alerting,
+                notificationReported.importance_source,
+                notificationReported.importance_initial,
+                notificationReported.importance_initial_source,
+                notificationReported.importance_asst,
+                notificationReported.assistant_hash,
+                notificationReported.assistant_ranking_score,
+                notificationReported.is_ongoing,
+                notificationReported.is_foreground_service,
+                notificationReported.timeout_millis,
+                notificationReported.is_non_dismissible,
+                notificationReported.post_duration_millis,
+                notificationReported.fsi_state,
+                notificationReported.is_locked,
+                notificationReported.age_in_minutes);
     }
 
     @Override

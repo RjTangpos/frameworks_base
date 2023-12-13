@@ -16,20 +16,16 @@
 
 package com.android.systemui.controls.controller
 
-import android.app.ActivityManager
 import android.app.PendingIntent
 import android.app.backup.BackupManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
-import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.database.ContentObserver
 import android.net.Uri
-import android.os.Environment
 import android.os.UserHandle
-import android.provider.Settings
 import android.service.controls.Control
 import android.service.controls.actions.ControlAction
 import android.util.ArrayMap
@@ -37,46 +33,48 @@ import android.util.Log
 import com.android.internal.annotations.VisibleForTesting
 import com.android.systemui.Dumpable
 import com.android.systemui.backup.BackupHelper
-import com.android.systemui.broadcast.BroadcastDispatcher
 import com.android.systemui.controls.ControlStatus
 import com.android.systemui.controls.ControlsServiceInfo
 import com.android.systemui.controls.management.ControlsListingController
+import com.android.systemui.controls.panels.AuthorizedPanelsRepository
+import com.android.systemui.controls.panels.SelectedComponentRepository
 import com.android.systemui.controls.ui.ControlsUiController
+import com.android.systemui.controls.ui.SelectedItem
+import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dump.DumpManager
-import com.android.systemui.globalactions.GlobalActionsDialog
+import com.android.systemui.settings.UserFileManager
+import com.android.systemui.settings.UserTracker
+import com.android.systemui.statusbar.policy.DeviceControlsControllerImpl.Companion.PREFS_CONTROLS_FILE
+import com.android.systemui.statusbar.policy.DeviceControlsControllerImpl.Companion.PREFS_CONTROLS_SEEDING_COMPLETED
 import com.android.systemui.util.concurrency.DelayableExecutor
-import java.io.FileDescriptor
 import java.io.PrintWriter
 import java.util.Optional
 import java.util.concurrent.TimeUnit
 import java.util.function.Consumer
 import javax.inject.Inject
-import javax.inject.Singleton
 
-@Singleton
+@SysUISingleton
 class ControlsControllerImpl @Inject constructor (
-    private val context: Context,
-    @Background private val executor: DelayableExecutor,
-    private val uiController: ControlsUiController,
-    private val bindingController: ControlsBindingController,
-    private val listingController: ControlsListingController,
-    private val broadcastDispatcher: BroadcastDispatcher,
-    optionalWrapper: Optional<ControlsFavoritePersistenceWrapper>,
-    dumpManager: DumpManager
+        private val context: Context,
+        @Background private val executor: DelayableExecutor,
+        private val uiController: ControlsUiController,
+        private val selectedComponentRepository: SelectedComponentRepository,
+        private val bindingController: ControlsBindingController,
+        private val listingController: ControlsListingController,
+        private val userFileManager: UserFileManager,
+        private val userTracker: UserTracker,
+        private val authorizedPanelsRepository: AuthorizedPanelsRepository,
+        optionalWrapper: Optional<ControlsFavoritePersistenceWrapper>,
+        dumpManager: DumpManager,
 ) : Dumpable, ControlsController {
 
     companion object {
         private const val TAG = "ControlsControllerImpl"
-        internal const val CONTROLS_AVAILABLE = Settings.Secure.CONTROLS_ENABLED
-        internal val URI = Settings.Secure.getUriFor(CONTROLS_AVAILABLE)
         private const val USER_CHANGE_RETRY_DELAY = 500L // ms
         private const val DEFAULT_ENABLED = 1
         private const val PERMISSION_SELF = "com.android.systemui.permission.SELF"
         const val SUGGESTED_CONTROLS_PER_STRUCTURE = 6
-
-        private fun isAvailable(userId: Int, cr: ContentResolver) = Settings.Secure.getIntForUser(
-            cr, CONTROLS_AVAILABLE, DEFAULT_ENABLED, userId) != 0
     }
 
     private var userChanging: Boolean = true
@@ -85,21 +83,16 @@ class ControlsControllerImpl @Inject constructor (
     private var seedingInProgress = false
     private val seedingCallbacks = mutableListOf<Consumer<Boolean>>()
 
-    private var currentUser = UserHandle.of(ActivityManager.getCurrentUser())
+    private var currentUser = userTracker.userHandle
     override val currentUserId
         get() = currentUser.identifier
-
-    private val contentResolver: ContentResolver
-        get() = context.contentResolver
-    override var available = isAvailable(currentUserId, contentResolver)
-        private set
 
     private val persistenceWrapper: ControlsFavoritePersistenceWrapper
     @VisibleForTesting
     internal var auxiliaryPersistenceWrapper: AuxiliaryPersistenceWrapper
 
     init {
-        userStructure = UserStructure(context, currentUser)
+        userStructure = UserStructure(context, currentUser, userFileManager)
 
         persistenceWrapper = optionalWrapper.orElseGet {
             ControlsFavoritePersistenceWrapper(
@@ -118,32 +111,25 @@ class ControlsControllerImpl @Inject constructor (
     private fun setValuesForUser(newUser: UserHandle) {
         Log.d(TAG, "Changing to user: $newUser")
         currentUser = newUser
-        userStructure = UserStructure(context, currentUser)
+        userStructure = UserStructure(context, currentUser, userFileManager)
         persistenceWrapper.changeFileAndBackupManager(
                 userStructure.file,
                 BackupManager(userStructure.userContext)
         )
         auxiliaryPersistenceWrapper.changeFile(userStructure.auxiliaryFile)
-        available = isAvailable(newUser.identifier, contentResolver)
-        resetFavorites(available)
+        resetFavorites()
         bindingController.changeUser(newUser)
         listingController.changeUser(newUser)
         userChanging = false
     }
 
-    private val userSwitchReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_USER_SWITCHED) {
-                userChanging = true
-                val newUser =
-                        UserHandle.of(intent.getIntExtra(Intent.EXTRA_USER_HANDLE, sendingUserId))
-                if (currentUser == newUser) {
-                    userChanging = false
-                    return
-                }
-                setValuesForUser(newUser)
-            }
+    override fun changeUser(newUser: UserHandle) {
+        userChanging = true
+        if (currentUser == newUser) {
+            userChanging = false
+            return
         }
+        setValuesForUser(newUser)
     }
 
     @VisibleForTesting
@@ -155,7 +141,7 @@ class ControlsControllerImpl @Inject constructor (
                     Log.d(TAG, "Restore finished, storing auxiliary favorites")
                     auxiliaryPersistenceWrapper.initialize()
                     persistenceWrapper.storeFavorites(auxiliaryPersistenceWrapper.favorites)
-                    resetFavorites(available)
+                    resetFavorites()
                 }
             }
         }
@@ -174,8 +160,7 @@ class ControlsControllerImpl @Inject constructor (
             if (userChanging || userId != currentUserId) {
                 return
             }
-            available = isAvailable(currentUserId, contentResolver)
-            resetFavorites(available)
+            resetFavorites()
         }
     }
 
@@ -196,13 +181,16 @@ class ControlsControllerImpl @Inject constructor (
 
                 // When a component is uninstalled, allow seeding to happen again if the user
                 // reinstalls the app
-                val prefs = userStructure.userContext.getSharedPreferences(
-                    GlobalActionsDialog.PREFS_CONTROLS_FILE, Context.MODE_PRIVATE)
+                val prefs = userFileManager.getSharedPreferences(
+                    PREFS_CONTROLS_FILE,
+                    Context.MODE_PRIVATE,
+                    userTracker.userId
+                )
                 val completedSeedingPackageSet = prefs.getStringSet(
-                    GlobalActionsDialog.PREFS_CONTROLS_SEEDING_COMPLETED, mutableSetOf<String>())
+                    PREFS_CONTROLS_SEEDING_COMPLETED, mutableSetOf<String>())
                 val servicePackageSet = serviceInfoSet.map { it.packageName }
-                prefs.edit().putStringSet(GlobalActionsDialog.PREFS_CONTROLS_SEEDING_COMPLETED,
-                    completedSeedingPackageSet.intersect(servicePackageSet)).apply()
+                prefs.edit().putStringSet(PREFS_CONTROLS_SEEDING_COMPLETED,
+                    completedSeedingPackageSet?.intersect(servicePackageSet) ?: emptySet()).apply()
 
                 var changed = false
                 favoriteComponentSet.subtract(serviceInfoSet).forEach {
@@ -240,46 +228,36 @@ class ControlsControllerImpl @Inject constructor (
 
     init {
         dumpManager.registerDumpable(javaClass.name, this)
-        resetFavorites(available)
+        resetFavorites()
         userChanging = false
-        broadcastDispatcher.registerReceiver(
-                userSwitchReceiver,
-                IntentFilter(Intent.ACTION_USER_SWITCHED),
-                executor,
-                UserHandle.ALL
-        )
         context.registerReceiver(
             restoreFinishedReceiver,
             IntentFilter(BackupHelper.ACTION_RESTORE_FINISHED),
             PERMISSION_SELF,
-            null
+            null,
+            Context.RECEIVER_NOT_EXPORTED
         )
-        contentResolver.registerContentObserver(URI, false, settingObserver, UserHandle.USER_ALL)
         listingController.addCallback(listingCallback)
     }
 
     fun destroy() {
-        broadcastDispatcher.unregisterReceiver(userSwitchReceiver)
         context.unregisterReceiver(restoreFinishedReceiver)
-        contentResolver.unregisterContentObserver(settingObserver)
         listingController.removeCallback(listingCallback)
     }
 
-    private fun resetFavorites(shouldLoad: Boolean) {
+    private fun resetFavorites() {
         Favorites.clear()
-
-        if (shouldLoad) {
-            Favorites.load(persistenceWrapper.readFavorites())
-        }
+        Favorites.load(persistenceWrapper.readFavorites())
+        // After loading favorites, add the package names of any apps with favorites to the list
+        // of authorized panels. That way, if the user has previously favorited controls for an app,
+        // that panel will be authorized.
+        authorizedPanelsRepository.addAuthorizedPanels(
+                Favorites.getAllStructures().map { it.componentName.packageName }.toSet())
     }
 
     private fun confirmAvailability(): Boolean {
         if (userChanging) {
             Log.w(TAG, "Controls not available while user is changing")
-            return false
-        }
-        if (!available) {
-            Log.d(TAG, "Controls not available")
             return false
         }
         return true
@@ -477,7 +455,7 @@ class ControlsControllerImpl @Inject constructor (
         val pendingIntent = PendingIntent.getActivity(context,
                 componentName.hashCode(),
                 intent,
-                0)
+                PendingIntent.FLAG_IMMUTABLE)
         val control = Control.StatelessBuilder(controlInfo.controlId, pendingIntent)
                 .setTitle(controlInfo.controlTitle)
                 .setSubtitle(controlInfo.controlSubtitle)
@@ -503,6 +481,10 @@ class ControlsControllerImpl @Inject constructor (
         bindingController.unsubscribe()
     }
 
+    override fun bindComponentForPanel(componentName: ComponentName) {
+        bindingController.bindServiceForPanel(componentName)
+    }
+
     override fun addFavorite(
         componentName: ComponentName,
         structureName: CharSequence,
@@ -511,9 +493,22 @@ class ControlsControllerImpl @Inject constructor (
         if (!confirmAvailability()) return
         executor.execute {
             if (Favorites.addFavorite(componentName, structureName, controlInfo)) {
+                authorizedPanelsRepository.addAuthorizedPanels(setOf(componentName.packageName))
                 persistenceWrapper.storeFavorites(Favorites.getAllStructures())
             }
         }
+    }
+
+    override fun removeFavorites(componentName: ComponentName): Boolean {
+        if (!confirmAvailability()) return false
+
+        executor.execute {
+            if (Favorites.removeStructures(componentName)) {
+                persistenceWrapper.storeFavorites(Favorites.getAllStructures())
+            }
+            authorizedPanelsRepository.removeAuthorizedPanels(setOf(componentName.packageName))
+        }
+        return true
     }
 
     override fun replaceFavoritesForStructure(structureInfo: StructureInfo) {
@@ -573,9 +568,18 @@ class ControlsControllerImpl @Inject constructor (
         )
     }
 
-    override fun dump(fd: FileDescriptor, pw: PrintWriter, args: Array<out String>) {
+    override fun getPreferredSelection(): SelectedItem {
+        return uiController.getPreferredSelectedItem(getFavorites())
+    }
+
+    override fun setPreferredSelection(selectedItem: SelectedItem) {
+        selectedComponentRepository.setSelectedComponent(
+                SelectedComponentRepository.SelectedComponent(selectedItem)
+        )
+    }
+
+    override fun dump(pw: PrintWriter, args: Array<out String>) {
         pw.println("ControlsController state:")
-        pw.println("  Available: $available")
         pw.println("  Changing users: $userChanging")
         pw.println("  Current user: ${currentUser.identifier}")
         pw.println("  Favorites:")
@@ -589,18 +593,12 @@ class ControlsControllerImpl @Inject constructor (
     }
 }
 
-class UserStructure(context: Context, user: UserHandle) {
+class UserStructure(context: Context, user: UserHandle, userFileManager: UserFileManager) {
     val userContext = context.createContextAsUser(user, 0)
-
-    val file = Environment.buildPath(
-            userContext.filesDir,
-            ControlsFavoritePersistenceWrapper.FILE_NAME
-    )
-
-    val auxiliaryFile = Environment.buildPath(
-            userContext.filesDir,
-            AuxiliaryPersistenceWrapper.AUXILIARY_FILE_NAME
-    )
+    val file = userFileManager.getFile(ControlsFavoritePersistenceWrapper.FILE_NAME,
+        user.identifier)
+    val auxiliaryFile = userFileManager.getFile(AuxiliaryPersistenceWrapper.AUXILIARY_FILE_NAME,
+        user.identifier)
 }
 
 /**
@@ -673,10 +671,11 @@ private object Favorites {
         return true
     }
 
-    fun removeStructures(componentName: ComponentName) {
+    fun removeStructures(componentName: ComponentName): Boolean {
         val newFavMap = favMap.toMutableMap()
-        newFavMap.remove(componentName)
+        val removed = newFavMap.remove(componentName) != null
         favMap = newFavMap
+        return removed
     }
 
     fun addFavorite(

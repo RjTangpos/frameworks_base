@@ -16,8 +16,8 @@
 
 #include "Color.h"
 
-#include <utils/Log.h>
 #include <ui/ColorSpace.h>
+#include <utils/Log.h>
 
 #ifdef __ANDROID__ // Layoutlib does not support hardware buffers or native windows
 #include <android/hardware_buffer.h>
@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <Properties.h>
 
 namespace android {
 namespace uirenderer {
@@ -56,6 +57,10 @@ static inline SkImageInfo createImageInfo(int32_t width, int32_t height, int32_t
             colorType = kRGBA_F16_SkColorType;
             alphaType = kPremul_SkAlphaType;
             break;
+        case AHARDWAREBUFFER_FORMAT_R8_UNORM:
+            colorType = kAlpha_8_SkColorType;
+            alphaType = kPremul_SkAlphaType;
+            break;
         default:
             ALOGV("Unsupported format: %d, return unknown by default", format);
             break;
@@ -72,46 +77,56 @@ SkImageInfo BufferDescriptionToImageInfo(const AHardwareBuffer_Desc& bufferDesc,
                                          sk_sp<SkColorSpace> colorSpace) {
     return createImageInfo(bufferDesc.width, bufferDesc.height, bufferDesc.format, colorSpace);
 }
-#endif
 
-android::PixelFormat ColorTypeToPixelFormat(SkColorType colorType) {
+uint32_t ColorTypeToBufferFormat(SkColorType colorType) {
     switch (colorType) {
         case kRGBA_8888_SkColorType:
-            return PIXEL_FORMAT_RGBA_8888;
+            return AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
         case kRGBA_F16_SkColorType:
-            return PIXEL_FORMAT_RGBA_FP16;
+            return AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT;
         case kRGB_565_SkColorType:
-            return PIXEL_FORMAT_RGB_565;
+            return AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM;
         case kRGB_888x_SkColorType:
-            return PIXEL_FORMAT_RGBX_8888;
+            return AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM;
         case kRGBA_1010102_SkColorType:
-            return PIXEL_FORMAT_RGBA_1010102;
+            return AHARDWAREBUFFER_FORMAT_R10G10B10A2_UNORM;
         case kARGB_4444_SkColorType:
-            return PIXEL_FORMAT_RGBA_4444;
+            // Hardcoding the value from android::PixelFormat
+            static constexpr uint64_t kRGBA4444 = 7;
+            return kRGBA4444;
+        case kAlpha_8_SkColorType:
+              return AHARDWAREBUFFER_FORMAT_R8_UNORM;
         default:
             ALOGV("Unsupported colorType: %d, return RGBA_8888 by default", (int)colorType);
-            return PIXEL_FORMAT_RGBA_8888;
+            return AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
     }
 }
 
-SkColorType PixelFormatToColorType(android::PixelFormat format) {
+SkColorType BufferFormatToColorType(uint32_t format) {
     switch (format) {
-        case PIXEL_FORMAT_RGBX_8888:    return kRGB_888x_SkColorType;
-        case PIXEL_FORMAT_RGBA_8888:    return kRGBA_8888_SkColorType;
-        case PIXEL_FORMAT_RGBA_FP16:    return kRGBA_F16_SkColorType;
-        case PIXEL_FORMAT_RGB_565:      return kRGB_565_SkColorType;
-        case PIXEL_FORMAT_RGBA_1010102: return kRGBA_1010102_SkColorType;
-        case PIXEL_FORMAT_RGBA_4444:    return kARGB_4444_SkColorType;
+        case AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM:
+            return kN32_SkColorType;
+        case AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM:
+            return kN32_SkColorType;
+        case AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM:
+            return kRGB_565_SkColorType;
+        case AHARDWAREBUFFER_FORMAT_R10G10B10A2_UNORM:
+            return kRGBA_1010102_SkColorType;
+        case AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT:
+            return kRGBA_F16_SkColorType;
+        case AHARDWAREBUFFER_FORMAT_R8_UNORM:
+            return kAlpha_8_SkColorType;
         default:
-            ALOGV("Unsupported PixelFormat: %d, return kUnknown_SkColorType by default", format);
+            ALOGV("Unsupported format: %d, return unknown by default", format);
             return kUnknown_SkColorType;
     }
 }
+#endif
 
 namespace {
 static constexpr skcms_TransferFunction k2Dot6 = {2.6f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-// Skia's SkNamedGamut::kDCIP3 is based on a white point of D65. This gamut
+// Skia's SkNamedGamut::kDisplayP3 is based on a white point of D65. This gamut
 // matches the white point used by ColorSpace.Named.DCIP3.
 static constexpr skcms_Matrix3x3 kDCIP3 = {{
         {0.486143, 0.323835, 0.154234},
@@ -159,7 +174,16 @@ android_dataspace ColorSpaceToADataSpace(SkColorSpace* colorSpace, SkColorType c
     }
 
     skcms_TransferFunction fn;
-    LOG_ALWAYS_FATAL_IF(!colorSpace->isNumericalTransferFn(&fn));
+    if (!colorSpace->isNumericalTransferFn(&fn)) {
+        auto res = skcms_TransferFunction_getType(&fn);
+        if (res == skcms_TFType_PQish) {
+            return HAL_DATASPACE_BT2020_PQ;
+        }
+        if (res == skcms_TFType_HLGish) {
+            return static_cast<android_dataspace>(HAL_DATASPACE_BT2020_HLG);
+        }
+        LOG_ALWAYS_FATAL("Only select non-numerical transfer functions are supported");
+    }
 
     skcms_Matrix3x3 gamut;
     LOG_ALWAYS_FATAL_IF(!colorSpace->toXYZD50(&gamut));
@@ -180,7 +204,7 @@ android_dataspace ColorSpaceToADataSpace(SkColorSpace* colorSpace, SkColorType c
         }
     }
 
-    if (nearlyEqual(fn, SkNamedTransferFn::kSRGB) && nearlyEqual(gamut, SkNamedGamut::kDCIP3)) {
+    if (nearlyEqual(fn, SkNamedTransferFn::kSRGB) && nearlyEqual(gamut, SkNamedGamut::kDisplayP3)) {
         return HAL_DATASPACE_DISPLAY_P3;
     }
 
@@ -218,10 +242,11 @@ sk_sp<SkColorSpace> DataSpaceToColorSpace(android_dataspace dataspace) {
             gamut = SkNamedGamut::kSRGB;
             break;
         case HAL_DATASPACE_STANDARD_BT2020:
+        case HAL_DATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
             gamut = SkNamedGamut::kRec2020;
             break;
         case HAL_DATASPACE_STANDARD_DCI_P3:
-            gamut = SkNamedGamut::kDCIP3;
+            gamut = SkNamedGamut::kDisplayP3;
             break;
         case HAL_DATASPACE_STANDARD_ADOBE_RGB:
             gamut = SkNamedGamut::kAdobeRGB;
@@ -232,12 +257,19 @@ sk_sp<SkColorSpace> DataSpaceToColorSpace(android_dataspace dataspace) {
         case HAL_DATASPACE_STANDARD_BT601_625_UNADJUSTED:
         case HAL_DATASPACE_STANDARD_BT601_525:
         case HAL_DATASPACE_STANDARD_BT601_525_UNADJUSTED:
-        case HAL_DATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
         case HAL_DATASPACE_STANDARD_BT470M:
         case HAL_DATASPACE_STANDARD_FILM:
         default:
             ALOGV("Unsupported Gamut: %d", dataspace);
             return nullptr;
+    }
+
+    // HLG
+    if ((dataspace & HAL_DATASPACE_TRANSFER_MASK) == HAL_DATASPACE_TRANSFER_HLG) {
+        const auto hlgFn = GetHLGScaleTransferFunction();
+        if (hlgFn.has_value()) {
+            return SkColorSpace::MakeRGB(hlgFn.value(), gamut);
+        }
     }
 
     switch (dataspace & HAL_DATASPACE_TRANSFER_MASK) {
@@ -252,12 +284,13 @@ sk_sp<SkColorSpace> DataSpaceToColorSpace(android_dataspace dataspace) {
         case HAL_DATASPACE_TRANSFER_GAMMA2_8:
             return SkColorSpace::MakeRGB({2.8f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, gamut);
         case HAL_DATASPACE_TRANSFER_ST2084:
-            return SkColorSpace::MakeRGB(SkNamedTransferFn::kPQ, gamut);
+            return SkColorSpace::MakeRGB({-2.0, -1.555223, 1.860454, 32 / 2523.0, 2413 / 128.0,
+                                          -2392 / 128.0, 8192 / 1305.0},
+                                         gamut);
         case HAL_DATASPACE_TRANSFER_SMPTE_170M:
             return SkColorSpace::MakeRGB(SkNamedTransferFn::kRec2020, gamut);
         case HAL_DATASPACE_TRANSFER_UNSPECIFIED:
             return nullptr;
-        case HAL_DATASPACE_TRANSFER_HLG:
         default:
             ALOGV("Unsupported Gamma: %d", dataspace);
             return nullptr;
@@ -354,6 +387,56 @@ SkColor LabToSRGB(const Lab& lab, SkAlpha alpha) {
             static_cast<uint8_t>(rgb.r * 255),
             static_cast<uint8_t>(rgb.g * 255),
             static_cast<uint8_t>(rgb.b * 255));
+}
+
+skcms_TransferFunction GetPQSkTransferFunction(float sdr_white_level) {
+    if (sdr_white_level <= 0.f) {
+        sdr_white_level = Properties::defaultSdrWhitePoint;
+    }
+    // The generic PQ transfer function produces normalized luminance values i.e.
+    // the range 0-1 represents 0-10000 nits for the reference display, but we
+    // want to map 1.0 to |sdr_white_level| nits so we need to scale accordingly.
+    const double w = 10000. / sdr_white_level;
+    // Distribute scaling factor W by scaling A and B with X ^ (1/F):
+    // ((A + Bx^C) / (D + Ex^C))^F * W = ((A + Bx^C) / (D + Ex^C) * W^(1/F))^F
+    // See https://crbug.com/1058580#c32 for discussion.
+    skcms_TransferFunction fn = SkNamedTransferFn::kPQ;
+    const double ws = pow(w, 1. / fn.f);
+    fn.a = ws * fn.a;
+    fn.b = ws * fn.b;
+    return fn;
+}
+
+static skcms_TransferFunction trfn_apply_gain(const skcms_TransferFunction trfn, float gain) {
+    float pow_gain_ginv = sk_float_pow(gain, 1 / trfn.g);
+    skcms_TransferFunction result;
+    result.g = trfn.g;
+    result.a = trfn.a * pow_gain_ginv;
+    result.b = trfn.b * pow_gain_ginv;
+    result.c = trfn.c * gain;
+    result.d = trfn.d;
+    result.e = trfn.e * gain;
+    result.f = trfn.f * gain;
+    return result;
+}
+
+skcms_TransferFunction GetExtendedTransferFunction(float sdrHdrRatio) {
+    if (sdrHdrRatio <= 1.f) {
+        return SkNamedTransferFn::kSRGB;
+    }
+    // Scale the transfer by the sdrHdrRatio
+    return trfn_apply_gain(SkNamedTransferFn::kSRGB, sdrHdrRatio);
+}
+
+// Skia skcms' default HLG maps encoded [0, 1] to linear [1, 12] in order to follow ARIB
+// but LinearEffect expects to map 1.0 == 203 nits
+std::optional<skcms_TransferFunction> GetHLGScaleTransferFunction() {
+    skcms_TransferFunction hlgFn;
+    if (skcms_TransferFunction_makeScaledHLGish(&hlgFn, 0.314509843, 2.f, 2.f, 1.f / 0.17883277f,
+                                                0.28466892f, 0.55991073f)) {
+        return std::make_optional<skcms_TransferFunction>(hlgFn);
+    }
+    return {};
 }
 
 }  // namespace uirenderer

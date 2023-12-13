@@ -35,11 +35,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.IntFunction;
 
 /**
- * ArrayUtils contains some methods that you can call to find out
- * the most efficient increments by which to grow arrays.
+ * Static utility methods for arrays that aren't already included in {@link java.util.Arrays}.
  */
 public class ArrayUtils {
     private static final int CACHE_SIZE = 73;
@@ -208,6 +208,13 @@ public class ArrayUtils {
     }
 
     /**
+     * Length of the given map or 0 if it's null.
+     */
+    public static int size(@Nullable Map<?, ?> map) {
+        return map == null ? 0 : map.size();
+    }
+
+    /**
      * Checks that value is present as at least one of the elements of the array.
      * @param array the array to check in
      * @param value the value to check for
@@ -311,10 +318,24 @@ public class ArrayUtils {
         return total;
     }
 
+    /**
+     * @deprecated use {@code IntArray} instead
+     */
+    @Deprecated
     public static int[] convertToIntArray(List<Integer> list) {
         int[] array = new int[list.size()];
         for (int i = 0; i < list.size(); i++) {
             array[i] = list.get(i);
+        }
+        return array;
+    }
+
+    @NonNull
+    public static int[] convertToIntArray(@NonNull ArraySet<Integer> set) {
+        final int size = set.size();
+        int[] array = new int[size];
+        for (int i = 0; i < size; i++) {
+            array[i] = set.valueAt(i);
         }
         return array;
     }
@@ -329,15 +350,16 @@ public class ArrayUtils {
     }
 
     /**
-     * Combine multiple arrays into a single array.
+     * Returns the concatenation of the given arrays.  Only works for object arrays, not for
+     * primitive arrays.  See {@link #concat(byte[]...)} for a variant that works on byte arrays.
      *
      * @param kind The class of the array elements
-     * @param arrays The arrays to combine
+     * @param arrays The arrays to concatenate.  Null arrays are treated as empty.
      * @param <T> The class of the array elements (inferred from kind).
      * @return A single array containing all the elements of the parameter arrays.
      */
     @SuppressWarnings("unchecked")
-    public static @NonNull <T> T[] concatElements(Class<T> kind, @Nullable T[]... arrays) {
+    public static @NonNull <T> T[] concat(Class<T> kind, @Nullable T[]... arrays) {
         if (arrays == null || arrays.length == 0) {
             return createEmptyArray(kind);
         }
@@ -378,6 +400,29 @@ public class ArrayUtils {
         return (T[]) Array.newInstance(kind, 0);
     }
 
+    /**
+     * Returns the concatenation of the given byte arrays.  Null arrays are treated as empty.
+     */
+    public static @NonNull byte[] concat(@Nullable byte[]... arrays) {
+        if (arrays == null) {
+            return new byte[0];
+        }
+        int totalLength = 0;
+        for (byte[] a : arrays) {
+            if (a != null) {
+                totalLength += a.length;
+            }
+        }
+        final byte[] result = new byte[totalLength];
+        int pos = 0;
+        for (byte[] a : arrays) {
+            if (a != null) {
+                System.arraycopy(a, 0, result, pos, a.length);
+                pos += a.length;
+            }
+        }
+        return result;
+    }
 
     /**
      * Adds value to given array if not already present, providing set-like
@@ -588,6 +633,20 @@ public class ArrayUtils {
         return cur;
     }
 
+    /**
+     * Similar to {@link Set#addAll(Collection)}}, but with support for set values of {@code null}.
+     */
+    public static @NonNull <T> ArraySet<T> addAll(@Nullable ArraySet<T> cur,
+            @Nullable Collection<T> val) {
+        if (cur == null) {
+            cur = new ArraySet<>();
+        }
+        if (val != null) {
+            cur.addAll(val);
+        }
+        return cur;
+    }
+
     public static @Nullable <T> ArraySet<T> remove(@Nullable ArraySet<T> cur, T val) {
         if (cur == null) {
             return null;
@@ -780,6 +839,7 @@ public class ArrayUtils {
 
     /**
      * Returns an array containing elements from the given one that match the given predicate.
+     * The returned array may, in some cases, be the reference to the input array.
      */
     public static @Nullable <T> T[] filter(@Nullable T[] items,
             @NonNull IntFunction<T[]> arrayConstructor,
@@ -790,24 +850,23 @@ public class ArrayUtils {
 
         int matchesCount = 0;
         int size = size(items);
+        final boolean[] tests = new boolean[size];
         for (int i = 0; i < size; i++) {
-            if (predicate.test(items[i])) {
+            tests[i] = predicate.test(items[i]);
+            if (tests[i]) {
                 matchesCount++;
             }
-        }
-        if (matchesCount == 0) {
-            return items;
         }
         if (matchesCount == items.length) {
             return items;
         }
-        if (matchesCount == 0) {
-            return null;
-        }
         T[] result = arrayConstructor.apply(matchesCount);
+        if (matchesCount == 0) {
+            return result;
+        }
         int outIdx = 0;
         for (int i = 0; i < size; i++) {
-            if (predicate.test(items[i])) {
+            if (tests[i]) {
                 result[outIdx++] = items[i];
             }
         }
@@ -862,7 +921,30 @@ public class ArrayUtils {
         }
     }
 
+    /**
+     * Returns the {@code i}-th item in {@code items}, if it exists and {@code items} is not {@code
+     * null}, otherwise returns {@code null}.
+     */
+    @Nullable
+    public static <T> T getOrNull(@Nullable T[] items, int i) {
+        return (items != null && items.length > i) ? items[i] : null;
+    }
+
     public static @Nullable <T> T firstOrNull(T[] items) {
         return items.length > 0 ? items[0] : null;
+    }
+
+    /**
+     * Creates a {@link List} from an array. Different from {@link Arrays#asList(Object[])} as that
+     * will use the parameter as the backing array, meaning changes are not isolated.
+     */
+    public static <T> List<T> toList(T[] array) {
+        List<T> list = new ArrayList<>(array.length);
+        //noinspection ManualArrayToCollectionCopy
+        for (T item : array) {
+            //noinspection UseBulkOperation
+            list.add(item);
+        }
+        return list;
     }
 }

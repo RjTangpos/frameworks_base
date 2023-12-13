@@ -81,6 +81,18 @@ public abstract class MediaRoute2ProviderService extends Service {
     public static final String SERVICE_INTERFACE = "android.media.MediaRoute2ProviderService";
 
     /**
+     * A category indicating that the associated provider is only intended for use within the app
+     * that hosts the provider.
+     *
+     * <p>Declaring this category helps the system save resources by avoiding the launch of services
+     * whose routes are known to be private to the app that provides them.
+     *
+     * @hide
+     */
+    public static final String CATEGORY_SELF_SCAN_ONLY =
+            "android.media.MediaRoute2ProviderService.SELF_SCAN_ONLY";
+
+    /**
      * The request ID to pass {@link #notifySessionCreated(long, RoutingSessionInfo)}
      * when {@link MediaRoute2ProviderService} created a session although there was no creation
      * request.
@@ -141,6 +153,7 @@ public abstract class MediaRoute2ProviderService extends Service {
     private final Object mSessionLock = new Object();
     private final Object mRequestIdsLock = new Object();
     private final AtomicBoolean mStatePublishScheduled = new AtomicBoolean(false);
+    private final AtomicBoolean mSessionUpdateScheduled = new AtomicBoolean(false);
     private MediaRoute2ProviderServiceStub mStub;
     private IMediaRoute2ProviderServiceCallback mRemoteCallback;
     private volatile MediaRoute2ProviderInfo mProviderInfo;
@@ -149,7 +162,7 @@ public abstract class MediaRoute2ProviderService extends Service {
     private final Deque<Long> mRequestIds = new ArrayDeque<>(MAX_REQUEST_IDS_SIZE);
 
     @GuardedBy("mSessionLock")
-    private final ArrayMap<String, RoutingSessionInfo> mSessionInfo = new ArrayMap<>();
+    private final ArrayMap<String, RoutingSessionInfo> mSessionInfos = new ArrayMap<>();
 
     public MediaRoute2ProviderService() {
         mHandler = new Handler(Looper.getMainLooper());
@@ -207,7 +220,7 @@ public abstract class MediaRoute2ProviderService extends Service {
             throw new IllegalArgumentException("sessionId must not be empty");
         }
         synchronized (mSessionLock) {
-            return mSessionInfo.get(sessionId);
+            return mSessionInfos.get(sessionId);
         }
     }
 
@@ -217,7 +230,7 @@ public abstract class MediaRoute2ProviderService extends Service {
     @NonNull
     public final List<RoutingSessionInfo> getAllSessionInfo() {
         synchronized (mSessionLock) {
-            return new ArrayList<>(mSessionInfo.values());
+            return new ArrayList<>(mSessionInfos.values());
         }
     }
 
@@ -251,11 +264,11 @@ public abstract class MediaRoute2ProviderService extends Service {
 
         String sessionId = sessionInfo.getId();
         synchronized (mSessionLock) {
-            if (mSessionInfo.containsKey(sessionId)) {
+            if (mSessionInfos.containsKey(sessionId)) {
                 Log.w(TAG, "notifySessionCreated: Ignoring duplicate session id.");
                 return;
             }
-            mSessionInfo.put(sessionInfo.getId(), sessionInfo);
+            mSessionInfos.put(sessionInfo.getId(), sessionInfo);
 
             if (mRemoteCallback == null) {
                 return;
@@ -281,22 +294,14 @@ public abstract class MediaRoute2ProviderService extends Service {
 
         String sessionId = sessionInfo.getId();
         synchronized (mSessionLock) {
-            if (mSessionInfo.containsKey(sessionId)) {
-                mSessionInfo.put(sessionId, sessionInfo);
+            if (mSessionInfos.containsKey(sessionId)) {
+                mSessionInfos.put(sessionId, sessionInfo);
             } else {
                 Log.w(TAG, "notifySessionUpdated: Ignoring unknown session info.");
                 return;
             }
-
-            if (mRemoteCallback == null) {
-                return;
-            }
-            try {
-                mRemoteCallback.notifySessionUpdated(sessionInfo);
-            } catch (RemoteException ex) {
-                Log.w(TAG, "Failed to notify session info changed.");
-            }
         }
+        scheduleUpdateSessions();
     }
 
     /**
@@ -315,7 +320,7 @@ public abstract class MediaRoute2ProviderService extends Service {
 
         RoutingSessionInfo sessionInfo;
         synchronized (mSessionLock) {
-            sessionInfo = mSessionInfo.remove(sessionId);
+            sessionInfo = mSessionInfos.remove(sessionId);
 
             if (sessionInfo == null) {
                 Log.w(TAG, "notifySessionReleased: Ignoring unknown session info.");
@@ -479,6 +484,7 @@ public abstract class MediaRoute2ProviderService extends Service {
     void setCallback(IMediaRoute2ProviderServiceCallback callback) {
         mRemoteCallback = callback;
         schedulePublishState();
+        scheduleUpdateSessions();
     }
 
     void schedulePublishState() {
@@ -497,10 +503,38 @@ public abstract class MediaRoute2ProviderService extends Service {
         }
 
         try {
-            mRemoteCallback.updateState(mProviderInfo);
+            mRemoteCallback.notifyProviderUpdated(mProviderInfo);
         } catch (RemoteException ex) {
             Log.w(TAG, "Failed to publish provider state.", ex);
         }
+    }
+
+    void scheduleUpdateSessions() {
+        if (mSessionUpdateScheduled.compareAndSet(false, true)) {
+            mHandler.post(this::updateSessions);
+        }
+    }
+
+    private void updateSessions() {
+        if (!mSessionUpdateScheduled.compareAndSet(true, false)) {
+            return;
+        }
+
+        if (mRemoteCallback == null) {
+            return;
+        }
+
+        List<RoutingSessionInfo> sessions;
+        synchronized (mSessionLock) {
+            sessions = new ArrayList<>(mSessionInfos.values());
+        }
+
+        try {
+            mRemoteCallback.notifySessionsUpdated(sessions);
+        } catch (RemoteException ex) {
+            Log.w(TAG, "Failed to notify session info changed.");
+        }
+
     }
 
     /**

@@ -23,47 +23,45 @@
     android:id="@+id/keyguard_clock_container"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:clipChildren="false"
     android:layout_gravity="center_horizontal|top">
-    <FrameLayout
-         android:id="@+id/clock_view"
-         android:layout_width="match_parent"
-         android:layout_height="wrap_content"
-         android:layout_gravity="center_horizontal"
-         android:layout_alignParentTop="true">
-        <TextClock
-             android:id="@+id/default_clock_view"
-             android:layout_width="match_parent"
-             android:layout_height="wrap_content"
-             android:layout_gravity="center_horizontal"
-             android:gravity="center_horizontal"
-             android:paddingBottom="@dimen/title_clock_padding"
-             android:letterSpacing="0.02"
-             android:textColor="?attr/wallpaperTextColor"
-             android:singleLine="true"
-             style="@style/widget_big"
-             android:format12Hour="@string/keyguard_widget_12_hours_format"
-             android:format24Hour="@string/keyguard_widget_24_hours_format"
-             android:elegantTextHeight="false"
-        />
-        <TextClock
-             android:id="@+id/default_clock_view_bold"
-             android:layout_width="match_parent"
-             android:layout_height="wrap_content"
-             android:layout_gravity="bottom|center_horizontal"
-             android:gravity="center_horizontal"
-             android:letterSpacing="0.03"
-             android:textColor="?attr/wallpaperTextColor"
-             android:singleLine="true"
-             style="@style/widget_title_bold"
-             android:format12Hour="@string/keyguard_widget_12_hours_format"
-             android:format24Hour="@string/keyguard_widget_24_hours_format"
-             android:elegantTextHeight="false"
-             android:visibility="invisible"
-             />
-    </FrameLayout>
-    <include layout="@layout/keyguard_status_area"
+    <com.android.keyguard.KeyguardClockFrame
+        android:id="@+id/lockscreen_clock_view"
+        android:layout_width="wrap_content"
+        android:layout_height="@dimen/small_clock_height"
+        android:layout_alignParentStart="true"
+        android:layout_alignParentTop="true"
+        android:clipChildren="false"
+        android:paddingStart="@dimen/clock_padding_start"
+        android:visibility="invisible" />
+    <com.android.keyguard.KeyguardClockFrame
+        android:id="@+id/lockscreen_clock_view_large"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:visibility="gone" />
+
+    <!-- Not quite optimal but needed to translate these items as a group. The
+         NotificationIconContainer has its own logic for translation. -->
+    <com.android.keyguard.KeyguardStatusAreaView
         android:id="@+id/keyguard_status_area"
+        android:orientation="vertical"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_below="@id/clock_view" />
+        android:layout_alignParentStart="true"
+        android:layout_below="@id/lockscreen_clock_view">
+
+      <include layout="@layout/keyguard_slice_view"
+               android:id="@+id/keyguard_slice_view"
+               android:layout_width="match_parent"
+               android:layout_height="wrap_content" />
+
+      <com.android.systemui.statusbar.phone.NotificationIconContainer
+          android:id="@+id/left_aligned_notification_icon_container"
+          android:layout_width="match_parent"
+          android:layout_height="@dimen/notification_shelf_height"
+          android:paddingStart="@dimen/below_clock_padding_start_icons"
+          android:visibility="invisible"
+          />
+    </com.android.keyguard.KeyguardStatusAreaView>
 </com.android.keyguard.KeyguardClockSwitch>

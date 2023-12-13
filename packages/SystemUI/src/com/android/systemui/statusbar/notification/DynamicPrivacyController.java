@@ -18,29 +18,29 @@ package com.android.systemui.statusbar.notification;
 
 import android.util.ArraySet;
 
+import androidx.annotation.VisibleForTesting;
+
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
 import com.android.systemui.statusbar.StatusBarState;
-import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * A controller which dynamically controls the visibility of Notification content
  */
-@Singleton
+@SysUISingleton
 public class DynamicPrivacyController implements KeyguardStateController.Callback {
 
     private final KeyguardStateController mKeyguardStateController;
     private final NotificationLockscreenUserManager mLockscreenUserManager;
     private final StatusBarStateController mStateController;
-    private ArraySet<Listener> mListeners = new ArraySet<>();
+    private final ArraySet<Listener> mListeners = new ArraySet<>();
 
     private boolean mLastDynamicUnlocked;
     private boolean mCacheInvalid;
-    private StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
 
     @Inject
     DynamicPrivacyController(NotificationLockscreenUserManager notificationLockscreenUserManager,
@@ -75,8 +75,9 @@ public class DynamicPrivacyController implements KeyguardStateController.Callbac
         }
     }
 
-    private boolean isDynamicPrivacyEnabled() {
-        return !mLockscreenUserManager.shouldHideNotifications(
+    @VisibleForTesting
+    boolean isDynamicPrivacyEnabled() {
+        return mLockscreenUserManager.userAllowsNotificationsInPublic(
                 mLockscreenUserManager.getCurrentUserId());
     }
 
@@ -96,8 +97,7 @@ public class DynamicPrivacyController implements KeyguardStateController.Callbac
      * contents aren't revealed yet?
      */
     public boolean isInLockedDownShade() {
-        if (!mStatusBarKeyguardViewManager.isShowing()
-                || !mKeyguardStateController.isMethodSecure()) {
+        if (!mKeyguardStateController.isShowing() || !mKeyguardStateController.isMethodSecure()) {
             return false;
         }
         int state = mStateController.getState();
@@ -108,11 +108,6 @@ public class DynamicPrivacyController implements KeyguardStateController.Callbac
             return false;
         }
         return true;
-    }
-
-    public void setStatusBarKeyguardViewManager(
-            StatusBarKeyguardViewManager statusBarKeyguardViewManager) {
-        mStatusBarKeyguardViewManager = statusBarKeyguardViewManager;
     }
 
     public interface Listener {

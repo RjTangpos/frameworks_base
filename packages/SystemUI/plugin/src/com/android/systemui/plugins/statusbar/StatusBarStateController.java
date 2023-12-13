@@ -40,9 +40,21 @@ public interface StatusBarStateController {
     boolean isDozing();
 
     /**
+     * Is the status bar panel expanded.
+     */
+    boolean isExpanded();
+
+    /**
      * Is device pulsing.
      */
     boolean isPulsing();
+
+    /**
+     * Is device dreaming. This method is more inclusive than
+     * {@link android.service.dreams.IDreamManager.isDreaming}, as it will return true during the
+     * dream's wake-up phase.
+     */
+    boolean isDreaming();
 
     /**
      * Adds a state listener
@@ -89,9 +101,20 @@ public interface StatusBarStateController {
         }
 
         /**
+         * Callback to be notified about upcoming state changes. Typically, is immediately followed
+         * by #onStateChanged, unless there was an intentional delay in updating the state changed.
+         */
+        default void onUpcomingStateChanged(int upcomingState) {}
+
+        /**
          * Callback to be notified when Dozing changes. Dozing is stored separately from state.
          */
         default void onDozingChanged(boolean isDozing) {}
+
+        /**
+         * Callback to be notified when Dreaming changes. Dreaming is stored separately from state.
+         */
+        default void onDreamingChanged(boolean isDreaming) {}
 
         /**
          * Callback to be notified when the doze amount changes. Useful for animations.
@@ -104,13 +127,17 @@ public interface StatusBarStateController {
          * Callback to be notified when the fullscreen or immersive state changes.
          *
          * @param isFullscreen if any of the system bar is hidden by the focused window.
-         * @param isImmersive if the navigation bar can stay hidden when the display gets tapped.
          */
-        default void onFullscreenStateChanged(boolean isFullscreen, boolean isImmersive) {}
+        default void onFullscreenStateChanged(boolean isFullscreen) {}
 
         /**
          * Callback to be notified when the pulsing state changes
          */
         default void onPulsingChanged(boolean pulsing) {}
+
+        /**
+         * Callback to be notified when the expanded state of the status bar changes
+         */
+        default void onExpandedChanged(boolean isExpanded) {}
     }
 }

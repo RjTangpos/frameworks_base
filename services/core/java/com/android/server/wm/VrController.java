@@ -101,7 +101,7 @@ final class VrController {
     //      - Calls to setPersistentVrThread will fail.
     //      - No threads will have elevated scheduling priority for VR.
     //
-    private int mVrState = FLAG_NON_VR_MODE;
+    private volatile int mVrState = FLAG_NON_VR_MODE;
 
     // The single VR render thread on the device that is given elevated scheduling priority.
     private int mVrRenderThreadTid = 0;
@@ -126,6 +126,9 @@ final class VrController {
         }
     };
 
+    /** If it is null after system ready, then VR mode is not supported. */
+    VrManagerInternal mVrService;
+
     /**
      * Create new VrController instance.
      *
@@ -141,8 +144,17 @@ final class VrController {
     public void onSystemReady() {
         VrManagerInternal vrManagerInternal = LocalServices.getService(VrManagerInternal.class);
         if (vrManagerInternal != null) {
+            mVrService = vrManagerInternal;
             vrManagerInternal.addPersistentVrModeStateListener(mPersistentVrModeListener);
         }
+    }
+
+    /**
+     * Called without lock to determine whether to call {@link #onTopProcChangedLocked} in lock. It
+     * is used to optimize performance for the path that may have lock contention frequently.
+     */
+    boolean isInterestingToSchedGroup() {
+        return (mVrState & (FLAG_VR_MODE | FLAG_PERSISTENT_VR_MODE)) != 0;
     }
 
     /**
@@ -173,7 +185,7 @@ final class VrController {
     public boolean onVrModeChanged(ActivityRecord record) {
         // This message means that the top focused activity enabled VR mode (or an activity
         // that previously set this has become focused).
-        VrManagerInternal vrService = LocalServices.getService(VrManagerInternal.class);
+        final VrManagerInternal vrService = mVrService;
         if (vrService == null) {
             // VR mode isn't supported on this device.
             return false;

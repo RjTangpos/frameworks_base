@@ -16,8 +16,10 @@
 
 package android.telecom;
 
+import android.Manifest;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.hardware.camera2.CameraManager;
 import android.net.Uri;
@@ -34,12 +36,10 @@ import com.android.internal.telecom.IVideoCallback;
 import com.android.internal.telecom.IVideoProvider;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 /**
  * A connection provided to a {@link ConnectionService} by another {@code ConnectionService}
@@ -1190,6 +1190,29 @@ public final class RemoteConnection {
         try {
             if (mConnected) {
                 mConnectionService.stopRtt(mConnectionId, null /*Session.Info*/);
+            }
+        } catch (RemoteException ignored) {
+        } finally {
+            Log.endSession();
+        }
+    }
+
+    /**
+     * Notifies this {@link RemoteConnection} that call filtering has completed, as well as
+     * the results of a contacts lookup for the remote party.
+     *
+     * @param completionInfo Info provided by Telecom on the results of call filtering.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.READ_CONTACTS)
+    public void onCallFilteringCompleted(
+            @NonNull Connection.CallFilteringCompletionInfo completionInfo) {
+        Log.startSession("RC.oCFC", getActiveOwnerInfo());
+        try {
+            if (mConnected) {
+                mConnectionService.onCallFilteringCompleted(mConnectionId, completionInfo,
+                        null /*Session.Info*/);
             }
         } catch (RemoteException ignored) {
         } finally {

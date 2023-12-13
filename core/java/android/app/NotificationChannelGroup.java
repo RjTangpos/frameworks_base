@@ -15,19 +15,22 @@
  */
 package android.app;
 
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Intent;
+import android.content.pm.ParceledListSlice;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.text.TextUtils;
 import android.util.proto.ProtoOutputStream;
 
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
+
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlSerializer;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -42,8 +45,9 @@ public final class NotificationChannelGroup implements Parcelable {
     /**
      * The maximum length for text fields in a NotificationChannelGroup. Fields will be truncated at
      * this limit.
+     * @hide
      */
-    private static final int MAX_TEXT_LENGTH = 1000;
+    public static final int MAX_TEXT_LENGTH = 1000;
 
     private static final String TAG_GROUP = "channelGroup";
     private static final String ATT_NAME = "name";
@@ -65,7 +69,7 @@ public final class NotificationChannelGroup implements Parcelable {
     private CharSequence mName;
     private String mDescription;
     private boolean mBlocked;
-    private List<NotificationChannel> mChannels = new ArrayList<>();
+    private List<NotificationChannel> mChannels = new ArrayList();
     // Bitwise representation of fields that have been changed by the user
     private int mUserLockedFields;
 
@@ -89,17 +93,26 @@ public final class NotificationChannelGroup implements Parcelable {
      */
     protected NotificationChannelGroup(Parcel in) {
         if (in.readByte() != 0) {
-            mId = in.readString();
+            mId = getTrimmedString(in.readString());
         } else {
             mId = null;
         }
-        mName = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(in);
         if (in.readByte() != 0) {
-            mDescription = in.readString();
+            mName = getTrimmedString(in.readString());
+        } else {
+            mName = "";
+        }
+        if (in.readByte() != 0) {
+            mDescription = getTrimmedString(in.readString());
         } else {
             mDescription = null;
         }
-        in.readParcelableList(mChannels, NotificationChannel.class.getClassLoader());
+        if (in.readByte() != 0) {
+            mChannels = in.readParcelable(NotificationChannelGroup.class.getClassLoader(),
+                    ParceledListSlice.class).getList();
+        } else {
+            mChannels = new ArrayList<>();
+        }
         mBlocked = in.readBoolean();
         mUserLockedFields = in.readInt();
     }
@@ -119,14 +132,24 @@ public final class NotificationChannelGroup implements Parcelable {
         } else {
             dest.writeByte((byte) 0);
         }
-        TextUtils.writeToParcel(mName, dest, flags);
+        if (mName != null) {
+            dest.writeByte((byte) 1);
+            dest.writeString(mName.toString());
+        } else {
+            dest.writeByte((byte) 0);
+        }
         if (mDescription != null) {
             dest.writeByte((byte) 1);
             dest.writeString(mDescription);
         } else {
             dest.writeByte((byte) 0);
         }
-        dest.writeParcelableList(mChannels, flags);
+        if (mChannels != null) {
+            dest.writeByte((byte) 1);
+            dest.writeParcelable(new ParceledListSlice<>(mChannels), flags);
+        } else {
+            dest.writeByte((byte) 0);
+        }
         dest.writeBoolean(mBlocked);
         dest.writeInt(mUserLockedFields);
     }
@@ -227,22 +250,16 @@ public final class NotificationChannelGroup implements Parcelable {
     /**
      * @hide
      */
-    public void populateFromXml(XmlPullParser parser) {
+    public void populateFromXml(TypedXmlPullParser parser) {
         // Name, id, and importance are set in the constructor.
         setDescription(parser.getAttributeValue(null, ATT_DESC));
-        setBlocked(safeBool(parser, ATT_BLOCKED, false));
-    }
-
-    private static boolean safeBool(XmlPullParser parser, String att, boolean defValue) {
-        final String value = parser.getAttributeValue(null, att);
-        if (TextUtils.isEmpty(value)) return defValue;
-        return Boolean.parseBoolean(value);
+        setBlocked(parser.getAttributeBoolean(null, ATT_BLOCKED, false));
     }
 
     /**
      * @hide
      */
-    public void writeXml(XmlSerializer out) throws IOException {
+    public void writeXml(TypedXmlSerializer out) throws IOException {
         out.startTag(null, TAG_GROUP);
 
         out.attribute(null, ATT_ID, getId());
@@ -252,8 +269,8 @@ public final class NotificationChannelGroup implements Parcelable {
         if (getDescription() != null) {
             out.attribute(null, ATT_DESC, getDescription().toString());
         }
-        out.attribute(null, ATT_BLOCKED, Boolean.toString(isBlocked()));
-        out.attribute(null, ATT_USER_LOCKED, Integer.toString(mUserLockedFields));
+        out.attributeBoolean(null, ATT_BLOCKED, isBlocked());
+        out.attributeInt(null, ATT_USER_LOCKED, mUserLockedFields);
 
         out.endTag(null, TAG_GROUP);
     }
@@ -291,7 +308,7 @@ public final class NotificationChannelGroup implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         NotificationChannelGroup that = (NotificationChannelGroup) o;

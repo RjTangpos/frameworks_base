@@ -20,10 +20,14 @@ import static com.android.internal.util.function.pooled.PooledLambda.obtainMessa
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
+import android.app.IActivityManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.ParceledListSlice;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.IBinder.DeathRecipient;
@@ -39,6 +43,7 @@ import com.android.internal.annotations.GuardedBy;
 import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Base class representing a remote service.
@@ -58,11 +63,15 @@ import java.util.ArrayList;
  * @param <S> the concrete remote service class
  * @param <I> the interface of the binder service
  *
+ * @deprecated Use {@link ServiceConnector} to manage remote service connections
+ *
  * @hide
  */
 //TODO(b/117779333): improve javadoc above instead of using Autofill as an example
+@Deprecated
 public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I>,
         I extends IInterface> implements DeathRecipient {
+    private static final int SERVICE_NOT_EXIST = -1;
     private static final int MSG_BIND = 1;
     private static final int MSG_UNBIND = 2;
 
@@ -85,16 +94,20 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
     private final int mBindingFlags;
     protected I mService;
 
-    private boolean mBinding;
+    private boolean mBound;
+    private boolean mConnecting;
     private boolean mDestroyed;
     private boolean mServiceDied;
     private boolean mCompleted;
 
     // Used just for debugging purposes (on dump)
     private long mNextUnbind;
+    // Used just for debugging purposes (on dump)
+    private int mServiceExitReason;
+    private int mServiceExitSubReason;
 
     /** Requests that have been scheduled, but that are not finished yet */
-    private final ArrayList<BasePendingRequest<S, I>> mUnfinishedRequests = new ArrayList<>();
+    protected final ArrayList<BasePendingRequest<S, I>> mUnfinishedRequests = new ArrayList<>();
 
     /**
      * Callback called when the service dies.
@@ -122,6 +135,8 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
         mUserId = userId;
         mHandler = new Handler(handler.getLooper());
         mBindingFlags = bindingFlags;
+        mServiceExitReason = SERVICE_NOT_EXIST;
+        mServiceExitSubReason = SERVICE_NOT_EXIST;
     }
 
     /**
@@ -225,6 +240,8 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
         if (mService != null) {
             mService.asBinder().unlinkToDeath(this, 0);
         }
+        updateServicelicationExitInfo(mComponentName, mUserId);
+        mConnecting = true;
         mService = null;
         mServiceDied = true;
         cancelScheduledUnbind();
@@ -232,6 +249,33 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
         final S castService = (S) this;
         mVultureCallback.onServiceDied(castService);
         handleBindFailure();
+    }
+
+    private void updateServicelicationExitInfo(ComponentName componentName, int userId) {
+        IActivityManager am = ActivityManager.getService();
+        String packageName = componentName.getPackageName();
+        ParceledListSlice<ApplicationExitInfo> plistSlice = null;
+        try {
+            plistSlice = am.getHistoricalProcessExitReasons(packageName, 0, 1, userId);
+        } catch (RemoteException e) {
+            // do nothing. The local binder so it can not throw it.
+        }
+        if (plistSlice == null) {
+            return;
+        }
+        List<ApplicationExitInfo> list = plistSlice.getList();
+        if (list.isEmpty()) {
+            return;
+        }
+        ApplicationExitInfo info = list.get(0);
+        mServiceExitReason = info.getReason();
+        mServiceExitSubReason = info.getSubReason();
+        if (mVerbose) {
+            Slog.v(mTag, "updateServicelicationExitInfo: exitReason="
+                    + ApplicationExitInfo.reasonCodeToString(mServiceExitReason)
+                    + " exitSubReason= " + ApplicationExitInfo.subreasonToString(
+                    mServiceExitSubReason));
+        }
     }
 
     // Note: we are dumping without a lock held so this is a bit racy but
@@ -251,8 +295,10 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
                 .append(String.valueOf(mDestroyed)).println();
         pw.append(prefix).append(tab).append("numUnfinishedRequests=")
                 .append(String.valueOf(mUnfinishedRequests.size())).println();
-        final boolean bound = handleIsBound();
         pw.append(prefix).append(tab).append("bound=")
+                .append(String.valueOf(mBound));
+        final boolean bound = handleIsBound();
+        pw.append(prefix).append(tab).append("connected=")
                 .append(String.valueOf(bound));
         final long idleTimeout = getTimeoutIdleBindMillis();
         if (bound) {
@@ -265,6 +311,16 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
             }
         }
         pw.println();
+        if (mServiceExitReason != SERVICE_NOT_EXIST) {
+            pw.append(prefix).append(tab).append("serviceExistReason=")
+                    .append(ApplicationExitInfo.reasonCodeToString(mServiceExitReason));
+            pw.println();
+        }
+        if (mServiceExitSubReason != SERVICE_NOT_EXIST) {
+            pw.append(prefix).append(tab).append("serviceExistSubReason=")
+                    .append(ApplicationExitInfo.subreasonToString(mServiceExitSubReason));
+            pw.println();
+        }
         pw.append(prefix).append("mBindingFlags=").println(mBindingFlags);
         pw.append(prefix).append("idleTimeout=")
             .append(Long.toString(idleTimeout / 1000)).append("s\n");
@@ -426,25 +482,28 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
      */
     abstract void handleBindFailure();
 
+    // This is actually checking isConnected. TODO: rename this and other related methods (or just
+    // stop using this class..)
     private boolean handleIsBound() {
         return mService != null;
     }
 
     private void handleEnsureBound() {
-        if (handleIsBound() || mBinding) return;
+        if (handleIsBound() || mConnecting) return;
 
         if (mVerbose) Slog.v(mTag, "ensureBound()");
-        mBinding = true;
+        mConnecting = true;
 
         final int flags = Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE
-                | mBindingFlags;
+                | Context.BIND_INCLUDE_CAPABILITIES | mBindingFlags;
 
         final boolean willBind = mContext.bindServiceAsUser(mIntent, mServiceConnection, flags,
                 mHandler, new UserHandle(mUserId));
+        mBound = true;
 
         if (!willBind) {
             Slog.w(mTag, "could not bind to " + mIntent + " using flags " + flags);
-            mBinding = false;
+            mConnecting = false;
 
             if (!mServiceDied) {
                 handleBinderDied();
@@ -453,10 +512,10 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
     }
 
     private void handleEnsureUnbound() {
-        if (!handleIsBound() && !mBinding) return;
+        if (!handleIsBound() && !mConnecting) return;
 
         if (mVerbose) Slog.v(mTag, "ensureUnbound()");
-        mBinding = false;
+        mConnecting = false;
         if (handleIsBound()) {
             handleOnConnectedStateChangedInternal(false);
             if (mService != null) {
@@ -465,19 +524,22 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
             }
         }
         mNextUnbind = 0;
-        mContext.unbindService(mServiceConnection);
+        if (mBound) {
+            mContext.unbindService(mServiceConnection);
+            mBound = false;
+        }
     }
 
     private class RemoteServiceConnection implements ServiceConnection {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             if (mVerbose) Slog.v(mTag, "onServiceConnected()");
-            if (mDestroyed || !mBinding) {
+            if (mDestroyed || !mConnecting) {
                 // This is abnormal. Unbinding the connection has been requested already.
                 Slog.wtf(mTag, "onServiceConnected() was dispatched after unbindService.");
                 return;
             }
-            mBinding = false;
+            mConnecting = false;
             try {
                 service.linkToDeath(AbstractRemoteService.this, 0);
             } catch (RemoteException re) {
@@ -485,6 +547,8 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
                 return;
             }
             mService = getServiceInterface(service);
+            mServiceExitReason = SERVICE_NOT_EXIST;
+            mServiceExitSubReason = SERVICE_NOT_EXIST;
             handleOnConnectedStateChangedInternal(true);
             mServiceDied = false;
         }
@@ -492,7 +556,7 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
         @Override
         public void onServiceDisconnected(ComponentName name) {
             if (mVerbose) Slog.v(mTag, "onServiceDisconnected()");
-            mBinding = true;
+            mConnecting = true;
             mService = null;
         }
 
@@ -607,6 +671,11 @@ public abstract class AbstractRemoteService<S extends AbstractRemoteService<S, I
                     return false;
                 }
                 mCancelled = true;
+            }
+
+            S service = mWeakService.get();
+            if (service != null) {
+                service.finishRequest(this);
             }
 
             onCancel();

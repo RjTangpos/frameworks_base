@@ -170,14 +170,14 @@ class Vr2dDisplay {
                     } else if (DEBUG_ACTION_SET_SURFACE.equals(action)) {
                         if (mVirtualDisplay != null) {
                             if (intent.hasExtra(DEBUG_EXTRA_SURFACE)) {
-                                setSurfaceLocked(intent.getParcelableExtra(DEBUG_EXTRA_SURFACE));
+                                setSurfaceLocked(intent.getParcelableExtra(DEBUG_EXTRA_SURFACE, android.view.Surface.class));
                             }
                         } else {
                             Log.w(TAG, "Cannot set the surface because the VD is null.");
                         }
                     }
                 }
-            }, intentFilter);
+            }, intentFilter, Context.RECEIVER_NOT_EXPORTED);
         }
     }
 

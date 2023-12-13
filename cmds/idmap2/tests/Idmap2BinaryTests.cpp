@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "R.h"
+#include "TestConstants.h"
 #include "TestHelpers.h"
 #include "androidfw/PosixUtils.h"
 #include "gmock/gmock.h"
@@ -43,8 +44,8 @@
 #include "idmap2/Idmap.h"
 #include "private/android_filesystem_config.h"
 
+using ::android::base::StringPrintf;
 using ::android::util::ExecuteBinary;
-using ::testing::NotNull;
 
 namespace android::idmap2 {
 
@@ -90,10 +91,11 @@ TEST_F(Idmap2BinaryTests, Create) {
                                "create",
                                "--target-apk-path", GetTargetApkPath(),
                                "--overlay-apk-path", GetOverlayApkPath(),
+                               "--overlay-name", TestConstants::OVERLAY_NAME_DEFAULT,
                                "--idmap-path", GetIdmapPath()});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
 
   struct stat st;
   ASSERT_EQ(stat(GetIdmapPath().c_str(), &st), 0);
@@ -116,26 +118,36 @@ TEST_F(Idmap2BinaryTests, Dump) {
                                "create",
                                "--target-apk-path", GetTargetApkPath(),
                                "--overlay-apk-path", GetOverlayApkPath(),
+                               "--overlay-name", TestConstants::OVERLAY_NAME_DEFAULT,
                                "--idmap-path", GetIdmapPath()});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
 
   // clang-format off
   result = ExecuteBinary({"idmap2",
                           "dump",
                           "--idmap-path", GetIdmapPath()});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
-  ASSERT_NE(result->stdout.find(R::target::integer::literal::int1 + " -> 0x7f010000"),
-            std::string::npos);
-  ASSERT_NE(result->stdout.find(R::target::string::literal::str1 + " -> 0x7f020000"),
-            std::string::npos);
-  ASSERT_NE(result->stdout.find(R::target::string::literal::str3 + " -> 0x7f020001"),
-            std::string::npos);
-  ASSERT_NE(result->stdout.find(R::target::string::literal::str4 + " -> 0x7f020002"),
-            std::string::npos);
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
+
+  ASSERT_NE(result.stdout_str.find(StringPrintf("0x%08x -> 0x%08x", R::target::integer::int1,
+                                                 R::overlay::integer::int1)),
+            std::string::npos)
+      << result.stdout_str;
+  ASSERT_NE(result.stdout_str.find(StringPrintf("0x%08x -> 0x%08x", R::target::string::str1,
+                                                 R::overlay::string::str1)),
+            std::string::npos)
+      << result.stdout_str;
+  ASSERT_NE(result.stdout_str.find(StringPrintf("0x%08x -> 0x%08x", R::target::string::str3,
+                                                 R::overlay::string::str3)),
+            std::string::npos)
+      << result.stdout_str;
+  ASSERT_NE(result.stdout_str.find(StringPrintf("0x%08x -> 0x%08x", R::target::string::str4,
+                                                 R::overlay::string::str4)),
+            std::string::npos)
+      << result.stdout_str;
 
   // clang-format off
   result = ExecuteBinary({"idmap2",
@@ -143,9 +155,9 @@ TEST_F(Idmap2BinaryTests, Dump) {
                           "--verbose",
                           "--idmap-path", GetIdmapPath()});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
-  ASSERT_NE(result->stdout.find("00000000: 504d4449  magic"), std::string::npos);
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
+  ASSERT_NE(result.stdout_str.find("00000000: 504d4449  magic"), std::string::npos);
 
   // clang-format off
   result = ExecuteBinary({"idmap2",
@@ -153,8 +165,8 @@ TEST_F(Idmap2BinaryTests, Dump) {
                           "--verbose",
                           "--idmap-path", GetTestDataPath() + "/DOES-NOT-EXIST"});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_NE(result->status, EXIT_SUCCESS);
+  ASSERT_TRUE((bool)result);
+  ASSERT_NE(result.status, EXIT_SUCCESS);
 
   unlink(GetIdmapPath().c_str());
 }
@@ -167,22 +179,23 @@ TEST_F(Idmap2BinaryTests, Lookup) {
                                "create",
                                "--target-apk-path", GetTargetApkPath(),
                                "--overlay-apk-path", GetOverlayApkPath(),
+                               "--overlay-name", TestConstants::OVERLAY_NAME_DEFAULT,
                                "--idmap-path", GetIdmapPath()});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
 
   // clang-format off
   result = ExecuteBinary({"idmap2",
                           "lookup",
                           "--idmap-path", GetIdmapPath(),
                           "--config", "",
-                          "--resid", R::target::string::literal::str1});
+                          "--resid", StringPrintf("0x%08x", R::target::string::str1)});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
-  ASSERT_NE(result->stdout.find("overlay-1"), std::string::npos);
-  ASSERT_EQ(result->stdout.find("overlay-1-sv"), std::string::npos);
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
+  ASSERT_NE(result.stdout_str.find("overlay-1"), std::string::npos);
+  ASSERT_EQ(result.stdout_str.find("overlay-1-sv"), std::string::npos);
 
   // clang-format off
   result = ExecuteBinary({"idmap2",
@@ -191,10 +204,10 @@ TEST_F(Idmap2BinaryTests, Lookup) {
                           "--config", "",
                           "--resid", "test.target:string/str1"});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
-  ASSERT_NE(result->stdout.find("overlay-1"), std::string::npos);
-  ASSERT_EQ(result->stdout.find("overlay-1-sv"), std::string::npos);
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
+  ASSERT_NE(result.stdout_str.find("overlay-1"), std::string::npos);
+  ASSERT_EQ(result.stdout_str.find("overlay-1-sv"), std::string::npos);
 
   // clang-format off
   result = ExecuteBinary({"idmap2",
@@ -203,9 +216,9 @@ TEST_F(Idmap2BinaryTests, Lookup) {
                           "--config", "sv",
                           "--resid", "test.target:string/str1"});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_EQ(result->status, EXIT_SUCCESS) << result->stderr;
-  ASSERT_NE(result->stdout.find("overlay-1-sv"), std::string::npos);
+  ASSERT_TRUE((bool)result);
+  ASSERT_EQ(result.status, EXIT_SUCCESS) << result.stderr_str;
+  ASSERT_NE(result.stdout_str.find("overlay-1-sv"), std::string::npos);
 
   unlink(GetIdmapPath().c_str());
 }
@@ -220,8 +233,8 @@ TEST_F(Idmap2BinaryTests, InvalidCommandLineOptions) {
   auto result = ExecuteBinary({"idmap2",
                                "create"});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_NE(result->status, EXIT_SUCCESS);
+  ASSERT_TRUE((bool)result);
+  ASSERT_NE(result.status, EXIT_SUCCESS);
 
   // missing argument to option
   // clang-format off
@@ -229,10 +242,11 @@ TEST_F(Idmap2BinaryTests, InvalidCommandLineOptions) {
                           "create",
                           "--target-apk-path", GetTargetApkPath(),
                           "--overlay-apk-path", GetOverlayApkPath(),
+                          "--overlay-name", TestConstants::OVERLAY_NAME_DEFAULT,
                           "--idmap-path"});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_NE(result->status, EXIT_SUCCESS);
+  ASSERT_TRUE((bool)result);
+  ASSERT_NE(result.status, EXIT_SUCCESS);
 
   // invalid target apk path
   // clang-format off
@@ -240,10 +254,11 @@ TEST_F(Idmap2BinaryTests, InvalidCommandLineOptions) {
                           "create",
                           "--target-apk-path", invalid_target_apk_path,
                           "--overlay-apk-path", GetOverlayApkPath(),
+                          "--overlay-name", TestConstants::OVERLAY_NAME_DEFAULT,
                           "--idmap-path", GetIdmapPath()});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_NE(result->status, EXIT_SUCCESS);
+  ASSERT_TRUE((bool)result);
+  ASSERT_NE(result.status, EXIT_SUCCESS);
 
   // unknown policy
   // clang-format off
@@ -251,11 +266,12 @@ TEST_F(Idmap2BinaryTests, InvalidCommandLineOptions) {
                           "create",
                           "--target-apk-path", GetTargetApkPath(),
                           "--overlay-apk-path", GetOverlayApkPath(),
+                          "--overlay-name", TestConstants::OVERLAY_NAME_DEFAULT,
                           "--idmap-path", GetIdmapPath(),
                           "--policy", "this-does-not-exist"});
   // clang-format on
-  ASSERT_THAT(result, NotNull());
-  ASSERT_NE(result->status, EXIT_SUCCESS);
+  ASSERT_TRUE((bool)result);
+  ASSERT_NE(result.status, EXIT_SUCCESS);
 }
 
 }  // namespace android::idmap2

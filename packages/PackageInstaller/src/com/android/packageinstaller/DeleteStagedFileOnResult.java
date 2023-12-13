@@ -16,12 +16,15 @@
 
 package com.android.packageinstaller;
 
-import android.annotation.Nullable;
+import static android.content.Intent.CATEGORY_LAUNCHER;
+
+import static com.android.packageinstaller.PackageInstallerActivity.EXTRA_STAGED_SESSION_ID;
+
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
 
-import java.io.File;
+import androidx.annotation.Nullable;
 
 /**
  * Trampoline activity. Calls PackageInstallerActivity and deletes staged install file onResult.
@@ -42,10 +45,25 @@ public class DeleteStagedFileOnResult extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        File sourceFile = new File(getIntent().getData().getPath());
-        sourceFile.delete();
-
         setResult(resultCode, data);
         finish();
+        if (data != null && data.hasCategory(CATEGORY_LAUNCHER)) {
+            startActivity(data);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+
+        if (isFinishing()) {
+            // While we expect PIA/InstallStaging to abandon/commit the session, still there
+            // might be cases when the session becomes orphan.
+            int sessionId = getIntent().getIntExtra(EXTRA_STAGED_SESSION_ID, 0);
+            try {
+                getPackageManager().getPackageInstaller().abandonSession(sessionId);
+            } catch (SecurityException ignored) {
+            }
+        }
     }
 }

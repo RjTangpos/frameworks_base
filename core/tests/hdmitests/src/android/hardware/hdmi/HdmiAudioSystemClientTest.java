@@ -18,6 +18,7 @@ package android.hardware.hdmi;
 
 import android.os.Handler;
 import android.os.test.TestLooper;
+import android.platform.test.annotations.Presubmit;
 import android.util.Log;
 
 import androidx.test.filters.SmallTest;
@@ -28,11 +29,13 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Tests for {@link HdmiAudioSystemClient}
  */
+@Presubmit
 @RunWith(JUnit4.class)
 @SmallTest
 public class HdmiAudioSystemClientTest {
@@ -190,6 +193,15 @@ public class HdmiAudioSystemClientTest {
         }
 
         @Override
+        public void toggleAndFollowTvPower() {
+        }
+
+        @Override
+        public boolean shouldHandleTvPowerKey() {
+            return false;
+        }
+
+        @Override
         public void queryDisplayStatus(final IHdmiControlCallback callback) {
         }
 
@@ -278,9 +290,8 @@ public class HdmiAudioSystemClientTest {
         }
 
         @Override
-        public void addVendorCommandListener(final IHdmiVendorCommandListener listener,
-                final int deviceType) {
-        }
+        public void addVendorCommandListener(
+                final IHdmiVendorCommandListener listener, final int vendorId) {}
 
         @Override
         public void sendVendorCommand(final int deviceType, final int targetAddress,
@@ -356,15 +367,6 @@ public class HdmiAudioSystemClientTest {
         }
 
         @Override
-        public void setHdmiCecVolumeControlEnabled(boolean isHdmiCecVolumeControlEnabled) {
-        }
-
-        @Override
-        public boolean isHdmiCecVolumeControlEnabled() {
-            return true;
-        }
-
-        @Override
         public void addHdmiCecVolumeControlFeatureListener(
                 IHdmiCecVolumeControlFeatureListener listener) {
         }
@@ -372,6 +374,60 @@ public class HdmiAudioSystemClientTest {
         @Override
         public void removeHdmiCecVolumeControlFeatureListener(
                 IHdmiCecVolumeControlFeatureListener listener) {
+        }
+
+        @Override
+        public int getMessageHistorySize() {
+            return 0;
+        }
+
+        @Override
+        public boolean setMessageHistorySize(int newSize) {
+            return true;
+        }
+
+
+        @Override
+        public List<String> getUserCecSettings() {
+            return new ArrayList<>();
+        }
+
+        @Override
+        public List<String> getAllowedCecSettingStringValues(String name) {
+            return new ArrayList<>();
+        }
+
+        @Override
+        public void addCecSettingChangeListener(String name,
+                IHdmiCecSettingChangeListener listener) {
+        }
+
+        @Override
+        public void removeCecSettingChangeListener(String name,
+                IHdmiCecSettingChangeListener listener) {
+        }
+
+        @Override
+        public int[] getAllowedCecSettingIntValues(String name) {
+            return new int[0];
+        }
+
+        @Override
+        public String getCecSettingStringValue(String name) {
+            return "";
+        }
+
+        @Override
+        public void setCecSettingStringValue(String name, String value) {
+        }
+
+        @Override
+        public int getCecSettingIntValue(String name) {
+            return 0;
+        }
+
+        @Override
+        public void setCecSettingIntValue(String name, int value) {
         }
     }
 

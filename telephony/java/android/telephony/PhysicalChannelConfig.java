@@ -29,7 +29,6 @@ import java.util.Arrays;
 import java.util.Objects;
 
 public final class PhysicalChannelConfig implements Parcelable {
-
     // TODO(b/72993578) consolidate these enums in a central location.
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
@@ -38,15 +37,26 @@ public final class PhysicalChannelConfig implements Parcelable {
 
     /**
      * UE has connection to cell for signalling and possibly data (3GPP 36.331, 25.331).
+     *
+     * @deprecated Use {@link  CellInfo#CONNECTION_PRIMARY_SERVING} instead.
      */
+    @Deprecated
     public static final int CONNECTION_PRIMARY_SERVING = 1;
 
     /**
      * UE has connection to cell for data (3GPP 36.331, 25.331).
+     *
+     * @deprecated Use {@link  CellInfo#CONNECTION_SECONDARY_SERVING} instead.
      */
+    @Deprecated
     public static final int CONNECTION_SECONDARY_SERVING = 2;
 
-    /** Connection status is unknown. */
+    /**
+     * Connection status is unknown.
+     *
+     * @deprecated Use {@link  CellInfo#CONNECTION_UNKNOWN} instead.
+     */
+    @Deprecated
     public static final int CONNECTION_UNKNOWN = -1;
 
     /** Channel number is unknown. */
@@ -125,6 +135,7 @@ public final class PhysicalChannelConfig implements Parcelable {
 
     /**
      * The physical cell identifier for this cell - PCI, PSC, {@link #PHYSICAL_CELL_ID_UNKNOWN}
+     * if unknown.
      */
     private int mPhysicalCellId;
 
@@ -179,16 +190,6 @@ public final class PhysicalChannelConfig implements Parcelable {
      */
     public int[] getContextIds() {
         return mContextIds;
-    }
-
-    /**
-     * @return the absolute radio frequency channel number for this physical channel,
-     * {@link #CHANNEL_NUMBER_UNKNOWN} if unknown.
-     * @deprecated Use {@link #getDownlinkChannelNumber()} to get the channel number.
-     */
-    @Deprecated
-    public int getChannelNumber() {
-        return getDownlinkChannelNumber();
     }
 
     /**
@@ -251,6 +252,11 @@ public final class PhysicalChannelConfig implements Parcelable {
     }
 
     /**
+     * The physical cell ID which differentiates cells using the same radio channel.
+     *
+     * In GERAN, this value is the BSIC. The range is [0-63].
+     * Reference: 3GPP TS 3.03 section 4.2.2.
+     *
      * In UTRAN, this value is primary scrambling code. The range is [0, 511].
      * Reference: 3GPP TS 25.213 section 5.2.2.
      *
@@ -347,7 +353,8 @@ public final class PhysicalChannelConfig implements Parcelable {
     private void setUplinkFrequency() {
         switch (mNetworkType){
             case TelephonyManager.NETWORK_TYPE_NR:
-                mUplinkFrequency = mDownlinkFrequency;
+                mUplinkFrequency = AccessNetworkUtils.getFrequencyFromNrArfcn(
+                        mUplinkChannelNumber);
                 break;
             case TelephonyManager.NETWORK_TYPE_LTE:
                 mUplinkFrequency = AccessNetworkUtils.getFrequencyFromEarfcn(
@@ -437,7 +444,8 @@ public final class PhysicalChannelConfig implements Parcelable {
         return Objects.hash(
                 mCellConnectionStatus, mCellBandwidthDownlinkKhz, mCellBandwidthUplinkKhz,
                 mNetworkType, mFrequencyRange, mDownlinkChannelNumber, mUplinkChannelNumber,
-                mContextIds, mPhysicalCellId, mBand, mDownlinkFrequency, mUplinkFrequency);
+                Arrays.hashCode(mContextIds), mPhysicalCellId, mBand, mDownlinkFrequency,
+                mUplinkFrequency);
     }
 
     public static final
@@ -571,16 +579,17 @@ public final class PhysicalChannelConfig implements Parcelable {
 
         public @NonNull Builder setNetworkType(@NetworkType int networkType) {
             if (!TelephonyManager.isNetworkTypeValid(networkType)) {
-                throw new IllegalArgumentException("Network type: " + networkType + " is invalid.");
+                throw new IllegalArgumentException("Network type " + networkType + " is invalid.");
             }
             mNetworkType = networkType;
             return this;
         }
 
         public @NonNull Builder setFrequencyRange(int frequencyRange) {
-            if (!ServiceState.isFrequencyRangeValid(frequencyRange)) {
-                throw new IllegalArgumentException("Frequency range: " + frequencyRange +
-                        " is invalid.");
+            if (!ServiceState.isFrequencyRangeValid(frequencyRange)
+                    && frequencyRange != ServiceState.FREQUENCY_RANGE_UNKNOWN) {
+                throw new IllegalArgumentException("Frequency range " + frequencyRange
+                        + " is invalid.");
             }
             mFrequencyRange = frequencyRange;
             return this;
@@ -598,8 +607,8 @@ public final class PhysicalChannelConfig implements Parcelable {
 
         public @NonNull Builder setCellBandwidthDownlinkKhz(int cellBandwidthDownlinkKhz) {
             if (cellBandwidthDownlinkKhz < CELL_BANDWIDTH_UNKNOWN) {
-                throw new IllegalArgumentException("Cell downlink bandwidth(kHz): " +
-                        cellBandwidthDownlinkKhz + " is invalid.");
+                throw new IllegalArgumentException("Cell downlink bandwidth(kHz) "
+                        + cellBandwidthDownlinkKhz + " is invalid.");
             }
             mCellBandwidthDownlinkKhz = cellBandwidthDownlinkKhz;
             return this;
@@ -607,8 +616,8 @@ public final class PhysicalChannelConfig implements Parcelable {
 
         public @NonNull Builder setCellBandwidthUplinkKhz(int cellBandwidthUplinkKhz) {
             if (cellBandwidthUplinkKhz < CELL_BANDWIDTH_UNKNOWN) {
-                throw new IllegalArgumentException("Cell uplink bandwidth(kHz): "+
-                        cellBandwidthUplinkKhz +" is invalid.");
+                throw new IllegalArgumentException("Cell uplink bandwidth(kHz) "
+                        + cellBandwidthUplinkKhz + " is invalid.");
             }
             mCellBandwidthUplinkKhz = cellBandwidthUplinkKhz;
             return this;
@@ -627,8 +636,8 @@ public final class PhysicalChannelConfig implements Parcelable {
 
         public @NonNull Builder setPhysicalCellId(int physicalCellId) {
             if (physicalCellId > PHYSICAL_CELL_ID_MAXIMUM_VALUE) {
-                throw new IllegalArgumentException("Physical cell Id: " + physicalCellId +
-                        " is over limit.");
+                throw new IllegalArgumentException("Physical cell ID " + physicalCellId
+                        + " is over limit.");
             }
             mPhysicalCellId = physicalCellId;
             return this;
@@ -636,8 +645,7 @@ public final class PhysicalChannelConfig implements Parcelable {
 
         public @NonNull Builder setBand(int band) {
             if (band <= BAND_UNKNOWN) {
-                throw new IllegalArgumentException("Band: " + band +
-                        " is invalid.");
+                throw new IllegalArgumentException("Band " + band + " is invalid.");
             }
             mBand = band;
             return this;

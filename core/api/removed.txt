@@ -1,10 +1,6 @@
 // Signature format: 2.0
 package android.app {
 
-  public class ActivityManager {
-    method @Deprecated public static int getMaxNumPictureInPictureActions();
-  }
-
   public class Notification implements android.os.Parcelable {
     method @Deprecated public String getChannel();
     method public static Class<? extends android.app.Notification.Style> getNotificationStyleClass(String);
@@ -60,10 +56,6 @@ package android.app.slice {
 }
 
 package android.app.usage {
-
-  public final class StorageStats implements android.os.Parcelable {
-    method @Deprecated public long getCodeBytes();
-  }
 
   public class StorageStatsManager {
     method @Deprecated public long getFreeBytes(String) throws java.io.IOException;
@@ -221,16 +213,6 @@ package android.hardware {
 
 }
 
-package android.location {
-
-  public class Location implements android.os.Parcelable {
-    method @Deprecated public void removeBearingAccuracy();
-    method @Deprecated public void removeSpeedAccuracy();
-    method @Deprecated public void removeVerticalAccuracy();
-  }
-
-}
-
 package android.media {
 
   public final class AudioFormat implements android.os.Parcelable {
@@ -260,12 +242,28 @@ package android.net {
   @IntDef({0x0, 0xa, 0x14, 0x1e}) @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) public static @interface NetworkBadging.Badging {
   }
 
+  public final class Proxy {
+    field @Deprecated public static final String EXTRA_PROXY_INFO = "android.intent.extra.PROXY_INFO";
+  }
+
   @Deprecated public class SSLCertificateSocketFactory extends javax.net.ssl.SSLSocketFactory {
     method @Deprecated public static org.apache.http.conn.ssl.SSLSocketFactory getHttpSocketFactory(int, android.net.SSLSessionCache);
   }
 
-  public class TrafficStats {
-    method @Deprecated public static void setThreadStatsUidSelf();
+}
+
+package android.nfc {
+
+  public final class NfcAdapter {
+    method @Deprecated public void disableForegroundNdefPush(android.app.Activity);
+    method @Deprecated public void enableForegroundNdefPush(android.app.Activity, android.nfc.NdefMessage);
+    method @Deprecated public boolean invokeBeam(android.app.Activity);
+    method @Deprecated public boolean isNdefPushEnabled();
+    method @Deprecated public void setBeamPushUris(android.net.Uri[], android.app.Activity);
+    method @Deprecated public void setBeamPushUrisCallback(android.nfc.NfcAdapter.CreateBeamUrisCallback, android.app.Activity);
+    method @Deprecated public void setNdefPushMessage(android.nfc.NdefMessage, android.app.Activity, android.app.Activity...);
+    method @Deprecated public void setNdefPushMessageCallback(android.nfc.NfcAdapter.CreateNdefMessageCallback, android.app.Activity, android.app.Activity...);
+    method @Deprecated public void setOnNdefPushCompleteCallback(android.nfc.NfcAdapter.OnNdefPushCompleteCallback, android.app.Activity, android.app.Activity...);
   }
 
 }
@@ -538,11 +536,67 @@ package android.view {
 
   public static class WindowManager.LayoutParams extends android.view.ViewGroup.LayoutParams implements android.os.Parcelable {
     field public static final int TYPE_KEYGUARD = 2004; // 0x7d4
+    field public static final int TYPE_STATUS_BAR_PANEL = 2014; // 0x7de
+  }
+
+}
+
+package android.view.accessibility {
+
+  public static final class AccessibilityNodeInfo.CollectionItemInfo {
+    method @Deprecated @NonNull public static android.view.accessibility.AccessibilityNodeInfo.CollectionItemInfo obtain(@Nullable String, int, int, @Nullable String, int, int, boolean, boolean);
+  }
+
+}
+
+package android.view.translation {
+
+  public final class TranslationManager {
+    method @Deprecated public void addOnDeviceTranslationCapabilityUpdateListener(int, int, @NonNull android.app.PendingIntent);
+    method @Deprecated public void addTranslationCapabilityUpdateListener(int, int, @NonNull android.app.PendingIntent);
+    method @Deprecated @Nullable @WorkerThread public android.view.translation.Translator createOnDeviceTranslator(@NonNull android.view.translation.TranslationContext);
+    method @Deprecated @Nullable @WorkerThread public android.view.translation.Translator createTranslator(@NonNull android.view.translation.TranslationContext);
+    method @Deprecated @NonNull @WorkerThread public java.util.Set<android.view.translation.TranslationCapability> getTranslationCapabilities(int, int);
+    method @Deprecated @Nullable public android.app.PendingIntent getTranslationSettingsActivityIntent();
+    method @Deprecated public void removeOnDeviceTranslationCapabilityUpdateListener(int, int, @NonNull android.app.PendingIntent);
+    method @Deprecated public void removeTranslationCapabilityUpdateListener(int, int, @NonNull android.app.PendingIntent);
+  }
+
+  public static final class TranslationRequest.Builder {
+    method @Deprecated @NonNull public android.view.translation.TranslationRequest.Builder addTranslationRequestValue(@NonNull android.view.translation.TranslationRequestValue);
+    method @Deprecated @NonNull public android.view.translation.TranslationRequest.Builder addViewTranslationRequest(@NonNull android.view.translation.ViewTranslationRequest);
+  }
+
+  public static final class TranslationResponse.Builder {
+    method @Deprecated @NonNull public android.view.translation.TranslationResponse.Builder setTranslationStatus(int);
+  }
+
+  public final class TranslationSpec implements android.os.Parcelable {
+    ctor @Deprecated public TranslationSpec(@NonNull String, int);
+    method @Deprecated @NonNull public String getLanguage();
+  }
+
+  public class Translator {
+    method @Deprecated @Nullable public void translate(@NonNull android.view.translation.TranslationRequest, @NonNull java.util.concurrent.Executor, @NonNull java.util.function.Consumer<android.view.translation.TranslationResponse>);
+  }
+
+  public interface UiTranslationStateCallback {
+    method @Deprecated public default void onStarted(@NonNull String, @NonNull String);
   }
 
 }
 
 package android.webkit {
+
+  public class WebChromeClient {
+    method @Deprecated public void onReachedMaxAppCacheSize(long, long, android.webkit.WebStorage.QuotaUpdater);
+  }
+
+  public abstract class WebSettings {
+    method @Deprecated public void setAppCacheEnabled(boolean);
+    method @Deprecated public void setAppCacheMaxSize(long);
+    method @Deprecated public void setAppCachePath(String);
+  }
 
   public class WebViewClient {
     method public void onUnhandledInputEvent(android.webkit.WebView, android.view.InputEvent);
