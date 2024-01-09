@@ -205,11 +205,11 @@ public class PixelPropsUtils {
                 if (processName.equals("com.google.android.gms.unstable")) {
                     sIsGms = true;
                     // Alter model name and fingerprint to Redmi Go to avoid hardware attestation enforcement
-                setPropValue("DEVICE", "sailfish");
-        	setPropValue("FINGERPRINT", "google/sailfish/sailfish:8.1.0/OPM2.171019.029/4657601:user/release-keys");
-        	setPropValue("MODEL", "Pixel");
-        	setPropValue("PRODUCT", "sailfish");
-        	setVersionField("DEVICE_INITIAL_SDK_INT", Build.VERSION_CODES.O_MR1);
+            setPropValue("DEVICE", "YUREKA");
+        	setPropValue("FINGERPRINT", "YU/YUREKA/YUREKA:5.1.1/LMY49J/YOG4PAS8A4:user/release-keys");
+        	setPropValue("MODEL", "YU5510");
+        	setPropValue("PRODUCT", "YUREKA");
+        	setVersionField("DEVICE_INITIAL_SDK_INT", Build.VERSION_CODES.N);
                 }
                 return;
             }
